@@ -1,0 +1,21 @@
+{
+  "name": "arrowword",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Cooperative Persian arrowword solving for two devices, from a photo, without OCR.",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev --port 8787",
+    "typecheck": "tsc --noEmit",
+    "test": "node test/acceptance.mjs",
+    "deploy": "wrangler deploy",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260731.1",
+    "prettier": "^3.9.6",
+    "typescript": "^7.0.2",
+    "wrangler": "^4.117.0"
+  }
+}

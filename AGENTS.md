@@ -1,0 +1,37 @@
+# Arrowword Co-op
+
+Cooperative Persian arrowword solving for two devices, from a photo, without OCR.
+Full spec, including the collaboration protocol and the ready/done gate: `docs/SPEC.md`.
+Read the spec before writing code. It is the source of truth, not this file.
+
+Split out of the mhshakouri.dev repo on 2026-07-31 to live on its own subdomain.
+
+## Stack
+
+- Cloudflare Worker, one Durable Object per session (`ArrowwordSession`), R2 for photos
+- TypeScript strict, `noUncheckedIndexedAccess`
+- No framework on the server. UI framework not yet chosen.
+
+## Commands
+
+- `npm run dev` - local worker on :8787
+- `npm run typecheck` - TypeScript
+- `npm test` - acceptance suite, starts its own worker if none is running
+- `npm run deploy` - deploy to Cloudflare (needs `wrangler login`)
+- `npm run format` - Prettier
+
+## Conventions
+
+- NEVER use the em dash character. Use commas, colons, semicolons, periods, or
+  a middle dot for label separators. Hard rule, applies to code, comments, docs,
+  and commit messages.
+- The invariants in spec section 4 must never break. Check changes against them.
+- Every milestone passes the ready/done gate in spec section 13 before it counts
+  as finished. A milestone without a runnable check is not done.
+- Stop and ask on the triggers in spec section 15. Decide and record everything
+  cheap to change.
+- Anything learned the hard way goes into the spec in the same commit.
+
+## Deploy target
+
+`arrowword.mhshakouri.dev`, its own worker, independent of the site's deploys.
