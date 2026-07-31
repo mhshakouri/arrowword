@@ -14,13 +14,45 @@ const check = (name, pass, detail = "") =>
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+/* A 404 on / only proves the HTTP listener is bound. Readiness means the
+   Durable Object answers too, so probe with a real session round-trip. */
 async function isUp() {
   try {
-    await fetch(BASE, { signal: AbortSignal.timeout(1000) });
-    return true;
+    const res = await fetch(`${BASE}/session`, {
+      method: "POST",
+      signal: AbortSignal.timeout(2000),
+    });
+    if (!res.ok) return false;
+    const body = await res.json();
+    return /^[0-9a-f]{32}$/.test(body.id);
   } catch {
     return false;
   }
+}
+
+/* The WebSocket upgrade can lag behind the HTTP listener on a cold worker,
+   and a failed connect rejects with a DOM Event, which prints as an
+   unreadable object dump. Probe it, and fail with a sentence instead. */
+async function wsReady(url) {
+  for (let attempt = 0; attempt < 20; attempt++) {
+    const ok = await new Promise((resolve) => {
+      const ws = new WebSocket(url);
+      const done = (v) => {
+        try {
+          ws.close();
+        } catch {
+          /* already closed */
+        }
+        resolve(v);
+      };
+      ws.addEventListener("open", () => done(true));
+      ws.addEventListener("error", () => done(false));
+      setTimeout(() => done(false), 1000);
+    });
+    if (ok) return;
+    await sleep(500);
+  }
+  throw new Error(`WebSocket endpoint never accepted a connection: ${url}`);
 }
 
 let worker = null;
@@ -126,14 +158,38 @@ check("bad session id rejected", badId.status === 400, `got ${badId.status}`);
 
 /* Two clients on the same session. */
 const wsUrl = `${BASE.replace("http", "ws")}/session/${id}/ws`;
-const open = (url) =>
+await wsReady(wsUrl);
+const connectOnce = (url) =>
   new Promise((resolve, reject) => {
     const ws = new WebSocket(url);
     ws.messages = [];
     ws.addEventListener("message", (e) => ws.messages.push(JSON.parse(e.data)));
     ws.addEventListener("open", () => resolve(ws));
-    ws.addEventListener("error", reject);
+    /* Reject with a sentence, not a DOM Event. */
+    ws.addEventListener("error", () =>
+      reject(new Error(`WebSocket failed to connect: ${url}`)),
+    );
+    setTimeout(
+      () => reject(new Error(`WebSocket timed out connecting: ${url}`)),
+      10_000,
+    );
   });
+
+/* A freshly started wrangler dev serves HTTP, and even runs the Durable
+   Object, before the WebSocket upgrade path reliably accepts connections.
+   The exact readiness signal is not documented, so retry rather than guess. */
+async function open(url) {
+  let last;
+  for (let attempt = 0; attempt < 5; attempt++) {
+    try {
+      return await connectOnce(url);
+    } catch (err) {
+      last = err;
+      await sleep(600);
+    }
+  }
+  throw last;
+}
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const a = await open(wsUrl);
