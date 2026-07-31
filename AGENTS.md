@@ -5,6 +5,10 @@ Full spec, including the collaboration protocol and the ready/done gate: `docs/S
 Read the spec before writing code. It is the source of truth, not this file.
 
 Split out of the mhshakouri.dev repo on 2026-07-31 to live on its own subdomain.
+Workspace overview of both projects: `~/Projects/personal/AGENTS.md`.
+
+**State: A0 complete, not deployed.** Deploying needs an R2 bucket created on
+Hossein's account first, which is his step, not Claude's. See spec section 14.
 
 ## Stack
 
@@ -22,9 +26,6 @@ Split out of the mhshakouri.dev repo on 2026-07-31 to live on its own subdomain.
 
 ## Conventions
 
-- NEVER use the em dash character. Use commas, colons, semicolons, periods, or
-  a middle dot for label separators. Hard rule, applies to code, comments, docs,
-  and commit messages.
 - The invariants in spec section 4 must never break. Check changes against them.
 - Every milestone passes the ready/done gate in spec section 13 before it counts
   as finished. A milestone without a runnable check is not done.
