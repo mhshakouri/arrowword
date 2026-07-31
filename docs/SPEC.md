@@ -4,8 +4,6 @@ A cooperative web app for solving Persian arrowword puzzles together, from a pho
 
 This document is the single source of truth for the project. Arrowword is its own repository and its own deploy, served at `arrowword.mhshakouri.dev`. Decisions that changed from an earlier draft are marked "Changed:" so the history is visible. Decisions with real alternatives live in section 17 as records.
 
-Author preference: do not use the em dash character anywhere in code, comments, content, or commit messages for this project. Use commas, colons, or periods instead.
-
 **Build status: A0 complete (worker, not yet deployed). A1 is next.** See section 12.
 
 ---
