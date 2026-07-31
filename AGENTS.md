@@ -5,7 +5,10 @@ Full spec, including the collaboration protocol and the ready/done gate: `docs/S
 Read the spec before writing code. It is the source of truth, not this file.
 
 Split out of the mhshakouri.dev repo on 2026-07-31 to live on its own subdomain.
-Workspace overview of both projects: `~/Projects/personal/AGENTS.md`.
+
+Parent project: the personal website, `github.com/mhshakouri/mhshakouri.dev`,
+local path `../mhshakouri`. It links to this project and describes it; it never
+hosts it. Design tokens are copied from there, never imported.
 
 **State: A0 complete, not deployed.** Deploying needs an R2 bucket created on
 Hossein's account first, which is his step, not Claude's. See spec section 14.
