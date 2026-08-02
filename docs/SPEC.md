@@ -270,7 +270,12 @@ Every session deletes itself after 30 days without activity. See ADR-8 for why a
 - An R2 lifecycle rule on the bucket is a **backstop, not the mechanism**, with a longer window of 45 days. It catches orphans: photos whose session never saved, and anything the alarm path leaks through a bug. R2 removes expired objects within about 24 hours, so it is not prompt enough to be the primary path.
 - Expiry is a user-facing state, not just a 404. The play route renders "this puzzle has expired" with a link to the demo.
 
-Not verified yet, and to be checked in A0.5 rather than assumed: that alarms are supported on the SQLite storage backend on the free plan. The alarms documentation does not state the combination either way. If they are not, the fallback is a single index Durable Object holding `(sessionId, expiresAt)` pairs swept by a cron trigger, which is the design ADR-8 rejects and would have to be revisited.
+Verified 2026-08-03, so ADR-8 is safe to build on. The storage API compatibility table lists the Alarms API as supported on both the SQLite and the legacy key-value backend, and SQLite-backed objects are the only kind available on the free plan, so the combination this project needs is supported. The index-object-plus-cron fallback ADR-8 rejected is not needed.
+
+Two platform details found during that check, both of which shape the handler:
+
+- **`deleteAll()` also deletes any active alarm**, for a compatibility date of `2026-02-24` or later. This worker is on `2026-06-01`, so that applies here, and it happens to be exactly what expiry wants: the object clears its own alarm as it erases itself, with no chance of a stray alarm left pointing at empty storage. Do not "fix" this by calling `deleteAlarm()` as well, and be aware the behavior flips if the compatibility date is ever moved backwards.
+- **The alarm handler must be idempotent.** Alarms have at-least-once execution and retry on failure with exponential backoff, starting at two seconds for up to six attempts. So the handler can run twice for one expiry: if it deletes the R2 object and then throws before `deleteAll()`, it will be retried against a session whose photo is already gone. Deleting an absent R2 object and calling `deleteAll()` on empty storage must both be treated as success, not as errors to report.
 
 Storage note: the whole `SessionDoc` lives under one Durable Object storage key, and DO storage values have a per-value size ceiling. A 30 by 30 grid with every cell filled stays comfortably under it. If a larger grid is ever needed, split `letters` into its own key before raising the cap, and verify the current ceiling against Cloudflare's documentation at that time.
 
@@ -359,7 +364,7 @@ Checks:
 
 - Automated: extend `npm test` to cover a stream-enforced oversize upload with a lying `Content-Length`, a clone of a saved puzzle, a delete, a rate-limited burst, a write rejected before `hello`, and a template rejecting a write
 - Human: confirm the R2 lifecycle rule exists via `npx wrangler r2 bucket lifecycle list arrowword-photos`
-- Verify during this milestone: that alarms work on the SQLite backend on the free plan, per the open note in section 7
+- Resolved before this milestone started: alarms are supported on the SQLite backend, which is the only backend on the free plan. See section 7 for the two handler constraints that came out of confirming it
 
 ### A1 Photo and alignment UI, status: TODO
 
