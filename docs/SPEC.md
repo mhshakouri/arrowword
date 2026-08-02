@@ -53,7 +53,9 @@ Only answer cells produce mutable state.
 
 ## 4. Data model
 
-Changed: Puzzle, Game, and cell_values collapse into one Session document owned by one Durable Object. "Re-solve the same puzzle" is out of scope; a clone-session feature can come later.
+Changed: Puzzle, Game, and cell_values collapse into one Session document owned by one Durable Object.
+
+Changed 2026-08-03: this used to say "re-solve the same puzzle is out of scope; a clone-session feature can come later." Later arrived in the same revision that made the app public. Cloning is now the primary way visitors reach a playable grid, so it is core rather than deferred. See section 5.
 
 The authoritative copy of these types is `src/types.ts`. Keep the two in sync; the file is the implementation, this section is the explanation.
 
