@@ -7,7 +7,12 @@ on:
 
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  # Cancel superseded pull request runs, but never cancel a run that may be
+  # mid-deploy: killing `wrangler deploy` partway is not a state worth being in.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
 
 jobs:
   checks:
@@ -21,5 +26,28 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm run format:check
-      # Starts its own wrangler dev worker, runs 15 checks, shuts it down.
+      # Two runs: the acceptance suite, then expiry, which needs its own worker
+      # with a short retention window. Each starts and stops its own wrangler
+      # dev. See docs/SPEC.md section 12 under A0.5.
       - run: npm test
+
+  deploy:
+    # The whole point of automating this is to make "merged" mean "tested and
+    # live", so deploy waits on the checks rather than running beside them.
+    needs: checks
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      # Uses the wrangler pinned in devDependencies, not a floating latest, so
+      # a deploy is reproducible from the lockfile.
+      - run: npx wrangler deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

@@ -6,7 +6,7 @@ This document is the single source of truth for the project. Arrowword is its ow
 
 Changed 2026-08-02 (v6): this is a public playground app, linked from mhshakouri.dev, open to visitors with no credentials. That inverts the threat model in section 16, replaces indefinite retention with self-expiry, and promotes a demo puzzle from nice-to-have to shipping requirement. See ADR-7.
 
-**Build status: A0 complete (worker, not yet deployed). A0.5, public hardening, is next.** See section 12.
+**Build status: A0.5 complete and deployed 2026-08-03, live at `arrowword.mhshakouri.dev`. A1 is next.** The whole backend is finished; everything remaining is UI. See section 12.
 
 ---
 
@@ -59,7 +59,7 @@ Changed 2026-08-03: this used to say "re-solve the same puzzle is out of scope; 
 
 The authoritative copy of these types is `src/types.ts`. Keep the two in sync; the file is the implementation, this section is the explanation.
 
-Changed 2026-08-02: `v` goes to 2, adding per-player identity, write attribution, and the fields that drive self-expiry and the demo template. `src/types.ts` still holds v1 and is brought to v2 in A0.5. This is the only sanctioned drift between the two, and it closes when A0.5 lands. Doing this now is deliberate: nothing is deployed and no real session exists, so v2 costs one edit. After A2 it would cost a migrate-on-read path.
+Changed 2026-08-02: `v` goes to 2, adding per-player identity, write attribution, and the fields that drive self-expiry and the demo template. Implemented in A0.5, so `src/types.ts` matches this section again and the drift noted here is closed. Doing it before any deploy was deliberate: it cost one edit, where after A2 it would have cost a migrate-on-read path. `migrate()` exists anyway, because section 16 says never assume a stored document matches the current type, and the next bump will not have that luxury.
 
 ```ts
 export type CellType = "dead" | "clue" | "answer" | "prefilled";
@@ -369,7 +369,7 @@ DO, R2, all endpoints, WebSocket sync, server-side validation.
 
 Known debt shipped in A0, carried into A0.5: the photo size cap reads `Content-Length` instead of counting the stream ([src/index.ts](../src/index.ts)), and no endpoint is rate limited. Both were noted at the time as acceptable for a private tool. Going public is what makes them defects.
 
-### A0.5 Public hardening, status: CODE COMPLETE 2026-08-03, awaiting deploy
+### A0.5 Public hardening, status: DONE 2026-08-03, deployed
 
 All server side, no UI. This is the milestone that makes a public deploy defensible.
 
@@ -384,7 +384,9 @@ All server side, no UI. This is the milestone that makes a public deploy defensi
 Checks:
 
 - Automated: `npm test`, which is 35 checks in `test/acceptance.mjs` plus 3 in `test/expiry.mjs`. Expiry needs its own run because retention is worker-wide and a window short enough to observe would delete the sessions the other checks depend on; that run starts its own worker with `--var RETENTION_MS:3000`, so a thirty day rule is verified in about ten seconds
-- Human, still outstanding: confirm the R2 lifecycle rule exists via `npx wrangler r2 bucket lifecycle list arrowword-photos`
+- Human, done 2026-08-03: the R2 lifecycle rule is in place, verified with `npx wrangler r2 bucket lifecycle list arrowword-photos` showing `Expire objects after 45 days` across all prefixes
+- Deployed and smoke tested against production 2026-08-03: Durable Object liveness, session creation, a real R2 upload and fetch, internal paths returning 404 from outside, clone borrowing a photo, and delete. Test sessions were removed afterwards
+- Owed by later milestones, per the amended rule 4 in section 13: user-facing states for the six failure modes this milestone added
 - Resolved before this milestone started: alarms are supported on the SQLite backend, which is the only backend on the free plan. See section 7 for the two handler constraints that came out of confirming it
 
 **Not done, and moved to A2.5: the check that a template refuses a write.** Enforcement is implemented and templates are read-only in code, but nothing can create one. Section 5 deliberately gives templates no creation endpoint, on the grounds that an unauthenticated way to mint objects exempt from expiry is a bad idea. The consequence, not noticed when that was written, is that "by hand" names no mechanism at all, so the behavior cannot be exercised from the outside and cannot be tested. Two candidate mechanisms, to decide at A2.5 when a template is actually needed:
@@ -394,7 +396,7 @@ Checks:
 
 Until one is chosen, A0.5 enforces a state that nothing can enter. That is safe but untested, and section 15 is explicit that an untested behavior is not finished, so it is recorded here rather than counted as passing.
 
-### A1 Photo and alignment UI, status: TODO
+### A1 Photo and alignment UI, status: NEXT
 
 Upload, client downscale, rows and cols input, four-corner drag, live cell overlay. Includes the landing page at `/`.
 
@@ -467,10 +469,20 @@ Amended 2026-08-03. Rule 2 without that exception said: deploy A0, whose photo s
 1. The automated command exits 0.
 2. Hossein has run the human checks and said they pass.
 3. **Security pass written down:** what can a stranger holding the session link do to anything added in this milestone? See section 16.
-4. Every new failure mode has a user-facing state, not only an API status code.
-5. The status marker in section 12 is updated, in the same commit as the work.
-6. Anything learned the hard way is written into this spec, in the same commit.
-7. The repo check suite passes: `npm run typecheck`, `npm run format:check`, `npm test`. These are the three CI runs in `.github/workflows/ci.yml`; keep this list and that file in sync.
+4. Every new failure mode has a user-facing state, not only an API status code. **Exception for a server-only milestone:** when no surface exists yet to show a state in, list each new failure mode against the milestone that owes it a screen. The exception is the list. Without one this becomes a way to never write error states at all, which is exactly the outcome the rule exists to prevent.
+
+Amended 2026-08-03. A0.5 added six failure modes and could not satisfy rule 4 on any of them, because it shipped no UI at all. The rule was right and its literal application was impossible, the same shape of problem as Ready rule 2. States currently owed:
+
+| Failure mode                 | API today                     | Owed by |
+| ---------------------------- | ----------------------------- | ------- |
+| Rate limited                 | HTTP 429 `slow down`          | A1      |
+| Photo above the cap          | HTTP 413, or a dropped upload | A1      |
+| Session expired or deleted   | HTTP 404                      | A3      |
+| Session full                 | HTTP 503 `session full`       | A3      |
+| Write before choosing a name | WS `pick a nickname first`    | A3      |
+| Template is read only        | WS `this puzzle is read only` | A2.5    |
+
+A milestone in that table cannot pass its own rule 4 while leaving its row unaddressed. 5. The status marker in section 12 is updated, in the same commit as the work. 6. Anything learned the hard way is written into this spec, in the same commit. 7. The repo check suite passes: `npm run typecheck`, `npm run format:check`, `npm test`. These are the three CI runs in `.github/workflows/ci.yml`; keep this list and that file in sync.
 
 Corrected 2026-08-02: this list previously named `lint`, `arrowword:typecheck`, and `build`, none of which exist as scripts in this repository. They were inherited from the monorepo layout and survived the 2026-07-31 split unnoticed, which meant the gate had been citing commands that would have failed if anyone ran them. A gate nobody can execute is not a gate.
 
@@ -492,31 +504,34 @@ When Claude is blocked on off-development work, it gives these five things, in t
 
 Never "you will need to set up R2 first". Always the five above.
 
-### Blocking now: bucket and first deploy
+### Done 2026-08-03: bucket, first deploy, subdomain, lifecycle backstop
 
-Still blocking every milestone, because the Ready gate in section 13 refuses to start work while an earlier milestone is undeployed.
+Kept as a record rather than deleted, because the next person to stand this up
+from nothing needs the order, not just the outcome.
 
-1. **Blocked:** A0 is merged but not deployed, and there is no bucket for photos to go in. Completing this unblocks A0.5 and every milestone after it.
-2. **Run**, from this repository:
-   ```bash
-   npx wrangler r2 bucket create arrowword-photos
-   ```
-   Then `npm run deploy`. Then, to attach the subdomain: uncomment the `routes` block in `wrangler.jsonc`, add an `arrowword` DNS record for `mhshakouri.dev` in the Cloudflare dashboard, and run `npm run deploy` again.
-3. **Success:** `Created bucket arrowword-photos`, then a deploy printing a `*.workers.dev` URL, and after the routes step, `arrowword.mhshakouri.dev` resolving.
-4. **Verify:** `npx wrangler r2 bucket list` shows the bucket, and `curl -X POST https://arrowword.mhshakouri.dev/session` returns a 32 character hex id.
-5. **Paste back:** confirmation that the subdomain answers.
+1. `npx wrangler r2 bucket create arrowword-photos`, then `npm run deploy`.
+2. `npx wrangler r2 bucket lifecycle add arrowword-photos`, 45 days, all prefixes. Verified with `lifecycle list` showing `Expire objects after 45 days`.
+3. The custom domain, attached and answering: `arrowword.mhshakouri.dev` reaches the worker.
 
-### Blocking A0.5: the R2 lifecycle backstop
+One thing to note on that last step, because the config and reality disagree. The domain was attached through the Cloudflare dashboard, so the `routes` block in `wrangler.jsonc` is still commented out. The worker keeps the domain across deploys, so nothing is broken, but the domain is undeclared infrastructure: it lives in dashboard state rather than in the repository.
 
-1. **Blocked:** self-expiry has no backstop for orphaned photos, so a bug in the alarm path leaks storage silently. Completing this closes the last uncapped cost dimension.
-2. **Run**, after the bucket exists:
-   ```bash
-   npx wrangler r2 bucket lifecycle add arrowword-photos
-   ```
-   Answer the prompts with a rule that deletes objects 45 days after creation, applied to the whole bucket. 45, not 30, so the alarm stays the primary path and this only sweeps what the alarm missed.
-3. **Success:** the command reports the rule added.
-4. **Verify:** `npx wrangler r2 bucket lifecycle list arrowword-photos` shows one rule with a 45 day expiry.
-5. **Paste back:** the output of the list command.
+Uncommenting `routes` would fix that, and it was deliberately not done yet for one reason: `wrangler deploy` can prompt when it finds a custom domain already attached by other means, and a prompt inside the CI deploy job is a hang, not a failure. So it stays dashboard-managed until someone uncomments the block and runs `npm run deploy` **by hand once** to confirm it goes through without asking anything. If it does, the block stays uncommented and the domain is declared in code. If it prompts, the comment goes back with a note saying so.
+
+### Blocking A1: nothing
+
+The framework question is decided (ADR-10) and the deploy is live, so A1 needs no handoff.
+
+### Blocking automated deploys: a Cloudflare API token
+
+1. **Blocked:** merging to `main` does not deploy, so every release is a manual `npm run deploy` and "merged" does not mean "live". Completing this closes that gap.
+2. **Do**, in the Cloudflare dashboard: My Profile, API Tokens, Create Token, use the **Edit Cloudflare Workers** template. Then run `npx wrangler whoami` locally to read the account id. Add both to the repository under Settings, Secrets and variables, Actions:
+   - `CLOUDFLARE_API_TOKEN`, the token value
+   - `CLOUDFLARE_ACCOUNT_ID`, the account id from `whoami`
+3. **Success:** both secrets listed in the repository's Actions secrets.
+4. **Verify:** merge anything to `main` and watch the `deploy` job in the CI run go green. Until the secrets exist that job fails, which is the intended signal rather than a silent skip.
+5. **Paste back:** the result of the first automatic deploy.
+
+The account id is a second secret rather than committed config because `wrangler` cannot infer the account when a token can see more than one, and that failure appears only in CI.
 
 ### Blocking A2.5: the demo puzzle
 
@@ -640,9 +655,17 @@ Also rejected: counting inside `ArrowwordSession`. A per-session object is the w
 
 Consequences: a second Durable Object class and a second migration tag. This is the safe direction of a Durable Object migration, since section 16 notes that adding a class is safe while renaming or deleting one is not. The counter is keyed on `CF-Connecting-IP`, which is absent under `wrangler dev`, so a documented local fallback is required and the tests depend on it.
 
-## 18. Open questions (non-blocking)
+**ADR-10: Vite single page app, served as static assets from this worker.** Decided 2026-08-03. The UI is a client-side Vite build, and the same worker that serves the API serves the built assets.
 
-- UI framework for this repository. The app is entirely client side and needs no server rendering, so a Vite single page app served as static assets from this same worker is the simplest option and keeps everything same-origin. Next.js would match the site's stack but adds OpenNext and prerendering concerns for no benefit here. Decide before A1. Not blocking A0.5, which is server only.
+Alternatives weighed:
+
+- **Next.js**, which would match the site's stack. Rejected: the app has no server-rendered anything, so Next would add OpenNext, prerendering, and a second build pipeline to produce output that is functionally a static bundle. ADR-6 split this project out precisely to stop sharing the site's build machinery, and adopting the site's framework here would partly undo that.
+- **No bundler at all**, plain ES modules served as files. Genuinely tempting for a project this small, and rejected for two specific things it would cost: no dev server with hot reload while dragging alignment handles, which is the one part of A1 that needs tight iteration, and manual dependency management the first time a real dependency appears.
+- **Astro or SvelteKit.** Rejected as answering a question this app does not ask; both earn their complexity on content or routing, and this is one interactive canvas.
+
+Consequences: a build step, so the check suite gains a build and CI gains a job. Assets ship through the Workers static assets binding, which means routing needs care: `/session/*` must reach the worker while client routes like `/new` and `/s/:id` must fall back to `index.html`. The worker keeps API paths and delegates everything else to the assets binding, which is also what keeps the app same-origin and CORS-free per section 2.
+
+## 18. Open questions (non-blocking)
 
 - Crop and cache clue images versus transform on the fly: start with transform, revisit only if zoom feels slow on phones.
 - The player color palette: ten distinguishable colors that pass contrast over a photograph, taken from the site tokens where possible. Cheap to change, decide in A3.
@@ -650,5 +673,6 @@ Consequences: a second Durable Object class and a second migration tag. This is 
 
 Closed in v6:
 
+- ~~UI framework for this repository~~: resolved 2026-08-03, a Vite single page app. See ADR-10.
 - ~~Who filled what, with color coding~~: resolved by nickname identity, `letters[].by`, and per-player colors. See ADR-7 and section 5.
 - ~~Session expiry~~: resolved, 30 days of inactivity via Durable Object alarms. See ADR-8. The v5 reasoning, that storage is cheap enough to keep sessions forever, was correct for a private tool and wrong for a public one.
