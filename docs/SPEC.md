@@ -1,20 +1,33 @@
-# Arrowword Co-op: Aligned Spec (v5)
+# Arrowword Co-op: Aligned Spec (v6)
 
-A cooperative web app for solving Persian arrowword puzzles together, from a photo, on two devices, without any OCR.
+A cooperative web app for solving Persian arrowword puzzles together, from a photo, on any number of devices, without any OCR.
 
 This document is the single source of truth for the project. Arrowword is its own repository and its own deploy, served at `arrowword.mhshakouri.dev`. Decisions that changed from an earlier draft are marked "Changed:" so the history is visible. Decisions with real alternatives live in section 17 as records.
 
-**Build status: A0 complete (worker, not yet deployed). A1 is next.** See section 12.
+Changed 2026-08-02 (v6): this is a public playground app, linked from mhshakouri.dev, open to visitors with no credentials. That inverts the threat model in section 16, replaces indefinite retention with self-expiry, and promotes a demo puzzle from nice-to-have to shipping requirement. See ADR-7.
+
+**Build status: A0 complete (worker, not yet deployed). A0.5, public hardening, is next.** See section 12.
 
 ---
 
 ## 1. What this app is
 
-Two people solve a Persian arrowword puzzle together. One person photographs a printed arrowword, marks the grid over the photo, and tags each cell by hand. Both people then open the puzzle via a shared link on their own devices, read clues by tapping clue cells (which zoom the relevant part of the photo), and fill in answer cells. Letters sync live over a WebSocket and persist, so progress is visible whether solving together or apart.
+A group of people solve a Persian arrowword puzzle together. One person photographs a printed arrowword, marks the grid over the photo, and tags each cell by hand. Everyone else opens the puzzle via a shared link on their own device, picks a nickname, reads clues by tapping clue cells (which zoom the relevant part of the photo), and fills in answer cells. Letters sync live over a WebSocket and persist, so progress is visible whether solving together or apart.
 
 No OCR, no correctness checking, no puzzle generation. Humans read the clues. The app only knows the grid structure and holds the shared letters.
 
+Changed 2026-08-02: two players became any number, up to the socket cap in section 7. Nothing in the sync design ever assumed two. The Durable Object broadcasts to every open socket and last-write-wins handles any number of writers, so this was a prose change and a limit, not a redesign.
+
 Changed: no accounts. A session link is the only credential (see section 5).
+
+### Who it is for
+
+Two audiences, and they need different first screens.
+
+- **Visitors** arriving from the playground page on mhshakouri.dev, including recruiters. They will not go and photograph a printed puzzle. They must be able to open a ready-made puzzle and start typing within one click of landing. This is what the demo template and clone flow in section 5 exist for.
+- **Hossein and friends**, who set up real puzzles from real photos and solve them over days.
+
+A build that serves the second audience but not the first has failed its main purpose, because the main purpose is being seen. The setup wizard is the specialist path; the demo is the front door.
 
 ## 2. Placement and deployment
 
@@ -40,9 +53,13 @@ Only answer cells produce mutable state.
 
 ## 4. Data model
 
-Changed: Puzzle, Game, and cell_values collapse into one Session document owned by one Durable Object. "Re-solve the same puzzle" is out of scope; a clone-session feature can come later.
+Changed: Puzzle, Game, and cell_values collapse into one Session document owned by one Durable Object.
+
+Changed 2026-08-03: this used to say "re-solve the same puzzle is out of scope; a clone-session feature can come later." Later arrived in the same revision that made the app public. Cloning is now the primary way visitors reach a playable grid, so it is core rather than deferred. See section 5.
 
 The authoritative copy of these types is `src/types.ts`. Keep the two in sync; the file is the implementation, this section is the explanation.
+
+Changed 2026-08-02: `v` goes to 2, adding per-player identity, write attribution, and the fields that drive self-expiry and the demo template. `src/types.ts` still holds v1 and is brought to v2 in A0.5. This is the only sanctioned drift between the two, and it closes when A0.5 lands. Doing this now is deliberate: nothing is deployed and no real session exists, so v2 costs one edit. After A2 it would cost a migrate-on-read path.
 
 ```ts
 export type CellType = "dead" | "clue" | "answer" | "prefilled";
@@ -64,22 +81,41 @@ export interface GridAlignment {
   bottomLeft: Point;
 }
 
+export interface Player {
+  nickname: string; // sanitized on write, see invariant 8
+  color: number; // index into the fixed palette, assigned on join order
+  firstSeenAt: number;
+}
+
 export interface SessionDoc {
-  v: 1;
+  v: 2;
   title: string;
   photoKey: string | null; // R2 object key, null until the photo is uploaded
   rows: number; // 0 until the puzzle is saved
   cols: number;
   alignment: GridAlignment | null;
   cells: Cell[][]; // row-major, empty until the puzzle is saved
-  // key is "row,col"; value is the letter plus a timestamp for LWW display
-  letters: Record<string, { ch: string; at: number }>;
+  // key is "row,col"; value is the letter, a timestamp for LWW display,
+  // and the playerId that wrote it
+  letters: Record<string, { ch: string; at: number; by: string }>;
+  players: Record<string, Player>; // key is the client-generated playerId
   createdAt: number;
+  lastActiveAt: number; // every accepted write bumps this, it drives expiry
   puzzleSaved: boolean; // enforces the write-once rule in section 7
+  template: boolean; // a demo source: never expires, never writable
+  clonedFrom: string | null; // template session id, for demo lineage
 }
 ```
 
 A session exists in two states: **draft** (created, maybe has a photo, `puzzleSaved` false) and **playable** (`puzzleSaved` true, grid fixed forever).
+
+Orthogonally, a playable session is either a **template** (the curated demo, exempt from expiry, rejects all letter writes) or an ordinary session. Cloning a template produces an ordinary session with the same grid and photo and empty `letters`.
+
+`clonedFrom` holds a session id, which section 16 otherwise forbids storing or logging because ids are credentials. Template ids are the exception: a template is meant to be public and its link is published, so it is not a secret. No non-template id ever goes in this field.
+
+### Photo ownership
+
+A clone reuses the template's `photoKey` rather than copying the object, so a thousand clones cost one photo of storage. The consequence is that deletion must be ownership-aware, which is invariant 6. Ownership needs no stored field: the key is `photos/{sessionId}.jpg`, so a session owns its photo exactly when the key contains its own id.
 
 ### Invariants
 
@@ -90,62 +126,113 @@ These must never break. Check any change against this list.
 3. Only cells of type `answer` are writable.
 4. The puzzle is written exactly once. After that, rows, cols, alignment, and cells are immutable.
 5. Every `letters` value is exactly one grapheme.
-6. The server, not the client, enforces 1 through 5.
+6. A session deletes an R2 object only if it owns it. Ownership is derived from the key prefix, never from a flag a client can influence. A clone never deletes the photo it borrowed.
+7. A template never expires and never accepts a letter write.
+8. Nicknames are sanitized before storage, capped per section 7, and rendered as text, never as HTML.
+9. Photo size is enforced on the request stream, never from a client-supplied `Content-Length`.
+10. The server, not the client, enforces 1 through 9.
 
 ## 5. Sessions and sharing (replaces Auth)
 
 Changed: capability links instead of magic-link auth.
 
+Changed 2026-08-02: the app is public and there is still no authentication. Going public did not create a need for accounts, it confirmed capability links were the right call, because "no credentials" is precisely what they provide. See ADR-7 for the options weighed and rejected.
+
 - Creating a session returns an unguessable id (128 bits, hex from `crypto.getRandomValues`).
-- The share link is `https://arrowword.mhshakouri.dev/s/[id]`. Whoever has the link is a player. There are no roles: creator and partner have identical rights after setup.
-- Consequence to accept: anyone holding the link can edit. For a private two-person tool this is the feature, not a bug. Do not add auth complexity to v1.
-- The landing page at `/` lists sessions the browser has visited (localStorage) and offers "new puzzle".
+- The share link is `https://arrowword.mhshakouri.dev/s/[id]`. Whoever has the link is a player. There are no roles: the creator and everyone who joins have identical rights after setup.
+- Consequence to accept: anyone holding the link can edit. For a puzzle shared deliberately with friends, or a throwaway clone of the demo, this is the feature. Do not add auth complexity to v1.
+- The landing page at `/` leads with "play the demo", then offers "new puzzle", then lists sessions this browser has visited (localStorage).
+
+### Identity: nicknames, not accounts
+
+Enough identity to tell players apart, none of the cost of accounts.
+
+- Each browser generates a random `playerId` once and keeps it in localStorage. It is not a secret and proves nothing; it exists so a returning tab keeps its color and attribution.
+- On joining, a player is asked for a nickname. It is stored on the session, not on a user record, so the same person can be "Hossein" in one puzzle and something else in another.
+- A nickname is unverified and unowned. Two players can pick the same one, and impersonation is possible. For a puzzle you share deliberately this is acceptable; the app is not making a trust claim about who anyone is.
+- Every accepted letter write records `by: playerId`, which is what answers the "who filled what" question previously open in section 18. Colors come from a fixed palette indexed by join order.
+
+### The demo and cloning
+
+The front door for visitors, and a shipping requirement rather than polish.
+
+- One curated session is marked `template: true`, built by Hossein from a real photographed puzzle, and its link is published on the playground page.
+- Opening a template shows the finished grid read-only with a single primary action: "open a copy". That calls `POST /session/:id/clone`, which copies title, rows, cols, alignment, and cells into a fresh ordinary session with empty `letters`, and returns its id.
+- A clone borrows the template's `photoKey` instead of duplicating the object, so clone storage cost is zero. See photo ownership in section 4.
+- Clones are ordinary sessions: they expire on the schedule in section 7, so demo traffic does not accumulate.
+- Templates are created by hand, not through an endpoint. There is no "make this a template" API, because that would be an unauthenticated way to create objects exempt from expiry.
 
 ## 6. Tech stack
 
 - UI: not yet chosen, see the open question in section 18. Everything interactive is client side; the app needs no server rendering.
 - Sync and storage: one Cloudflare Worker with a Durable Object class (`ArrowwordSession`, one instance per session, SQLite-backed storage) and an R2 bucket (`arrowword-photos`) for photos.
 - Use the WebSocket Hibernation API in the DO so idle open tabs cost nothing.
+- Use a Durable Object alarm per session for self-expiry, see ADR-8.
 - No Supabase, no Postgres, no auth service, no Vercel.
 
-Cost reality: at two-user scale everything fits in Cloudflare free tiers.
+Cost reality, verified 2026-08-02 against Cloudflare's published limits rather than assumed:
+
+- R2 free tier is 10 GB-month of storage, 1M Class A and 10M Class B operations, and **egress is free at every storage class**. At the 600 KB photo budget in section 16 that is roughly 17,000 photos before the first cent. Overage is $0.015 per GB-month, so even a terabyte of abuse is about $15 a month.
+- Workers free tier is 100,000 requests a day and **returns HTTP 429 rather than billing** when exceeded, so request volume fails closed instead of generating a surprise invoice.
+- Durable Objects run on the free plan with the SQLite backend, which is what this project uses, with 5 GB of total storage across all objects.
+- The genuinely uncapped dimensions were never bandwidth. They were indefinite retention, which made storage a one-way ratchet, and a photo size cap read from a client header, which made the 8 MB ceiling advisory. A0.5 closes both.
+
+One consequence of the free plan worth stating: the 10 ms CPU limit per request is what rules out password hashing in this worker, since no defensible PBKDF2 iteration count fits in it. See ADR-7.
 
 ## 7. Worker API
 
 Small and boring on purpose.
 
-| Method | Path                  | Purpose                                                  |
-| ------ | --------------------- | -------------------------------------------------------- |
-| POST   | `/session`            | Create a session, returns `{ id }`                       |
-| PUT    | `/session/:id/photo`  | Upload the client-downscaled JPEG to R2, sets `photoKey` |
-| GET    | `/session/:id/photo`  | Stream the photo from R2, immutable cache headers        |
-| PUT    | `/session/:id/puzzle` | Write title, rows, cols, alignment, cells. Once only     |
-| GET    | `/session/:id/ws`     | Upgrade to WebSocket                                     |
+| Method | Path                  | Purpose                                                   |
+| ------ | --------------------- | --------------------------------------------------------- |
+| POST   | `/session`            | Create a session, returns `{ id }`                        |
+| PUT    | `/session/:id/photo`  | Upload the client-downscaled JPEG to R2, sets `photoKey`  |
+| GET    | `/session/:id/photo`  | Stream the photo from R2, immutable cache headers         |
+| PUT    | `/session/:id/puzzle` | Write title, rows, cols, alignment, cells. Once only      |
+| POST   | `/session/:id/clone`  | Fork a saved puzzle into a new session, returns `{ id }`  |
+| DELETE | `/session/:id`        | Delete the session, its photo if owned, close its sockets |
+| GET    | `/session/:id/ws`     | Upgrade to WebSocket                                      |
+
+Added 2026-08-02: `clone`, which is the demo front door in section 5, and `DELETE`, which section 16 has required since v5 and which public hosting makes urgent rather than eventual.
+
+`DELETE` is unauthenticated like everything else, so anyone with the link can destroy the session. That is the same power they already have to overwrite every letter in it, so it grants nothing new. Deleting a template is refused.
 
 ### WebSocket protocol (JSON)
 
+- client to server, first message after connect: `{ type: "hello", playerId, nickname }`
 - server to client on connect: `{ type: "state", doc: SessionDoc }`
 - client to server: `{ type: "set", row, col, ch }` or `{ type: "clear", row, col }`
-- server to all: `{ type: "cell", row, col, ch | null, at }`
-- server to all on join and leave: `{ type: "peers", count }`
+- server to all: `{ type: "cell", row, col, ch | null, at, by }`
+- server to all on join and leave: `{ type: "peers", players: [{ id, nickname, color }] }`
 - server to one, on a rejected write: `{ type: "error", message }`
+
+Changed 2026-08-02: `peers` carries the player list instead of a bare count, and `cell` carries `by`. A socket that has not sent `hello` may read but not write, which keeps anonymous spectating possible without letting an unnamed writer produce unattributed letters.
 
 ### Error contract
 
 The client must not have to guess. Every rejection is one of these.
 
-| Condition                            | Response                             |
-| ------------------------------------ | ------------------------------------ |
-| Session id not 32 hex chars          | HTTP 400 `bad session id`            |
-| Session does not exist               | HTTP 404 `no such session`           |
-| Puzzle already saved                 | HTTP 409 `puzzle already saved`      |
-| Malformed puzzle body                | HTTP 400 with the failing rule       |
-| Photo above the size cap             | HTTP 413 `photo too large`           |
-| Photo requested before upload        | HTTP 404 `no photo yet`              |
-| WS path without an Upgrade header    | HTTP 426                             |
-| Write to a non-answer cell           | WS `error`, `cell is not writable`   |
-| Write that is not one grapheme       | WS `error`, `one character per cell` |
-| Out of range or malformed WS message | ignored silently                     |
+| Condition                            | Response                               |
+| ------------------------------------ | -------------------------------------- |
+| Session id not 32 hex chars          | HTTP 400 `bad session id`              |
+| Session does not exist, or expired   | HTTP 404 `no such session`             |
+| Puzzle already saved                 | HTTP 409 `puzzle already saved`        |
+| Malformed puzzle body                | HTTP 400 with the failing rule         |
+| Photo above the size cap             | HTTP 413 `photo too large`             |
+| Photo requested before upload        | HTTP 404 `no photo yet`                |
+| Clone of a session with no puzzle    | HTTP 409 `puzzle not saved`            |
+| Delete of a template                 | HTTP 403 `template is protected`       |
+| Rate limit exceeded                  | HTTP 429 `slow down`                   |
+| Socket cap reached for a session     | HTTP 503 `session full`                |
+| WS path without an Upgrade header    | HTTP 426                               |
+| Write to a non-answer cell           | WS `error`, `cell is not writable`     |
+| Write that is not one grapheme       | WS `error`, `one character per cell`   |
+| Write to a template                  | WS `error`, `this puzzle is read only` |
+| Write before `hello`                 | WS `error`, `pick a nickname first`    |
+| Nickname over the cap                | trimmed silently, not an error         |
+| Out of range or malformed WS message | ignored silently                       |
+
+An expired session is indistinguishable from one that never existed, and deliberately so: distinguishing them would confirm that a given id was once real, which turns a 404 into an oracle.
 
 Any early return from a request that carries a body must cancel that body first. Returning while the body is unread makes the runtime throw `Can't read from request stream after response has been sent`, which stalls the next request on the connection. This cost 146 seconds of wall time once; the acceptance test now guards it.
 
@@ -153,13 +240,44 @@ Any early return from a request that carries a body must cancel that body first.
 
 Values a coding agent would otherwise invent. All enforced server side.
 
-| Limit                  | Value         | Reason                                                           |
-| ---------------------- | ------------- | ---------------------------------------------------------------- |
-| Photo size             | 8 MB          | Client downscales to 2000px first, so this is a generous ceiling |
-| Grid rows              | 30            | See storage note below                                           |
-| Grid columns           | 30            | See storage note below                                           |
-| Title length           | 200 chars     | Display only                                                     |
-| WS messages per socket | 20 per second | One human typing cannot exceed this                              |
+| Limit                          | Value            | Reason                                                           |
+| ------------------------------ | ---------------- | ---------------------------------------------------------------- |
+| Photo size                     | 8 MB             | Client downscales to 2000px first, so this is a generous ceiling |
+| Grid rows                      | 30               | See storage note below                                           |
+| Grid columns                   | 30               | See storage note below                                           |
+| Title length                   | 200 chars        | Display only                                                     |
+| WS messages per socket         | 20 per second    | One human typing cannot exceed this                              |
+| Nickname length                | 24 graphemes     | Display only, and it is rendered to other people                 |
+| Concurrent sockets per session | 10               | Bounds broadcast fanout and DO memory                            |
+| Players recorded per session   | 50               | Stops `players` growing without bound on a popular clone         |
+| Session creations per IP       | 10 per hour      | `POST /session` is the cheapest way to make the worker do work   |
+| Photo uploads per IP           | 5 per hour       | The only endpoint that costs storage                             |
+| Clones per IP                  | 30 per hour      | Generous: this is the path visitors are meant to take            |
+| Session retention              | 30 days inactive | Sliding, see self-expiry below                                   |
+
+Added 2026-08-02: everything from nickname length down. Section 16 has required rate limiting since v5 and nothing implemented it, which was survivable while the app was private and is not now.
+
+The photo size cap must be enforced **on the stream**, by counting bytes as they arrive and aborting past the ceiling. Reading it from `Content-Length` makes the cap advisory, because a client that lies about the header can stream unbounded bytes into R2. This was shipped that way in A0 and is invariant 9 precisely so it is not shipped that way again.
+
+The per-IP limits above are a starting point, not a measurement. IP is a weak key: it punishes shared NAT and is trivially rotated. It is chosen because it needs no identity, which is the whole premise of the app. Revisit with real traffic rather than in advance.
+
+### Self-expiry
+
+Every session deletes itself after 30 days without activity. See ADR-8 for why alarms rather than a sweep.
+
+- Every accepted write sets `lastActiveAt` and calls `setAlarm(now + 30 days)`. `setAlarm` overrides any existing alarm, so a sliding window needs no bookkeeping: activity pushes the deadline out, silence lets it arrive.
+- When `alarm()` fires, the session deletes its R2 photo if it owns it (invariant 6), then calls `storage.deleteAll()`.
+- Sliding, not from creation, so a real puzzle solved slowly over weeks is never destroyed mid-solve. Only genuinely abandoned sessions expire.
+- Templates carry no alarm at all (invariant 7).
+- An R2 lifecycle rule on the bucket is a **backstop, not the mechanism**, with a longer window of 45 days. It catches orphans: photos whose session never saved, and anything the alarm path leaks through a bug. R2 removes expired objects within about 24 hours, so it is not prompt enough to be the primary path.
+- Expiry is a user-facing state, not just a 404. The play route renders "this puzzle has expired" with a link to the demo.
+
+Verified 2026-08-03, so ADR-8 is safe to build on. The storage API compatibility table lists the Alarms API as supported on both the SQLite and the legacy key-value backend, and SQLite-backed objects are the only kind available on the free plan, so the combination this project needs is supported. The index-object-plus-cron fallback ADR-8 rejected is not needed.
+
+Two platform details found during that check, both of which shape the handler:
+
+- **`deleteAll()` also deletes any active alarm**, for a compatibility date of `2026-02-24` or later. This worker is on `2026-06-01`, so that applies here, and it happens to be exactly what expiry wants: the object clears its own alarm as it erases itself, with no chance of a stray alarm left pointing at empty storage. Do not "fix" this by calling `deleteAlarm()` as well, and be aware the behavior flips if the compatibility date is ever moved backwards.
+- **The alarm handler must be idempotent.** Alarms have at-least-once execution and retry on failure with exponential backoff, starting at two seconds for up to six attempts. So the handler can run twice for one expiry: if it deletes the R2 object and then throws before `deleteAll()`, it will be retried against a session whose photo is already gone. Deleting an absent R2 object and calling `deleteAll()` on empty storage must both be treated as success, not as errors to report.
 
 Storage note: the whole `SessionDoc` lives under one Durable Object storage key, and DO storage values have a per-value size ceiling. A 30 by 30 grid with every cell filled stays comfortably under it. If a larger grid is ever needed, split `letters` into its own key before raising the cap, and verify the current ceiling against Cloudflare's documentation at that time.
 
@@ -194,7 +312,9 @@ What survives, and neither item is about direction:
 
 ## 10. Setup flow
 
-Route: `/new`. Client wizard:
+Route: `/new`. Client wizard.
+
+This is the specialist path, not the front door. Most visitors should never reach it; they arrive at the demo and clone it (section 5). Tagging a grid by hand takes real minutes, so treating it as the primary entry point is what would make the app look unusable to someone passing through.
 
 1. Photo: pick or take, downscale, `POST /session` then `PUT photo`.
 2. Grid size: rows and cols, within the limits in section 7.
@@ -207,22 +327,48 @@ Route: `/new`. Client wizard:
 Route: `/s/[id]`.
 
 1. Connect WebSocket, receive `state`, render grid over photo, responsive.
-2. Dead inert; clue zooms; answer selects and types (set/clear over WS with optimistic echo); prefilled locked.
-3. Apply incoming `cell` messages. Show a subtle peer indicator from `peers`.
+2. Ask for a nickname if this browser has none for this session, then send `hello`. Until then the grid is readable but not writable.
+3. Dead inert; clue zooms; answer selects and types (set/clear over WS with optimistic echo); prefilled locked.
+4. Apply incoming `cell` messages. Show the player list from `peers`, each with their palette color.
+5. If the session is a template, render read-only with one primary action: "open a copy".
+6. If the session is gone, render "this puzzle has expired" with a link to the demo, never a bare 404.
+
+Attribution display: `letters[key].by` maps to a player color. Showing it is the point of collecting it, but it stays subtle. A grid where every cell is tinted by author competes with the photo underneath, which is the thing players actually need to read.
 
 ## 12. Milestones
 
 Each milestone must pass the ready and done gate in section 13. Update the status line here in the same commit that completes the milestone.
 
+Milestones inserted after the original numbering carry a decimal (A0.5, A2.5). The decimal is deliberate: it shows where the plan grew rather than pretending the sequence was always this shape.
+
 ### A0 Worker skeleton, status: DONE 2026-07-31, not deployed
 
 DO, R2, all endpoints, WebSocket sync, server-side validation.
 
-- Automated: `npm run arrowword:test`, 15 checks, starts its own dev worker
+- Automated: `npm test`, 15 checks, starts its own dev worker
 - Human: none
 - Deferred out of A0: the landing page, which is UI and moved to A1
 
-### A1 Photo and alignment UI, status: NEXT
+Known debt shipped in A0, carried into A0.5: the photo size cap reads `Content-Length` instead of counting the stream ([src/index.ts](../src/index.ts)), and no endpoint is rate limited. Both were noted at the time as acceptable for a private tool. Going public is what makes them defects.
+
+### A0.5 Public hardening, status: NEXT
+
+All server side, no UI, testable through the existing acceptance harness. This is the milestone that makes a public deploy defensible.
+
+- `SessionDoc` to `v: 2`: `players`, `by` on letters, `lastActiveAt`, `template`, `clonedFrom`. Bring `src/types.ts` in sync and remove the drift noted in section 4
+- Enforce photo size on the stream, not the header (invariant 9)
+- Rate limits from the section 7 table
+- `POST /session/:id/clone` and `DELETE /session/:id`
+- Self-expiry via alarms, plus the R2 lifecycle backstop
+- `hello` message, nickname sanitization and cap, `peers` carrying the player list, `by` on `cell`
+
+Checks:
+
+- Automated: extend `npm test` to cover a stream-enforced oversize upload with a lying `Content-Length`, a clone of a saved puzzle, a delete, a rate-limited burst, a write rejected before `hello`, and a template rejecting a write
+- Human: confirm the R2 lifecycle rule exists via `npx wrangler r2 bucket lifecycle list arrowword-photos`
+- Resolved before this milestone started: alarms are supported on the SQLite backend, which is the only backend on the free plan. See section 7 for the two handler constraints that came out of confirming it
+
+### A1 Photo and alignment UI, status: TODO
 
 Upload, client downscale, rows and cols input, four-corner drag, live cell overlay. Includes the landing page at `/`.
 
@@ -235,6 +381,21 @@ Tap to cycle cell type, prefilled letter prompt, save, share link with copy butt
 
 - Automated: a test that posts a tagged puzzle and reloads it through the API
 - Human: tag a real puzzle end to end, open the share link in a second browser
+
+### A2.5 Demo puzzle and clone flow, status: TODO
+
+The front door. Depends on A2, because building the template needs the tagging UI.
+
+- Hossein photographs and tags one good puzzle, which becomes the template
+- Mark it `template: true` by hand, not through an endpoint (section 5)
+- Template view: read-only grid, one primary action, "open a copy"
+- Landing page at `/` leads with the demo
+- Link it from the playground page in the mhshakouri.dev repo, which is a change in that repository, not this one
+
+Checks:
+
+- Automated: a test that clones the template, confirms the clone has the same grid and empty letters, confirms the clone borrows rather than copies `photoKey`, and confirms writes to the template are refused
+- Human: open the published playground link on a phone, in a browser with no history for this site, and reach a typeable grid in one click
 
 ### A3 Play rendering, status: TODO
 
@@ -252,12 +413,14 @@ Typing syncs both ways, optimistic echo, reconnect with fresh state, retry of th
 
 ### A5 Polish, status: TODO
 
-Persian keyboard hardening, loading and empty and error states, peer indicator, copy-link UX.
+Persian keyboard hardening, loading and empty and error states, player list, copy-link UX, expired-session state.
 
 - Automated: full check suite
-- Human: solve one complete real puzzle together, start to finish
+- Human: solve one complete real puzzle together, start to finish, with at least three players
 
-Out of v1 (unchanged): OCR, auto grid detection, perspective correction, correctness checking, generation, roles and auth, per-player colors.
+Out of v1: OCR, auto grid detection, perspective correction, correctness checking, generation, accounts and authentication.
+
+Changed 2026-08-02: **per-player colors moved into v1** (A3 and A5). With an unbounded number of players and unverified nicknames, telling people apart stops being polish and becomes the only way the player list means anything.
 
 ## 13. Definition of ready and done
 
@@ -266,9 +429,11 @@ The gate that runs on every milestone. Its purpose is to make the cross-cutting 
 ### Ready, before starting a milestone
 
 1. Every human checkpoint listed for this milestone in section 14 is done, and Hossein has confirmed it.
-2. Anything an earlier milestone left undeployed is deployed, not merely merged.
+2. Anything an earlier milestone left undeployed is deployed, not merely merged. **Exception:** if the pending milestone exists to fix a security or cost defect in the undeployed work, build and deploy the fix instead of deploying the defect first. Deploy once, hardened.
 3. No open question in section 18 blocks this milestone. If one does, resolve it first and record the decision.
 4. The milestone's automated check is named, even if it does not exist yet.
+
+Amended 2026-08-03. Rule 2 without that exception said: deploy A0, whose photo size cap is advisory because it trusts `Content-Length`, to a public URL, and only then build A0.5 which fixes it. That is the letter of a rule defeating its own purpose. The purpose is to stop undeployed work piling up, not to require publishing a known hole. The exception is narrow on purpose: it applies when the next milestone fixes the previous one, not whenever deploying feels inconvenient.
 
 ### Done, before calling a milestone finished
 
@@ -278,7 +443,9 @@ The gate that runs on every milestone. Its purpose is to make the cross-cutting 
 4. Every new failure mode has a user-facing state, not only an API status code.
 5. The status marker in section 12 is updated, in the same commit as the work.
 6. Anything learned the hard way is written into this spec, in the same commit.
-7. The repo check suite passes: `lint`, `typecheck`, `arrowword:typecheck`, `build`, `format:check`.
+7. The repo check suite passes: `npm run typecheck`, `npm run format:check`, `npm test`. These are the three CI runs in `.github/workflows/ci.yml`; keep this list and that file in sync.
+
+Corrected 2026-08-02: this list previously named `lint`, `arrowword:typecheck`, and `build`, none of which exist as scripts in this repository. They were inherited from the monorepo layout and survived the 2026-07-31 split unnoticed, which meant the gate had been citing commands that would have failed if anyone ran them. A gate nobody can execute is not a gate.
 
 A milestone that satisfies 1 and 2 but not 3 through 7 is not done. It is a demo.
 
@@ -298,18 +465,41 @@ When Claude is blocked on off-development work, it gives these five things, in t
 
 Never "you will need to set up R2 first". Always the five above.
 
-### Blocking now: first deploy (needed before A1 share-link testing)
+### Blocking now: bucket and first deploy
 
-1. **Blocked:** the client has no real base URL, so share links cannot be tested on a second device.
+Still blocking every milestone, because the Ready gate in section 13 refuses to start work while an earlier milestone is undeployed.
+
+1. **Blocked:** A0 is merged but not deployed, and there is no bucket for photos to go in. Completing this unblocks A0.5 and every milestone after it.
 2. **Run**, from this repository:
    ```bash
    npx wrangler r2 bucket create arrowword-photos
-   npm run deploy
    ```
-   Then, to attach the subdomain: uncomment the `routes` block in `wrangler.jsonc`, add an `arrowword` DNS record for `mhshakouri.dev` in the Cloudflare dashboard, and run `npm run deploy` again.
+   Then `npm run deploy`. Then, to attach the subdomain: uncomment the `routes` block in `wrangler.jsonc`, add an `arrowword` DNS record for `mhshakouri.dev` in the Cloudflare dashboard, and run `npm run deploy` again.
 3. **Success:** `Created bucket arrowword-photos`, then a deploy printing a `*.workers.dev` URL, and after the routes step, `arrowword.mhshakouri.dev` resolving.
 4. **Verify:** `npx wrangler r2 bucket list` shows the bucket, and `curl -X POST https://arrowword.mhshakouri.dev/session` returns a 32 character hex id.
 5. **Paste back:** confirmation that the subdomain answers.
+
+### Blocking A0.5: the R2 lifecycle backstop
+
+1. **Blocked:** self-expiry has no backstop for orphaned photos, so a bug in the alarm path leaks storage silently. Completing this closes the last uncapped cost dimension.
+2. **Run**, after the bucket exists:
+   ```bash
+   npx wrangler r2 bucket lifecycle add arrowword-photos
+   ```
+   Answer the prompts with a rule that deletes objects 45 days after creation, applied to the whole bucket. 45, not 30, so the alarm stays the primary path and this only sweeps what the alarm missed.
+3. **Success:** the command reports the rule added.
+4. **Verify:** `npx wrangler r2 bucket lifecycle list arrowword-photos` shows one rule with a 45 day expiry.
+5. **Paste back:** the output of the list command.
+
+### Blocking A2.5: the demo puzzle
+
+1. **Blocked:** visitors have nothing to play, which is the project's main purpose per section 1. Completing this is what makes the playground link worth clicking.
+2. **Do:** photograph one printed Persian arrowword you are happy to publish, then tag it end to end through the A2 wizard on the deployed site.
+3. **Success:** a saved session whose grid overlay sits correctly on the photo and whose clues are legible on a phone.
+4. **Verify:** open the share link on a second device and read three clues without zooming the browser.
+5. **Paste back:** the session id, so it can be marked as the template.
+
+Note on the photo: it gets published to the internet and served from your subdomain indefinitely, since templates never expire. Pick a puzzle with no personal context in frame, and check the edges of the photo, not just the grid.
 
 ### Per milestone
 
@@ -347,11 +537,30 @@ Naming, file layout, formatting, test structure, error message wording, and anyt
 
 Checked at every Done gate, not once at the end.
 
-**Security.** The threat model is one sentence: the link is the only credential, so assume a link can leak. Every endpoint must have an answer to "what can a stranger with this link do?". Requirements: the server validates all input and never trusts the client; uploads verify content type and enforce size on the stream, never on a client-supplied header; anything a link holder can call in a loop is rate limited; no secrets reach the client bundle.
+**Security.** Changed 2026-08-02, and this is the largest change in v6. The threat model was "the link is the only credential, so assume a link can leak". It is now two sentences, because the app is public:
+
+1. Every endpoint is reachable by anyone on the internet with no credential at all, so each one needs an answer to "what does this cost me if a stranger calls it in a loop for a day?"
+2. The link is still the only credential for a _particular_ session, so assume a link can leak.
+
+The first sentence is new and it is the one that generates work. Requirements: the server validates all input and never trusts the client; uploads verify content type and enforce size **on the stream, never on a client-supplied header**; every unauthenticated endpoint that costs money or storage is rate limited; all user-supplied text, nicknames above all, is sanitized on write and rendered as text rather than HTML; no secrets reach the client bundle.
+
+**User-generated content.** New in v6, and the risk that grew most when the app went public. Anyone can upload an arbitrary image which is then served from a subdomain carrying Hossein's name, next to his resume. The cost exposure is small and bounded; this one is reputational and potentially legal, and it is not fixed by rate limits.
+
+Working in our favor already: no listing endpoint, no enumeration, ids unguessable, so nothing uploaded is discoverable by browsing. Added by v6: a delete endpoint, 30 day expiry so nothing lingers, and upload rate limits.
+
+Accepted deliberately: this app hosts unmoderated user images. The mitigation that makes it tolerable is structural rather than technical. Because the demo clone path means most visitors never upload anything, upload is the least-used endpoint, so it can be restricted hard without hurting the showcase.
+
+Escape hatch, pre-decided so it is not designed under pressure: if abuse appears, gate `PUT photo` behind a shared passphrase while leaving the demo, cloning, and play fully open. That preserves the entire visitor experience and costs roughly a hundred lines. It is written down here because the time to choose it is before it is needed.
+
+**Cost control.** New in v6. The numbers are in section 6, verified rather than assumed. The summary: R2 egress is free and storage overage is linear and cheap, Workers request overage returns 429 instead of billing, so no single burst produces a large invoice. The two dimensions that were genuinely uncapped were indefinite retention and a header-trusted size limit, and A0.5 closes both. Billing alerts in the Cloudflare dashboard are the backstop for everything unforeseen.
 
 **Logging and observability.** The worker runs with observability enabled. **Session ids must never be logged in full**, because the id is the credential; log a short hash prefix instead. Log enough to answer "why did this session fail" without logging puzzle content or letters.
 
-**Data and privacy.** Photos are personal content and may show more than the puzzle. They are private to the link, there is no listing endpoint, and no session is ever enumerable. Retention in v1 is indefinite, which is a deliberate accepted cost; a delete endpoint is required before any link is shared outside the household.
+**Data and privacy.** Photos are personal content and may show more than the puzzle. They are private to the link, there is no listing endpoint, and no session is ever enumerable.
+
+Changed 2026-08-02: retention is 30 days of inactivity, not indefinite. Indefinite retention was an accepted cost for a private tool with two users; for a public app it makes storage a one-way ratchet where a burst in month one keeps billing in month twelve. The delete endpoint that v5 listed as "required before any link is shared outside the household" is now in A0.5, because that condition is met the moment this ships.
+
+One asymmetry to state plainly: the template photo is published forever by design, so it is the one photo in the system with no expiry and no privacy expectation. Section 14 says so at the point where the photo is taken.
 
 **Schema versioning.** `SessionDoc.v` exists so shape changes do not break live sessions. Any change to the shape bumps `v`, and the Durable Object migrates on read. Never assume a stored document matches the current type.
 
@@ -367,7 +576,9 @@ Decisions with real alternatives, kept so they are not relitigated in a later se
 
 **ADR-1: No OCR.** Humans read the clues from the photo; the app knows only grid geometry and letters. Alternative was OCR of Persian clue text, which is unreliable and would have been the hardest part of the project. Consequence: setup requires manual tagging, which is slower but always correct.
 
-**ADR-2: Capability links instead of accounts.** An unguessable session URL is the credential. Alternative was magic-link auth with a users table and access policies. Consequence: anyone with the link can edit, which is acceptable and intended for a two-person tool. This deleted an entire auth system.
+**ADR-2: Capability links instead of accounts.** An unguessable session URL is the credential. Alternative was magic-link auth with a users table and access policies. Consequence: anyone with the link can edit, which is acceptable and intended for a deliberately shared puzzle. This deleted an entire auth system.
+
+Revisited 2026-08-02 and upheld. Going public looked at first like the thing that would force accounts, and it turned out to be the opposite: "visitors play with no credentials" is exactly what a capability link provides. See ADR-7 for the alternatives weighed.
 
 **ADR-3: One Durable Object per session.** The DO holds the whole session document and serializes writes. Alternatives were Supabase realtime (a third-party dependency and a database to model) and WebRTC peer to peer (needs signaling, and mobile CGNAT makes direct connections unreliable without a TURN relay). Consequence: conflict handling is nearly free, and the whole backend is about 250 lines.
 
@@ -377,10 +588,32 @@ Decisions with real alternatives, kept so they are not relitigated in a later se
 
 **ADR-6: Own repository and subdomain.** Split out of the mhshakouri.dev repository on 2026-07-31 and served at `arrowword.mhshakouri.dev`. Alternative was keeping it under the site's `/playground`, which was cheaper at the time: shared design tokens, one CI, one deploy. Consequences: the site's dependency tree and build stay clean, a broken arrowword commit can no longer block a blog post from deploying, the app can be shared with people who are not visiting the site, and serving the UI from the same worker as the API removes CORS entirely. Cost accepted: two repositories, two CI setups, and design tokens must be copied rather than imported.
 
+**ADR-7: Public playground, no authentication, nickname identity.** Decided 2026-08-02. The app is a public showcase linked from the playground series on mhshakouri.dev, including from `src/data/resume.ts`. Visitors, recruiters among them, must reach a playable puzzle with no credential and no request to the author.
+
+Alternatives weighed and rejected, in ascending cost:
+
+- **Cloudflare Access in front of the worker.** Zero application code, about thirty minutes of dashboard work. Rejected because it gates the entire app behind a policy, which destroys the showcase: a visitor who is not in the policy sees a login wall, which is the exact opposite of the goal.
+- **Shared household passphrase and a signed cookie.** About a hundred lines, no new dependency, and a genuinely strong abuse control because it makes the app closed by construction. Rejected for the same reason: closed is the wrong shape for a portfolio piece. Retained as the pre-decided escape hatch for upload abuse in section 16.
+- **Generic OIDC, Google now and Keycloak later.** About 250 lines, a vendor in the loop, and it requires every player to hold an account with that provider. Rejected as disproportionate for a puzzle toy, and it fails the "no credentials" requirement outright.
+- **Username and password.** Rejected on a verified platform constraint, not on taste: Workers Free allows 10 ms of CPU per request, and no defensible PBKDF2 iteration count fits in it. The options were to weaken the hash, which section 15 trigger 5 forbids, or move to the paid plan, which trigger 1 forbids without asking. Separately, no email verification means no password reset, so one forgotten password destroys a player's puzzles permanently.
+
+Consequences: identity is an unverified per-session nickname, so impersonation is possible and the app makes no trust claim about who anyone is. Abuse control is rate limits plus bounded retention rather than authentication. The accepted cost is hosting unmoderated user images under Hossein's domain, treated at length in section 16. Attribution comes free with nicknames, which is why the "who filled what" question left open in v5 is now closed.
+
+**ADR-8: Sessions expire themselves with Durable Object alarms.** Each session slides its own alarm forward on every write and deletes itself when the alarm fires.
+
+Alternatives: a cron-triggered sweep, rejected because Durable Object instances are not cheaply enumerable, so a sweep would need a separate index object holding every session id, which is a second source of truth and a new failure mode. R2 lifecycle rules alone, rejected because they delete photos and know nothing about Durable Object storage, so every expired puzzle would leave an orphaned session document that renders as a broken grid.
+
+Consequences: no index, no cron, no enumeration, and expiry logic lives in the object that owns the data. `setAlarm` overwriting any existing alarm is what makes a sliding window free. An R2 lifecycle rule survives as a backstop with a longer window, for orphans only. Templates carry no alarm, which is why "never expires" had to become an invariant rather than a convention.
+
 ## 18. Open questions (non-blocking)
 
-- UI framework for this repository. The app is entirely client side and needs no server rendering, so a Vite single page app served as static assets from this same worker is the simplest option and keeps everything same-origin. Next.js would match the site's stack but adds OpenNext and prerendering concerns for no benefit here. Decide before A1.
+- UI framework for this repository. The app is entirely client side and needs no server rendering, so a Vite single page app served as static assets from this same worker is the simplest option and keeps everything same-origin. Next.js would match the site's stack but adds OpenNext and prerendering concerns for no benefit here. Decide before A1. Not blocking A0.5, which is server only.
 
 - Crop and cache clue images versus transform on the fly: start with transform, revisit only if zoom feels slow on phones.
-- Who filled what, with color coding: timestamps and a per-device id would suffice; decide after real use.
-- Session expiry: R2 and DO storage are cheap enough to keep sessions forever in v1; add cleanup only if it ever matters.
+- The player color palette: ten distinguishable colors that pass contrast over a photograph, taken from the site tokens where possible. Cheap to change, decide in A3.
+- Whether the demo is one puzzle or a small set. Start with one, since one good puzzle beats three rushed ones, and the clone flow does not care how many templates exist.
+
+Closed in v6:
+
+- ~~Who filled what, with color coding~~: resolved by nickname identity, `letters[].by`, and per-player colors. See ADR-7 and section 5.
+- ~~Session expiry~~: resolved, 30 days of inactivity via Durable Object alarms. See ADR-8. The v5 reasoning, that storage is cheap enough to keep sessions forever, was correct for a private tool and wrong for a public one.

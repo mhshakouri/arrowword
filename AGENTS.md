@@ -10,12 +10,20 @@ Parent project: the personal website, `github.com/mhshakouri/mhshakouri.dev`,
 local path `../mhshakouri`. It links to this project and describes it; it never
 hosts it. Design tokens are copied from there, never imported.
 
-**State: A0 complete, not deployed.** Deploying needs an R2 bucket created on
-Hossein's account first, which is his step, not Claude's. See spec section 14.
+**State: A0 complete, not deployed. A0.5 (public hardening) is next.** Deploying
+needs an R2 bucket created on Hossein's account first, which is his step, not
+Claude's. See spec section 14.
+
+**This is a public app** as of 2026-08-02 (spec v6): open to visitors with no
+credentials, linked from the playground series on mhshakouri.dev. There is no
+authentication and there will not be, see ADR-7. Anyone on the internet can call
+every endpoint, so rate limits, bounded retention, and stream-enforced upload
+limits are load-bearing rather than nice to have.
 
 ## Stack
 
 - Cloudflare Worker, one Durable Object per session (`ArrowwordSession`), R2 for photos
+- One DO alarm per session drives self-expiry, 30 days of inactivity (ADR-8)
 - TypeScript strict, `noUncheckedIndexedAccess`
 - No framework on the server. UI framework not yet chosen.
 
@@ -29,7 +37,8 @@ Hossein's account first, which is his step, not Claude's. See spec section 14.
 
 ## Conventions
 
-- The invariants in spec section 4 must never break. Check changes against them.
+- The ten invariants in spec section 4 must never break. Check changes against them.
+  `src/types.ts` is deliberately one version behind the spec until A0.5 lands v2.
 - Every milestone passes the ready/done gate in spec section 13 before it counts
   as finished. A milestone without a runnable check is not done.
 - Stop and ask on the triggers in spec section 15. Decide and record everything
