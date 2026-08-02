@@ -8,11 +8,15 @@
   "durable_objects": {
     "bindings": [
       { "name": "ARROWWORD_SESSION", "class_name": "ArrowwordSession" },
+      { "name": "RATE_LIMITER", "class_name": "RateLimiter" },
     ],
   },
   "migrations": [
     // SQLite-backed Durable Objects, required for the storage API used here.
     { "tag": "v1", "new_sqlite_classes": ["ArrowwordSession"] },
+    // Adding a class is the safe direction of a DO migration. Renaming or
+    // deleting one is not: see spec section 16 under Rollback.
+    { "tag": "v2", "new_sqlite_classes": ["RateLimiter"] },
   ],
   "r2_buckets": [
     {

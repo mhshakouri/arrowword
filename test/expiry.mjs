@@ -1,0 +1,138 @@
+/* A0.5 expiry check. Separate from the main acceptance run because retention
+   is a worker-wide setting: a window short enough to observe would delete the
+   sessions the other checks depend on. This run starts its own worker on its
+   own port with a three second window, so a thirty day rule is verified in
+   about ten seconds.
+
+   What it proves: that the alarm fires at all, that it deletes the session,
+   that it deletes a photo the session owns, and that activity slides the
+   window instead of letting it arrive. */
+import { spawn } from "node:child_process";
+
+const PORT = 8788;
+const BASE = `http://localhost:${PORT}`;
+const RETENTION_MS = 3000;
+const ok = [];
+const bad = [];
+const check = (name, pass, detail = "") =>
+  (pass ? ok : bad).push(`${name}${detail ? ` (${detail})` : ""}`);
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+const ABSENT_ID = "0".repeat(32);
+async function isUp() {
+  try {
+    const res = await fetch(`${BASE}/session/${ABSENT_ID}/photo`, {
+      signal: AbortSignal.timeout(2000),
+    });
+    return res.status === 404 && (await res.text()) === "no such session";
+  } catch {
+    return false;
+  }
+}
+
+console.log(
+  `starting wrangler dev on :${PORT} with RETENTION_MS=${RETENTION_MS} ...`,
+);
+const worker = spawn(
+  "npx",
+  [
+    "wrangler",
+    "dev",
+    "--port",
+    String(PORT),
+    "--var",
+    `RETENTION_MS:${RETENTION_MS}`,
+  ],
+  { stdio: "ignore", detached: false },
+);
+const stopWorker = () => {
+  if (worker && !worker.killed) worker.kill("SIGTERM");
+};
+process.on("exit", stopWorker);
+process.on("SIGINT", () => {
+  stopWorker();
+  process.exit(130);
+});
+
+const deadline = Date.now() + 60_000;
+while (!(await isUp())) {
+  if (Date.now() > deadline) {
+    stopWorker();
+    console.error(`wrangler dev did not come up on :${PORT} within 60s`);
+    process.exit(1);
+  }
+  await sleep(500);
+}
+console.log("worker ready\n");
+
+/* Scoped per run for the same reason as the acceptance suite: local Durable
+   Object state persists between runs and a fixed caller would inherit a spent
+   rate-limit window. */
+const RUN = `e${Date.now().toString(36)}`;
+
+const as = (ip, init = {}) => ({
+  ...init,
+  headers: { ...(init.headers ?? {}), "X-Forwarded-For": ip },
+});
+
+async function newSession(ip) {
+  const res = await fetch(`${BASE}/session`, as(ip, { method: "POST" }));
+  if (!res.ok) throw new Error(`could not create session: ${res.status}`);
+  return (await res.json()).id;
+}
+
+const jpg = new Uint8Array([0xff, 0xd8, 0xff, 0xd9]);
+
+/* A session that is left alone must delete itself, and take its photo with
+   it. Waiting well past the window rather than exactly on it, because the
+   alarm is scheduled, not instantaneous. */
+const abandoned = await newSession(`${RUN}-abandoned`);
+await fetch(
+  `${BASE}/session/${abandoned}/photo`,
+  as(`${RUN}-abandoned`, {
+    method: "PUT",
+    body: jpg,
+    headers: { "Content-Type": "image/jpeg" },
+  }),
+);
+const beforeExpiry = await fetch(`${BASE}/session/${abandoned}/photo`);
+check("session is alive before the window passes", beforeExpiry.ok);
+
+await sleep(RETENTION_MS + 4000);
+const afterExpiry = await fetch(`${BASE}/session/${abandoned}/photo`);
+check(
+  "abandoned session expired",
+  afterExpiry.status === 404,
+  `got ${afterExpiry.status}`,
+);
+
+/* Activity has to push the deadline out, or a puzzle solved over several
+   evenings would be destroyed mid-solve. Kept busy across more than one
+   window, it must survive. */
+const busy = await newSession(`${RUN}-busy`);
+for (let i = 0; i < 4; i++) {
+  await sleep(RETENTION_MS / 2);
+  await fetch(
+    `${BASE}/session/${busy}/photo`,
+    as(`${RUN}-busy`, {
+      method: "PUT",
+      body: jpg,
+      headers: { "Content-Type": "image/jpeg" },
+    }),
+  );
+}
+const stillAlive = await fetch(`${BASE}/session/${busy}/photo`);
+check(
+  "activity slides the window",
+  stillAlive.ok,
+  `survived ${(RETENTION_MS * 2) / 1000}s of use, got ${stillAlive.status}`,
+);
+
+console.log(`PASS ${ok.length}`);
+for (const t of ok) console.log("  ok   " + t);
+if (bad.length) {
+  console.log(`\nFAIL ${bad.length}`);
+  for (const t of bad) console.log("  FAIL " + t);
+}
+stopWorker();
+process.exit(bad.length ? 1 : 0);

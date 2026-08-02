@@ -7,7 +7,9 @@
   "scripts": {
     "dev": "wrangler dev --port 8787",
     "typecheck": "tsc --noEmit",
-    "test": "node test/acceptance.mjs",
+    "test": "node test/acceptance.mjs && node test/expiry.mjs",
+    "test:acceptance": "node test/acceptance.mjs",
+    "test:expiry": "node test/expiry.mjs",
     "deploy": "wrangler deploy",
     "format": "prettier --write .",
     "format:check": "prettier --check ."

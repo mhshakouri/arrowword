@@ -2,22 +2,94 @@
 
 import {
   emptyDoc,
+  migrate,
   type Cell,
   type ClientMessage,
   type GridAlignment,
+  type LetterValue,
+  type PeerInfo,
   type ServerMessage,
   type SessionDoc,
 } from "./types";
 
 export interface Env {
   ARROWWORD_SESSION: DurableObjectNamespace;
+  RATE_LIMITER: DurableObjectNamespace;
   PHOTOS: R2Bucket;
   /* Comma-separated. Empty in dev means allow any origin. */
   ALLOWED_ORIGINS?: string;
+  /* Milliseconds of inactivity before a session deletes itself. Overridable
+     only so the expiry test can run in seconds instead of thirty days; unset
+     everywhere else, which is what production runs on. */
+  RETENTION_MS?: string;
 }
 
 const SESSION_ID = /^[0-9a-f]{32}$/;
 const MAX_PHOTO_BYTES = 8 * 1024 * 1024;
+const MAX_NICKNAME_GRAPHEMES = 24;
+const MAX_PLAYERS = 50;
+const MAX_SOCKETS = 10;
+const PALETTE_SIZE = 10;
+const DEFAULT_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+
+function retentionMs(env: Env): number {
+  const override = Number(env.RETENTION_MS);
+  return Number.isFinite(override) && override > 0
+    ? override
+    : DEFAULT_RETENTION_MS;
+}
+
+/* Section 7 limits. Per IP, fixed window. */
+const RATE_LIMITS = {
+  session: { limit: 10, windowMs: 3_600_000 },
+  photo: { limit: 5, windowMs: 3_600_000 },
+  clone: { limit: 30, windowMs: 3_600_000 },
+} as const;
+
+/* Paths a client may reach on a session object. Anything else is internal and
+   must not be forwarded, because the worker routes /session/:id/<rest> straight
+   through: without this allowlist, `POST /session/:id/init` would let a caller
+   create a session at an id of their choosing and skip the rate limit on
+   POST /session entirely. */
+const PUBLIC_SESSION_PATHS = new Set(["photo", "puzzle", "ws", "clone"]);
+
+const segmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+
+function graphemes(value: string): string[] {
+  return [...segmenter.segment(value)].map((s) => s.segment);
+}
+
+/* Controls and bidi overrides are stripped. ZWNJ (U+200C) and ZWJ (U+200D) are
+   deliberately kept: both are format characters, and ZWNJ is load-bearing in
+   Persian, so a blanket \p{Cf} strip would mangle real names. */
+const NICKNAME_STRIP = /[\p{Cc}\u202A-\u202E\u2066-\u2069]/gu;
+
+function sanitizeNickname(raw: unknown): string {
+  if (typeof raw !== "string") return "";
+  const cleaned = raw.replace(NICKNAME_STRIP, "").trim();
+  return graphemes(cleaned).slice(0, MAX_NICKNAME_GRAPHEMES).join("");
+}
+
+/* Loopback means nothing is in front of us. `wrangler dev` sets
+   CF-Connecting-IP to a loopback address for every request, which would put
+   every local caller in one bucket and make per-IP limits untestable. */
+function isLoopback(ip: string): boolean {
+  return ip === "::1" || ip === "localhost" || ip.startsWith("127.");
+}
+
+/* Cloudflare sets CF-Connecting-IP at the edge to the real client address and a
+   client cannot forge it, so in production that is the only branch taken.
+   X-Forwarded-For is consulted only when there is no edge address or the edge
+   address is loopback, which happens under `wrangler dev` and nowhere else:
+   Cloudflare never reports a public client as 127.0.0.1. That narrowness is the
+   point. Trusting a client-supplied forwarding header in front of a rate limiter
+   in production would make the limit opt-in for anyone who reads this file. */
+function clientIp(request: Request): string {
+  const edge = request.headers.get("CF-Connecting-IP");
+  if (edge && !isLoopback(edge)) return edge;
+  const forwarded = request.headers.get("X-Forwarded-For");
+  return forwarded?.split(",")[0]?.trim() || edge || "local";
+}
 
 function corsHeaders(request: Request, env: Env): Record<string, string> {
   const origin = request.headers.get("Origin") ?? "";
@@ -29,7 +101,7 @@ function corsHeaders(request: Request, env: Env): Record<string, string> {
     allowed.length === 0 || allowed.includes(origin) ? origin || "*" : "";
   return {
     "Access-Control-Allow-Origin": allow,
-    "Access-Control-Allow-Methods": "GET,PUT,POST,OPTIONS",
+    "Access-Control-Allow-Methods": "GET,PUT,POST,DELETE,OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type",
     "Access-Control-Max-Age": "86400",
     Vary: "Origin",
@@ -60,6 +132,24 @@ function newSessionId(): string {
   return [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
+function sessionStub(env: Env, id: string): DurableObjectStub {
+  return env.ARROWWORD_SESSION.get(env.ARROWWORD_SESSION.idFromName(id));
+}
+
+/* Returns false when the caller is over the limit for this action. */
+async function allow(
+  env: Env,
+  request: Request,
+  action: keyof typeof RATE_LIMITS,
+): Promise<boolean> {
+  const { limit, windowMs } = RATE_LIMITS[action];
+  const ip = clientIp(request);
+  const stub = env.RATE_LIMITER.get(env.RATE_LIMITER.idFromName(`ip:${ip}`));
+  const url = `https://do/take?bucket=${encodeURIComponent(action)}&limit=${limit}&window=${windowMs}`;
+  const res = await stub.fetch(url, { method: "POST" });
+  return res.ok;
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const cors = corsHeaders(request, env);
@@ -75,13 +165,78 @@ export default {
       parts.length === 1 &&
       parts[0] === "session"
     ) {
+      if (!(await allow(env, request, "session"))) {
+        return new Response("slow down", { status: 429, headers: cors });
+      }
       const id = newSessionId();
-      const stub = env.ARROWWORD_SESSION.get(
-        env.ARROWWORD_SESSION.idFromName(id),
-      );
-      const res = await stub.fetch("https://do/init", { method: "POST" });
+      const res = await sessionStub(env, id).fetch("https://do/init", {
+        method: "POST",
+      });
       if (!res.ok)
         return new Response("init failed", { status: 500, headers: cors });
+      return json({ id }, { headers: cors });
+    }
+
+    /* DELETE /session/:id has only two segments, so it needs its own branch. */
+    if (
+      request.method === "DELETE" &&
+      parts.length === 2 &&
+      parts[0] === "session"
+    ) {
+      const id = parts[1] ?? "";
+      if (!SESSION_ID.test(id)) {
+        return new Response("bad session id", { status: 400, headers: cors });
+      }
+      const res = await sessionStub(env, id).fetch("https://do/delete", {
+        method: "POST",
+      });
+      const out = new Response(res.body, res);
+      for (const [k, v] of Object.entries(cors)) out.headers.set(k, v);
+      return out;
+    }
+
+    /* Cloning reads one session and writes another, so the worker orchestrates
+       it rather than having one Durable Object reach into a second. */
+    if (
+      request.method === "POST" &&
+      parts.length === 3 &&
+      parts[0] === "session" &&
+      parts[2] === "clone"
+    ) {
+      const sourceId = parts[1] ?? "";
+      if (!SESSION_ID.test(sourceId)) {
+        return new Response("bad session id", { status: 400, headers: cors });
+      }
+      if (!(await allow(env, request, "clone"))) {
+        return new Response("slow down", { status: 429, headers: cors });
+      }
+      const read = await sessionStub(env, sourceId).fetch("https://do/doc");
+      if (!read.ok) {
+        return new Response("no such session", { status: 404, headers: cors });
+      }
+      const source = (await read.json()) as SessionDoc;
+      if (!source.puzzleSaved) {
+        return new Response("puzzle not saved", { status: 409, headers: cors });
+      }
+      const id = newSessionId();
+      const target = sessionStub(env, id);
+      await target.fetch("https://do/init", { method: "POST" });
+      const adopt = await target.fetch("https://do/adopt", {
+        method: "POST",
+        body: JSON.stringify({
+          title: source.title,
+          rows: source.rows,
+          cols: source.cols,
+          alignment: source.alignment,
+          cells: source.cells,
+          /* Borrowed, not copied: a clone never owns this object. */
+          photoKey: source.photoKey,
+          clonedFrom: source.template ? sourceId : source.clonedFrom,
+        }),
+      });
+      if (!adopt.ok) {
+        return new Response("clone failed", { status: 500, headers: cors });
+      }
       return json({ id }, { headers: cors });
     }
 
@@ -93,10 +248,17 @@ export default {
         return new Response("bad session id", { status: 400, headers: cors });
       }
       const rest = parts.slice(2).join("/");
-      const stub = env.ARROWWORD_SESSION.get(
-        env.ARROWWORD_SESSION.idFromName(id),
-      );
-      const res = await stub.fetch(
+      if (!PUBLIC_SESSION_PATHS.has(rest)) {
+        await discardBody(request);
+        return new Response("not found", { status: 404, headers: cors });
+      }
+      if (rest === "photo" && request.method === "PUT") {
+        if (!(await allow(env, request, "photo"))) {
+          await discardBody(request);
+          return new Response("slow down", { status: 429, headers: cors });
+        }
+      }
+      const res = await sessionStub(env, id).fetch(
         new Request(`https://do/${rest}${url.search}`, request),
       );
       /* A 101 response carries the WebSocket and its headers are immutable. */
@@ -110,6 +272,49 @@ export default {
   },
 } satisfies ExportedHandler<Env>;
 
+/* One fixed-window counter set per caller IP. Chosen over the native rate
+   limiting binding so the acceptance suite can drive it locally: see ADR-9. */
+export class RateLimiter implements DurableObject {
+  constructor(private readonly ctx: DurableObjectState) {}
+
+  async fetch(request: Request): Promise<Response> {
+    const url = new URL(request.url);
+    const bucket = url.searchParams.get("bucket") ?? "";
+    const limit = Number(url.searchParams.get("limit"));
+    const windowMs = Number(url.searchParams.get("window"));
+    if (!bucket || !Number.isFinite(limit) || !Number.isFinite(windowMs)) {
+      return new Response("bad limiter request", { status: 400 });
+    }
+
+    const now = Date.now();
+    const record = await this.ctx.storage.get<{
+      count: number;
+      windowStart: number;
+    }>(bucket);
+
+    /* Counters are worthless once their window has passed, so the object drops
+       its own storage rather than accumulating one row per IP forever. */
+    await this.ctx.storage.setAlarm(now + windowMs * 2);
+
+    if (!record || now - record.windowStart >= windowMs) {
+      await this.ctx.storage.put(bucket, { count: 1, windowStart: now });
+      return json({ ok: true });
+    }
+    if (record.count >= limit) {
+      return new Response("slow down", { status: 429 });
+    }
+    await this.ctx.storage.put(bucket, {
+      count: record.count + 1,
+      windowStart: record.windowStart,
+    });
+    return json({ ok: true });
+  }
+
+  async alarm(): Promise<void> {
+    await this.ctx.storage.deleteAll();
+  }
+}
+
 export class ArrowwordSession implements DurableObject {
   constructor(
     private readonly ctx: DurableObjectState,
@@ -117,7 +322,49 @@ export class ArrowwordSession implements DurableObject {
   ) {}
 
   private async doc(): Promise<SessionDoc | null> {
-    return (await this.ctx.storage.get<SessionDoc>("doc")) ?? null;
+    const stored = await this.ctx.storage.get<SessionDoc>("doc");
+    /* Section 16: never assume a stored document matches the current type. */
+    return stored ? migrate(stored) : null;
+  }
+
+  /* Persist, slide the expiry window, and keep lastActiveAt honest. Templates
+     get no alarm at all, which is invariant 7. */
+  private async save(doc: SessionDoc, active = true): Promise<SessionDoc> {
+    const next = active ? { ...doc, lastActiveAt: Date.now() } : doc;
+    await this.ctx.storage.put("doc", next);
+    if (!next.template) {
+      await this.ctx.storage.setAlarm(Date.now() + retentionMs(this.env));
+    }
+    return next;
+  }
+
+  /* Invariant 6: a session owns exactly the object keyed by its own id, so a
+     clone that borrowed a template's photo can never delete it. */
+  private ownedPhotoKey(doc: SessionDoc): string | null {
+    const own = `photos/${this.ctx.id.toString()}.jpg`;
+    return doc.photoKey === own ? own : null;
+  }
+
+  private peers(doc: SessionDoc, except?: WebSocket): PeerInfo[] {
+    const out: PeerInfo[] = [];
+    const seen = new Set<string>();
+    for (const ws of this.ctx.getWebSockets()) {
+      if (ws === except) continue;
+      const attachment = ws.deserializeAttachment() as {
+        playerId?: string;
+      } | null;
+      const playerId = attachment?.playerId;
+      if (!playerId || seen.has(playerId)) continue;
+      const player = doc.players[playerId];
+      if (!player) continue;
+      seen.add(playerId);
+      out.push({
+        id: playerId,
+        nickname: player.nickname,
+        color: player.color,
+      });
+    }
+    return out;
   }
 
   private broadcast(message: ServerMessage, except?: WebSocket): void {
@@ -132,13 +379,17 @@ export class ArrowwordSession implements DurableObject {
     }
   }
 
+  private fail(ws: WebSocket, message: string): void {
+    ws.send(JSON.stringify({ type: "error", message } satisfies ServerMessage));
+  }
+
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
     const path = url.pathname.slice(1);
 
     if (path === "init" && request.method === "POST") {
       if (!(await this.doc())) {
-        await this.ctx.storage.put("doc", emptyDoc(Date.now()));
+        await this.save(emptyDoc(Date.now()), false);
       }
       return json({ ok: true });
     }
@@ -147,6 +398,51 @@ export class ArrowwordSession implements DurableObject {
     if (!doc) {
       await discardBody(request);
       return new Response("no such session", { status: 404 });
+    }
+
+    /* Internal: the worker reads a source document to clone it. Not reachable
+       from outside, because "doc" is not in PUBLIC_SESSION_PATHS. */
+    if (path === "doc") return json(doc);
+
+    /* Internal: receives a cloned grid. Write-once still applies. */
+    if (path === "adopt" && request.method === "POST") {
+      if (doc.puzzleSaved) {
+        await discardBody(request);
+        return new Response("puzzle already saved", { status: 409 });
+      }
+      const body = (await request.json()) as Partial<SessionDoc>;
+      await this.save({
+        ...doc,
+        title: typeof body.title === "string" ? body.title : doc.title,
+        rows: Number(body.rows),
+        cols: Number(body.cols),
+        alignment: (body.alignment ?? null) as GridAlignment | null,
+        cells: (body.cells ?? []) as Cell[][],
+        photoKey: body.photoKey ?? null,
+        clonedFrom: body.clonedFrom ?? null,
+        /* A clone starts empty: that is the whole point of cloning. */
+        letters: {},
+        players: {},
+        puzzleSaved: true,
+      });
+      return json({ ok: true });
+    }
+
+    if (path === "delete" && request.method === "POST") {
+      if (doc.template) {
+        return new Response("template is protected", { status: 403 });
+      }
+      const owned = this.ownedPhotoKey(doc);
+      if (owned) await this.env.PHOTOS.delete(owned);
+      for (const ws of this.ctx.getWebSockets()) {
+        try {
+          ws.close(1000, "session deleted");
+        } catch {
+          /* Already closed. */
+        }
+      }
+      await this.ctx.storage.deleteAll();
+      return json({ ok: true });
     }
 
     if (path === "puzzle" && request.method === "PUT") {
@@ -173,6 +469,11 @@ export class ArrowwordSession implements DurableObject {
           status: 400,
         });
       }
+      if (rows > 30 || cols > 30) {
+        return new Response("rows and cols must be 30 or fewer", {
+          status: 400,
+        });
+      }
       if (
         !Array.isArray(cells) ||
         cells.length !== rows ||
@@ -183,7 +484,7 @@ export class ArrowwordSession implements DurableObject {
       if (!body.alignment)
         return new Response("alignment required", { status: 400 });
 
-      const next: SessionDoc = {
+      const next = await this.save({
         ...doc,
         title: typeof body.title === "string" ? body.title : doc.title,
         rows,
@@ -191,23 +492,56 @@ export class ArrowwordSession implements DurableObject {
         alignment: body.alignment as GridAlignment,
         cells,
         puzzleSaved: true,
-      };
-      await this.ctx.storage.put("doc", next);
+      });
       this.broadcast({ type: "state", doc: next });
       return json({ ok: true });
     }
 
     if (path === "photo" && request.method === "PUT") {
-      const length = Number(request.headers.get("Content-Length") ?? "0");
-      if (length > MAX_PHOTO_BYTES) {
+      if (!request.body) {
+        return new Response("photo body required", { status: 400 });
+      }
+      /* An honest client is turned away before uploading anything. This header
+         is an optimization and nothing more: the loop below is the enforcing
+         check, which is invariant 9 and the whole point of this milestone. */
+      const claimed = Number(request.headers.get("Content-Length") ?? "0");
+      if (claimed > MAX_PHOTO_BYTES) {
         await discardBody(request);
         return new Response("photo too large", { status: 413 });
       }
+
+      /* Counted into memory rather than piped straight to R2, because R2 needs
+         a known length and a TransformStream has none: `put` rejects with
+         "Provided readable stream must have a known length". Buffering is
+         bounded by the very cap being enforced, so the ceiling on memory is the
+         8 MB we already refuse to exceed, and rejecting before R2 is touched is
+         what turns a mid-stream abort into an honest 413. */
+      const reader = request.body.getReader();
+      const chunks: Uint8Array[] = [];
+      let seen = 0;
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        seen += value.byteLength;
+        if (seen > MAX_PHOTO_BYTES) {
+          await reader.cancel();
+          return new Response("photo too large", { status: 413 });
+        }
+        chunks.push(value);
+      }
+
+      const body = new Uint8Array(seen);
+      let offset = 0;
+      for (const chunk of chunks) {
+        body.set(chunk, offset);
+        offset += chunk.byteLength;
+      }
+
       const key = `photos/${this.ctx.id.toString()}.jpg`;
-      await this.env.PHOTOS.put(key, request.body, {
+      await this.env.PHOTOS.put(key, body, {
         httpMetadata: { contentType: "image/jpeg" },
       });
-      await this.ctx.storage.put("doc", { ...doc, photoKey: key });
+      await this.save({ ...doc, photoKey: key });
       return json({ ok: true, photoKey: key });
     }
 
@@ -228,6 +562,9 @@ export class ArrowwordSession implements DurableObject {
       if (request.headers.get("Upgrade") !== "websocket") {
         return new Response("expected websocket", { status: 426 });
       }
+      if (this.ctx.getWebSockets().length >= MAX_SOCKETS) {
+        return new Response("session full", { status: 503 });
+      }
       const pair = new WebSocketPair();
       const client = pair[0];
       const server = pair[1];
@@ -236,8 +573,8 @@ export class ArrowwordSession implements DurableObject {
       server.send(
         JSON.stringify({ type: "state", doc } satisfies ServerMessage),
       );
-      const count = this.ctx.getWebSockets().length;
-      this.broadcast({ type: "peers", count });
+      /* No peers broadcast yet: this socket has no identity until it says
+         hello, and an unnamed socket has nothing to announce. */
       return new Response(null, { status: 101, webSocket: client });
     }
 
@@ -253,17 +590,50 @@ export class ArrowwordSession implements DurableObject {
     try {
       msg = JSON.parse(raw) as ClientMessage;
     } catch {
-      ws.send(
-        JSON.stringify({
-          type: "error",
-          message: "invalid json",
-        } satisfies ServerMessage),
-      );
+      this.fail(ws, "invalid json");
       return;
     }
 
     const doc = await this.doc();
     if (!doc) return;
+
+    if (msg.type === "hello") {
+      const playerId = typeof msg.playerId === "string" ? msg.playerId : "";
+      const nickname = sanitizeNickname(msg.nickname);
+      if (!SESSION_ID.test(playerId) || !nickname) {
+        this.fail(ws, "hello needs a player id and a nickname");
+        return;
+      }
+      const players = { ...doc.players };
+      const existing = players[playerId];
+      if (!existing && Object.keys(players).length >= MAX_PLAYERS) {
+        this.fail(ws, "too many players in this puzzle");
+        return;
+      }
+      players[playerId] = {
+        nickname,
+        color: existing?.color ?? Object.keys(players).length % PALETTE_SIZE,
+        firstSeenAt: existing?.firstSeenAt ?? Date.now(),
+      };
+      ws.serializeAttachment({ playerId });
+      /* Joining is not solving, so it does not slide the expiry window. */
+      const next = await this.save({ ...doc, players }, false);
+      this.broadcast({ type: "peers", players: this.peers(next) });
+      return;
+    }
+
+    const attachment = ws.deserializeAttachment() as {
+      playerId?: string;
+    } | null;
+    const by = attachment?.playerId;
+    if (!by) {
+      this.fail(ws, "pick a nickname first");
+      return;
+    }
+    if (doc.template) {
+      this.fail(ws, "this puzzle is read only");
+      return;
+    }
 
     const { row, col } = msg as { row: number; col: number };
     if (!Number.isInteger(row) || !Number.isInteger(col)) return;
@@ -272,38 +642,29 @@ export class ArrowwordSession implements DurableObject {
     /* Only answer cells are mutable. Prefilled letters live in the puzzle. */
     const cell = doc.cells[row]?.[col];
     if (!cell || cell.type !== "answer") {
-      ws.send(
-        JSON.stringify({
-          type: "error",
-          message: "cell is not writable",
-        } satisfies ServerMessage),
-      );
+      this.fail(ws, "cell is not writable");
       return;
     }
 
     const key = `${row},${col}`;
     const at = Date.now();
-    const letters = { ...doc.letters };
+    const letters: Record<string, LetterValue> = { ...doc.letters };
 
     if (msg.type === "set") {
-      const ch = typeof msg.ch === "string" ? [...msg.ch] : [];
-      if (ch.length !== 1) {
-        ws.send(
-          JSON.stringify({
-            type: "error",
-            message: "one character per cell",
-          } satisfies ServerMessage),
-        );
+      /* Invariant 5 is one grapheme, not one code point: a Persian letter with
+         a combining mark is several code points and one grapheme. */
+      if (typeof msg.ch !== "string" || graphemes(msg.ch).length !== 1) {
+        this.fail(ws, "one character per cell");
         return;
       }
-      letters[key] = { ch: msg.ch, at };
+      letters[key] = { ch: msg.ch, at, by };
     } else if (msg.type === "clear") {
       delete letters[key];
     } else {
       return;
     }
 
-    await this.ctx.storage.put("doc", { ...doc, letters });
+    await this.save({ ...doc, letters });
     /* The DO is single threaded, so writes serialize and last write wins. */
     this.broadcast({
       type: "cell",
@@ -311,13 +672,27 @@ export class ArrowwordSession implements DurableObject {
       col,
       ch: msg.type === "set" ? msg.ch : null,
       at,
+      by,
     });
   }
 
-  async webSocketClose(): Promise<void> {
-    this.broadcast({
-      type: "peers",
-      count: this.ctx.getWebSockets().length - 1,
-    });
+  async webSocketClose(ws: WebSocket): Promise<void> {
+    const doc = await this.doc();
+    if (!doc) return;
+    this.broadcast({ type: "peers", players: this.peers(doc, ws) }, ws);
+  }
+
+  /* Expiry. At-least-once delivery with retries means this can run twice for
+     one session, so every step has to tolerate having already happened:
+     deleting an absent R2 object succeeds, and deleteAll on empty storage
+     succeeds. No deleteAlarm call: at this worker's compatibility date,
+     deleteAll clears the alarm too. */
+  async alarm(): Promise<void> {
+    const doc = await this.doc();
+    if (!doc) return;
+    if (doc.template) return;
+    const owned = this.ownedPhotoKey(doc);
+    if (owned) await this.env.PHOTOS.delete(owned);
+    await this.ctx.storage.deleteAll();
   }
 }

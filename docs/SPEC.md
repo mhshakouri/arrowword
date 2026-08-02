@@ -115,7 +115,9 @@ Orthogonally, a playable session is either a **template** (the curated demo, exe
 
 ### Photo ownership
 
-A clone reuses the template's `photoKey` rather than copying the object, so a thousand clones cost one photo of storage. The consequence is that deletion must be ownership-aware, which is invariant 6. Ownership needs no stored field: the key is `photos/{sessionId}.jpg`, so a session owns its photo exactly when the key contains its own id.
+A clone reuses the template's `photoKey` rather than copying the object, so a thousand clones cost one photo of storage. The consequence is that deletion must be ownership-aware, which is invariant 6.
+
+Ownership needs no stored field. Corrected 2026-08-03: the key is `photos/{durableObjectId}.jpg`, built from `ctx.id.toString()`, not from the session id. An earlier draft of this section said session id, which was wrong. The distinction does not change the check and slightly improves it: a session can test ownership against its own `ctx.id` without knowing the session id that addressed it, so the test cannot be influenced by anything a client sends.
 
 ### Invariants
 
@@ -236,6 +238,22 @@ An expired session is indistinguishable from one that never existed, and deliber
 
 Any early return from a request that carries a body must cancel that body first. Returning while the body is unread makes the runtime throw `Can't read from request stream after response has been sent`, which stalls the next request on the connection. This cost 146 seconds of wall time once; the acceptance test now guards it.
 
+### Learned while building A0.5
+
+Three things that cost time and would cost it again.
+
+**R2 `put` needs a known length, so the upload cap counts into memory.** The obvious way to enforce a size limit on a stream is to pipe the body through a counting `TransformStream` and hand that to R2. It does not work: `put` rejects with `Provided readable stream must have a known length (request/response body or readable half of FixedLengthStream)`, because a transform's output length is unknown. Worse, wrapping that `put` in a `try` and reporting failure as "too large" made a valid 200-byte upload return 413, which is a misdiagnosis that looks exactly like a working size check. The handler now reads the body with a counter and refuses before touching R2. Memory is bounded by the cap being enforced, and rejecting before the write is what turns a mid-stream abort into an honest 413 instead of a dropped connection.
+
+**A client whose upload is refused mid-body may not see the 413.** Once the server stops reading, how the connection is torn down is the runtime's business, so the client sees either a 413 or a failed fetch. The acceptance check therefore asserts the thing that actually matters, which is that nothing was stored, and treats the status as secondary.
+
+**`wrangler dev` sets `CF-Connecting-IP` to a loopback address.** Not absent, as assumed: present and identical for every local request, which puts every local caller in one rate-limit bucket and makes a per-IP limit impossible to test. `clientIp` therefore falls back to `X-Forwarded-For` when the edge address is missing **or loopback**. Cloudflare never reports a public client as `127.0.0.1`, so that branch cannot be reached in production, which is what keeps a client-supplied forwarding header from turning the rate limit into an opt-in.
+
+### Internal Durable Object paths must be allowlisted
+
+Found while adding the clone endpoint, and it was already exploitable. The worker forwards `/session/:id/<rest>` to the object for that id, passing `<rest>` through unchanged. Every path the object understands is therefore a public path, which meant `POST /session/:id/init` let a caller create a session at an id of their choosing, bypassing `POST /session` and, once limits existed, its rate limit. `clone` needed two more internal paths (`doc` and `adopt`), which would have widened the same hole into arbitrary reads of any session document.
+
+The fix is an allowlist: only `photo`, `puzzle`, `ws`, and `clone` are forwarded, and anything else is a 404 before it reaches the object. Adding a path to the Durable Object is not the same as publishing it, and the acceptance suite now asserts that `init` and `doc` are unreachable from outside.
+
 ### Limits
 
 Values a coding agent would otherwise invent. All enforced server side.
@@ -351,22 +369,30 @@ DO, R2, all endpoints, WebSocket sync, server-side validation.
 
 Known debt shipped in A0, carried into A0.5: the photo size cap reads `Content-Length` instead of counting the stream ([src/index.ts](../src/index.ts)), and no endpoint is rate limited. Both were noted at the time as acceptable for a private tool. Going public is what makes them defects.
 
-### A0.5 Public hardening, status: NEXT
+### A0.5 Public hardening, status: CODE COMPLETE 2026-08-03, awaiting deploy
 
-All server side, no UI, testable through the existing acceptance harness. This is the milestone that makes a public deploy defensible.
+All server side, no UI. This is the milestone that makes a public deploy defensible.
 
-- `SessionDoc` to `v: 2`: `players`, `by` on letters, `lastActiveAt`, `template`, `clonedFrom`. Bring `src/types.ts` in sync and remove the drift noted in section 4
-- Enforce photo size on the stream, not the header (invariant 9)
-- Rate limits from the section 7 table
+- `SessionDoc` to `v: 2`: `players`, `by` on letters, `lastActiveAt`, `template`, `clonedFrom`. `src/types.ts` is back in sync and the drift noted in section 4 is closed
+- Photo size enforced by counting the body, not by reading the header (invariant 9)
+- Rate limits from the section 7 table, in a dedicated Durable Object (ADR-9)
 - `POST /session/:id/clone` and `DELETE /session/:id`
 - Self-expiry via alarms, plus the R2 lifecycle backstop
 - `hello` message, nickname sanitization and cap, `peers` carrying the player list, `by` on `cell`
+- Not in the original plan, added because it was found to be exploitable: an allowlist so internal Durable Object paths are not publicly reachable
 
 Checks:
 
-- Automated: extend `npm test` to cover a stream-enforced oversize upload with a lying `Content-Length`, a clone of a saved puzzle, a delete, a rate-limited burst, a write rejected before `hello`, and a template rejecting a write
-- Human: confirm the R2 lifecycle rule exists via `npx wrangler r2 bucket lifecycle list arrowword-photos`
+- Automated: `npm test`, which is 35 checks in `test/acceptance.mjs` plus 3 in `test/expiry.mjs`. Expiry needs its own run because retention is worker-wide and a window short enough to observe would delete the sessions the other checks depend on; that run starts its own worker with `--var RETENTION_MS:3000`, so a thirty day rule is verified in about ten seconds
+- Human, still outstanding: confirm the R2 lifecycle rule exists via `npx wrangler r2 bucket lifecycle list arrowword-photos`
 - Resolved before this milestone started: alarms are supported on the SQLite backend, which is the only backend on the free plan. See section 7 for the two handler constraints that came out of confirming it
+
+**Not done, and moved to A2.5: the check that a template refuses a write.** Enforcement is implemented and templates are read-only in code, but nothing can create one. Section 5 deliberately gives templates no creation endpoint, on the grounds that an unauthenticated way to mint objects exempt from expiry is a bad idea. The consequence, not noticed when that was written, is that "by hand" names no mechanism at all, so the behavior cannot be exercised from the outside and cannot be tested. Two candidate mechanisms, to decide at A2.5 when a template is actually needed:
+
+1. **A `TEMPLATE_SESSIONS` var listing template ids**, checked by the worker. Template status becomes deployment configuration rather than mutable data, so no request can ever mint one, and marking the demo is a config edit plus a deploy. Costs moving `template` in section 4 from stored to derived.
+2. **An admin endpoint gated by a secret** set with `wrangler secret put`. Keeps `template` stored, and is authenticated so it does not reopen the objection in section 5. Costs a secret, which is Hossein's step.
+
+Until one is chosen, A0.5 enforces a state that nothing can enter. That is safe but untested, and section 15 is explicit that an untested behavior is not finished, so it is recorded here rather than counted as passing.
 
 ### A1 Photo and alignment UI, status: TODO
 
@@ -394,7 +420,8 @@ The front door. Depends on A2, because building the template needs the tagging U
 
 Checks:
 
-- Automated: a test that clones the template, confirms the clone has the same grid and empty letters, confirms the clone borrows rather than copies `photoKey`, and confirms writes to the template are refused
+- First, decide how a template gets created: the two candidates are in A0.5's note. Nothing can create one today
+- Automated: a test that clones the template, confirms the clone has the same grid and empty letters, confirms the clone borrows rather than copies `photoKey`, and confirms writes to the template are refused. The first three already pass in A0.5 against an ordinary saved puzzle; the fourth is what waits on template creation existing
 - Human: open the published playground link on a phone, in a browser with no history for this site, and reach a typeable grid in one click
 
 ### A3 Play rendering, status: TODO
@@ -604,6 +631,14 @@ Consequences: identity is an unverified per-session nickname, so impersonation i
 Alternatives: a cron-triggered sweep, rejected because Durable Object instances are not cheaply enumerable, so a sweep would need a separate index object holding every session id, which is a second source of truth and a new failure mode. R2 lifecycle rules alone, rejected because they delete photos and know nothing about Durable Object storage, so every expired puzzle would leave an orphaned session document that renders as a broken grid.
 
 Consequences: no index, no cron, no enumeration, and expiry logic lives in the object that owns the data. `setAlarm` overwriting any existing alarm is what makes a sliding window free. An R2 lifecycle rule survives as a backstop with a longer window, for orphans only. Templates carry no alarm, which is why "never expires" had to become an invariant rather than a convention.
+
+**ADR-9: Rate limiting in a dedicated Durable Object, not the native binding.** Decided 2026-08-03. A `RateLimiter` class holds fixed-window per-IP counters, and the limits in section 7 are enforced against it.
+
+Alternative was Cloudflare's built-in rate limiting binding, which is less code and needs no new class. Rejected because it is configured per worker rather than in application code, so the acceptance suite cannot drive it locally, and section 15 says a milestone with no runnable check is not done. A limit that ships untested is a limit nobody knows works.
+
+Also rejected: counting inside `ArrowwordSession`. A per-session object is the wrong scope for a limit whose whole purpose is to cap how many sessions one caller can create.
+
+Consequences: a second Durable Object class and a second migration tag. This is the safe direction of a Durable Object migration, since section 16 notes that adding a class is safe while renaming or deleting one is not. The counter is keyed on `CF-Connecting-IP`, which is absent under `wrangler dev`, so a documented local fallback is required and the tests depend on it.
 
 ## 18. Open questions (non-blocking)
 
