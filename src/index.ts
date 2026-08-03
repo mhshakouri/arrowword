@@ -35,6 +35,12 @@ export interface Env {
      writable, meant to be cloned. Configuration rather than data on purpose, so
      that no request can mint an object exempt from expiry. See ADR-12. */
   TEMPLATE_SESSIONS?: string;
+  /* Per-IP hourly ceilings, overridable so they can be tuned without a code
+     change and driven down in tests without waiting an hour. Section 7 has the
+     defaults and the reasoning. */
+  RATE_LIMIT_SESSION?: string;
+  RATE_LIMIT_PHOTO?: string;
+  RATE_LIMIT_CLONE?: string;
 }
 
 const SESSION_ID = /^[0-9a-f]{32}$/;
@@ -59,12 +65,33 @@ function retentionMs(env: Env): number {
     : DEFAULT_RETENTION_MS;
 }
 
-/* Section 7 limits. Per IP, fixed window. */
-const RATE_LIMITS = {
-  session: { limit: 10, windowMs: 3_600_000 },
-  photo: { limit: 5, windowMs: 3_600_000 },
-  clone: { limit: 30, windowMs: 3_600_000 },
+/* Section 7 limits. Per IP, one hour fixed window anchored to first use.
+
+   Raised 2026-08-03 from 10, 5 and 30 after the first real measurement: making
+   the demo template meant retaking photos, and each attempt spends one session
+   and one upload, so five uploads an hour is five attempts an hour for anyone
+   framing a photo properly. Section 7 always said these were a starting point
+   rather than a measurement, and this is the measurement. */
+const RATE_LIMIT_DEFAULTS = {
+  session: 30,
+  photo: 20,
+  clone: 60,
 } as const;
+
+const RATE_WINDOW_MS = 3_600_000;
+
+function rateLimit(env: Env, action: keyof typeof RATE_LIMIT_DEFAULTS): number {
+  const override = Number(
+    action === "session"
+      ? env.RATE_LIMIT_SESSION
+      : action === "photo"
+        ? env.RATE_LIMIT_PHOTO
+        : env.RATE_LIMIT_CLONE,
+  );
+  return Number.isInteger(override) && override > 0
+    ? override
+    : RATE_LIMIT_DEFAULTS[action];
+}
 
 /* Paths a client may reach on a session object. Anything else is internal and
    must not be forwarded, because the worker routes /session/:id/<rest> straight
@@ -257,9 +284,10 @@ function sessionStub(env: Env, id: string): DurableObjectStub {
 async function allow(
   env: Env,
   request: Request,
-  action: keyof typeof RATE_LIMITS,
+  action: keyof typeof RATE_LIMIT_DEFAULTS,
 ): Promise<boolean> {
-  const { limit, windowMs } = RATE_LIMITS[action];
+  const limit = rateLimit(env, action);
+  const windowMs = RATE_WINDOW_MS;
   const ip = clientIp(request);
   const stub = env.RATE_LIMITER.get(env.RATE_LIMITER.idFromName(`ip:${ip}`));
   const url = `https://do/take?bucket=${encodeURIComponent(action)}&limit=${limit}&window=${windowMs}`;

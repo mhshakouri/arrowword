@@ -58,6 +58,11 @@
     // to be cloned. Configuration rather than data so nothing can mint one by
     // request. Set this to the puzzle id after tagging it, then deploy.
     "TEMPLATE_SESSIONS": "a8dae3c161debc4e8ed0336f3938b797",
+    // Per-IP hourly ceilings. Empty means the defaults in src/index.ts, which
+    // spec section 7 documents. Set one here to tune without a code change.
+    "RATE_LIMIT_SESSION": "",
+    "RATE_LIMIT_PHOTO": "",
+    "RATE_LIMIT_CLONE": "",
     // Same-origin once the UI is served from this worker, so this stays empty
     // unless a different origin ever needs access.
     "ALLOWED_ORIGINS": "",

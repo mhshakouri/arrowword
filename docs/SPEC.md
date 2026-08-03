@@ -8,7 +8,7 @@ Changed 2026-08-02 (v6): this is a public playground app, linked from mhshakouri
 
 Changed 2026-08-03 (v7): AI generated crossword-style puzzles are scheduled as the B series, so this revision fills in everything the generated path needs from generation through to play. The shaping decision throughout is **smallest playable**: small grids, few entries, no auto-advance, no correctness checking, no prefilled cells, and answers that are not treated as secret. See ADR-12 and ADR-13.
 
-**Build status: A2 code complete 2026-08-03, awaiting its human check. A2.5 is next.** A puzzle can be made end to end and shared: photo, alignment, tagging, save, link. Play rendering is A3. Deployed at `arrowword.mhshakouri.dev`. See section 12.
+**Build status: A2 and A2.5's plumbing done 2026-08-03. A3 is next, and it is what makes the demo playable.** A puzzle can be made end to end and shared: photo, alignment, tagging, save, link. Play rendering is A3. Deployed at `arrowword.mhshakouri.dev`. See section 12.
 
 ---
 
@@ -345,9 +345,9 @@ Values a coding agent would otherwise invent. All enforced server side.
 | Nickname length                | 24 graphemes     | Display only, and it is rendered to other people                 |
 | Concurrent sockets per session | 10               | Bounds broadcast fanout and DO memory                            |
 | Players recorded per session   | 50               | Stops `players` growing without bound on a popular clone         |
-| Session creations per IP       | 10 per hour      | `POST /session` is the cheapest way to make the worker do work   |
-| Photo uploads per IP           | 5 per hour       | The only endpoint that costs storage                             |
-| Clones per IP                  | 30 per hour      | Generous: this is the path visitors are meant to take            |
+| Session creations per IP       | 30 per hour      | `POST /session` is the cheapest way to make the worker do work   |
+| Photo uploads per IP           | 20 per hour      | The only endpoint that costs storage                             |
+| Clones per IP                  | 60 per hour      | Generous: this is the path visitors are meant to take            |
 | Session retention              | 30 days inactive | Sliding, see self-expiry below                                   |
 | Generated grid size            | 11 x 11 max      | Smallest playable, see generation architecture below             |
 | Entries per generated puzzle   | 12 max           | Keeps packing tractable and the clue list scannable              |
@@ -403,6 +403,12 @@ It must **fail closed**, and its failure needs a user-facing state saying the da
 **Attempts count, not successes.** A failed generation costs the same model calls as a successful one, so counting only what worked would let anyone burn the entire daily budget for free by causing failures. The counter increments when generation is attempted, including when repair fails and the deterministic packer takes over.
 
 The per-IP limits above are a starting point, not a measurement. IP is a weak key: it punishes shared NAT and is trivially rotated. It is chosen because it needs no identity, which is the whole premise of the app. Revisit with real traffic rather than in advance.
+
+**Raised 2026-08-03, from 10, 5 and 30, by the first real measurement.** Making the demo template meant retaking photos, and each attempt spends one session and one upload, because `/new` creates the session before the upload. So five uploads an hour was five attempts an hour for anyone framing a photo properly, and the person it stopped first was the author of the app.
+
+Storage exposure at the new numbers stays small: 20 uploads an hour at the 600 KB budget is 12 MB an hour per address, against a 10 GB free tier and free egress, and everything expires after 30 days idle. The unmoderated-content exposure in section 16 grows in proportion and its mitigations are unchanged.
+
+All three are overridable per deployment (`RATE_LIMIT_SESSION`, `RATE_LIMIT_PHOTO`, `RATE_LIMIT_CLONE`), so tuning them is a configuration change rather than a code change, and a test can drive them down instead of waiting an hour. The acceptance check asserts that a burst is refused rather than which attempt is refused, because pinning the number would break the test every time the limit is tuned, which is the opposite of its purpose.
 
 ### Self-expiry
 
@@ -569,12 +575,13 @@ A1 adds no endpoints, so the server's exposure is unchanged. What changed is on 
 
 **States owed by A1 and now delivered:** rate limited, and photo too large. Both render as sentences with what to do next, and a dropped connection was added alongside them, since that is the likeliest failure on a phone and is not a status code at all.
 
-### A2 Tagging and save, status: CODE COMPLETE 2026-08-03, awaiting the human check
+### A2 Tagging and save, status: DONE 2026-08-03
 
 Tap to cycle cell type, prefilled letter prompt, save, share link with copy button.
 
 - Automated: a tagged puzzle is posted and reloaded through the API with its cells and given letters intact, plus six rejection cases for the validation described below
-- Human, outstanding: tag a real puzzle end to end and open the share link in a second browser
+- Human, done 2026-08-03: tagged a real puzzle end to end on the deployed site, which produced the demo template in A2.5
+- Moved to A3: "open the share link in a second browser". A2 was written as though a share link could be checked when it was made, and it cannot: `/s/:id` renders nothing until play rendering exists, so there is no observable difference between a working link and a broken one. Verifying it here would have been theater
 
 **Security pass.** A2 adds no endpoints, and the one thing it does add is validation that was missing.
 
@@ -584,11 +591,11 @@ Given letters are held to exactly one grapheme by `Intl.Segmenter`, the same rul
 
 Worth stating for A3: a given letter is the first untrusted string this project renders. It is author-supplied rather than stranger-supplied, and it is capped at one grapheme, so it is a narrow surface. Invariant 8 still applies to it, and A3 widens that surface considerably.
 
-### A2.5 Demo puzzle and clone flow, status: PLUMBING DONE 2026-08-03, awaiting a real puzzle and A3
+### A2.5 Demo puzzle and clone flow, status: PLUMBING DONE 2026-08-03, playable once A3 lands
 
 The front door. Depends on A2, because building the template needs the tagging UI.
 
-- Hossein photographs and tags one good puzzle, which becomes the template. **Outstanding**, and the only content this project needs from a human
+- Hossein photographs and tags one good puzzle, which becomes the template. **Done 2026-08-03**: 19 by 13, 247 cells, 48 clue and 189 answer and 10 dead, with a 547 KB photo, which is the first real evidence the 600 KB budget in section 16 is sized right
 - Name it in `TEMPLATE_SESSIONS` and deploy. Done as a mechanism, see the ADR-12 amendment
 - Landing page at `/` leads with the demo. **Done**: it reads the id from `GET /config` and cloning is the click
 - Link it from the playground page in the mhshakouri.dev repo, which is a change in that repository, not this one
@@ -603,7 +610,10 @@ Checks:
 - Automated, done: `test/template.mjs`, 15 checks. A session is made ordinary, proven writable, then named in configuration and the worker restarted, after which the same session refuses writes with `this puzzle is read only`, refuses deletion with 403, outlives the retention window, and clones into an ordinary session that borrows the photo, starts empty, is not itself a template, records what it came from, and is writable. Deleting that clone leaves the template's photo intact, which is invariant 6 and the failure that would take the demo down for everyone
 - Human: open the published playground link on a phone, in a browser with no history for this site, and reach a typeable grid in one click
 
-### A3 Play rendering, status: TODO
+### A3 Play rendering, status: NEXT
+
+Inherited from A2: open a share link in a second browser and confirm the puzzle
+loads. It could not be checked when A2 made the link, because nothing rendered.
 
 Grid over photo, four cell types visually distinct, clue zoom, Persian letters in cells.
 
