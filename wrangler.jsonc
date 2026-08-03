@@ -57,7 +57,7 @@
     // Session ids that are demo templates: never expire, never writable, meant
     // to be cloned. Configuration rather than data so nothing can mint one by
     // request. Set this to the puzzle id after tagging it, then deploy.
-    "TEMPLATE_SESSIONS": "",
+    "TEMPLATE_SESSIONS": "a8dae3c161debc4e8ed0336f3938b797",
     // Same-origin once the UI is served from this worker, so this stays empty
     // unless a different origin ever needs access.
     "ALLOWED_ORIGINS": "",
