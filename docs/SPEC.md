@@ -498,6 +498,8 @@ uses an external provider rather than Workers AI, and section 14 has that fork.
 
 Rewritten 2026-08-03, because the reasoning underneath the old numbers turned out to be wrong.
 
+**Confirmed 2026-08-03, at the start of B3:** this account is on **Workers Free**, so everything below applies as written. Section 16 records the check, what it rests on, and what changes if the plan ever moves to Paid.
+
 **There is no per-call bill to bound.** Workers AI gives 10,000 neurons a day free, and on the free plan exhausting the allocation **returns errors rather than charging**. That is the same shape as Workers requests answering 429 past 100,000 a day: no cap to configure, nothing to be surprised by, and no invoice to protect. The old framing, that generation is the first operation costing money per call, was simply not true of Workers AI on this plan.
 
 **What remains is fairness, and it became the real problem.** The 10,000 neurons are a single global pool. Without a limit, one script drains the day in seconds and every visitor after it, recruiters included, meets "out of budget for today". That is a denial of service against the showcase, which is the whole purpose of the app, and it is worse than a bill because it cannot be refunded.
@@ -1037,6 +1039,16 @@ Accepted deliberately: this app hosts unmoderated user images. The mitigation th
 Escape hatch, pre-decided so it is not designed under pressure: if abuse appears, gate `PUT photo` behind a shared passphrase while leaving the demo, cloning, and play fully open. That preserves the entire visitor experience and costs roughly a hundred lines. It is written down here because the time to choose it is before it is needed.
 
 **Cost control.** New in v6, and extended by ADR-12. Everything in v1 costs storage or requests, both cheap and both bounded. Generation was expected to be the first thing costing money per call, and on Workers AI it is not: the free allocation fails with errors rather than charging, so the exposure is a day of unavailability rather than a bill. That moves the concern from cost to fairness, since the allocation is a single pool anyone can drain, and section 7 has the two mechanisms. An external provider would put the bill back and with it a provider-side spend cap. The numbers below are in section 6, verified rather than assumed. The summary: R2 egress is free and storage overage is linear and cheap, Workers request overage returns 429 instead of billing, so no single burst produces a large invoice. The two dimensions that were genuinely uncapped were indefinite retention and a header-trusted size limit, and A0.5 closes both. Billing alerts in the Cloudflare dashboard are the backstop for everything unforeseen.
+
+**Which plan this actually runs on, confirmed 2026-08-03.** Everything above assumed Workers Free and nobody had checked, which made it the one load-bearing platform fact in this project taken on faith. Checked at the start of B3, because ADR-12 deleted an entire milestone on the strength of it.
+
+**Workers is on the Free plan. R2 is paid.** Reported by Hossein; an attempt to confirm it through the Cloudflare API failed on authentication, so this is his account rather than a tool's answer. Corroborating evidence, which is weaker but independent: `wrangler.jsonc` declares `new_sqlite_classes`, and SQLite-backed Durable Objects are what the Free plan requires.
+
+Three consequences, in descending order of how much they matter:
+
+- **ADR-12 holds.** On Workers Free, exceeding the 10,000 daily neurons fails with an error and cannot charge. Cloudflare's own wording: "If you exceed any one of the above limits, further operations will fail with an error." **On Workers Paid the same overage bills at $0.011 per 1,000 neurons**, so if this account ever upgrades, ADR-12's cost reasoning stops being true and section 7's generation limits need re-reading. Recorded here so that a plan change is visibly a spec change.
+- **R2 is the one product on this account that can actually bill**, which makes it the only real cost exposure in the app. It stays small by construction: 20 uploads an hour per address at the 600 KB budget is about 12 MB an hour, so one address sustained for a full retention window is roughly 8.6 GB, against a 10 GB free tier, and egress is free. Ten such addresses would cost on the order of a dollar a month. The 30 day expiry is what stops that accumulating rather than the rate limit.
+- **Workers Free caps requests at 100,000 a day**, past which requests are refused rather than billed. That is an availability ceiling on a public app, not a cost one, and it is the same shape as the neuron ceiling: the failure mode is unavailability.
 
 **Logging and observability.** The worker runs with observability enabled. **Session ids must never be logged in full**, because the id is the credential; log a short hash prefix instead. Log enough to answer "why did this session fail" without logging puzzle content or letters.
 
