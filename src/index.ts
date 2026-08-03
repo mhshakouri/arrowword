@@ -27,15 +27,26 @@ export interface Env {
      only so the expiry test can run in seconds instead of thirty days; unset
      everywhere else, which is what production runs on. */
   RETENTION_MS?: string;
+  /* The photo ceiling, overridable for the same reason: testing an 8 MB cap
+     means moving more than 8 MB, and `wrangler dev` does not survive that. Unset
+     in production. */
+  MAX_PHOTO_BYTES?: string;
 }
 
 const SESSION_ID = /^[0-9a-f]{32}$/;
-const MAX_PHOTO_BYTES = 8 * 1024 * 1024;
+const DEFAULT_MAX_PHOTO_BYTES = 8 * 1024 * 1024;
 const MAX_NICKNAME_GRAPHEMES = 24;
 const MAX_PLAYERS = 50;
 const MAX_SOCKETS = 10;
 const PALETTE_SIZE = 10;
 const DEFAULT_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+
+function maxPhotoBytes(env: Env): number {
+  const override = Number(env.MAX_PHOTO_BYTES);
+  return Number.isInteger(override) && override > 0
+    ? override
+    : DEFAULT_MAX_PHOTO_BYTES;
+}
 
 function retentionMs(env: Env): number {
   const override = Number(env.RETENTION_MS);
@@ -96,6 +107,81 @@ function clientIp(request: Request): string {
   return forwarded?.split(",")[0]?.trim() || edge || "local";
 }
 
+const CELL_TYPES = new Set(["dead", "clue", "answer", "prefilled"]);
+const MAX_TITLE = 200;
+
+/* Cells are stored once and never change (invariant 4), so anything wrong here
+   is wrong forever. Until A2 nothing produced cells except a test, and none of
+   this was checked: an unknown type, or a whole sentence as a prefilled letter,
+   would have been accepted and then rendered to players. */
+type CellCheck = { ok: true; cells: Cell[][] } | { ok: false; problem: string };
+
+function checkCells(cells: unknown, rows: number, cols: number): CellCheck {
+  if (!Array.isArray(cells) || cells.length !== rows) {
+    return { ok: false, problem: "cells must be rows x cols" };
+  }
+  for (let row = 0; row < rows; row++) {
+    const line = cells[row];
+    if (!Array.isArray(line) || line.length !== cols) {
+      return { ok: false, problem: "cells must be rows x cols" };
+    }
+    for (let col = 0; col < cols; col++) {
+      const cell = line[col] as { type?: unknown; letter?: unknown };
+      if (!cell || typeof cell !== "object") {
+        return { ok: false, problem: `cell ${row},${col} is not an object` };
+      }
+      if (typeof cell.type !== "string" || !CELL_TYPES.has(cell.type)) {
+        return {
+          ok: false,
+          problem: `cell ${row},${col} has an unknown type`,
+        };
+      }
+      if (cell.type === "prefilled") {
+        /* One grapheme, not one code point: section 9. Same rule the WebSocket
+           write path applies to player letters. */
+        if (
+          typeof cell.letter !== "string" ||
+          graphemes(cell.letter).length !== 1
+        ) {
+          return {
+            ok: false,
+            problem: `cell ${row},${col} must have exactly one letter`,
+          };
+        }
+      } else if (cell.letter !== undefined) {
+        /* Invariant 1 in spirit: a letter on a non-prefilled cell is either a
+           mistake or an attempt to smuggle content into a cell nobody can edit. */
+        return {
+          ok: false,
+          problem: `cell ${row},${col} must not carry a letter`,
+        };
+      }
+    }
+  }
+  /* Sound because every element was just checked, field by field. The cast is
+     the narrowing TypeScript cannot derive from a loop. */
+  return { ok: true, cells: cells as Cell[][] };
+}
+
+function invalidAlignment(alignment: unknown): string | null {
+  if (!alignment || typeof alignment !== "object") return "alignment required";
+  const corners = ["topLeft", "topRight", "bottomRight", "bottomLeft"] as const;
+  const a = alignment as Record<string, { x?: unknown; y?: unknown }>;
+  for (const corner of corners) {
+    const p = a[corner];
+    if (!p || typeof p !== "object") return `alignment.${corner} is missing`;
+    for (const axis of ["x", "y"] as const) {
+      const v = p[axis];
+      /* Normalized to the image, so anything outside 0..1 is meaningless and
+         would place cells off the photo. */
+      if (typeof v !== "number" || !Number.isFinite(v) || v < 0 || v > 1) {
+        return `alignment.${corner}.${axis} must be a number from 0 to 1`;
+      }
+    }
+  }
+  return null;
+}
+
 function corsHeaders(request: Request, env: Env): Record<string, string> {
   const origin = request.headers.get("Origin") ?? "";
   const allowed = (env.ALLOWED_ORIGINS ?? "")
@@ -117,11 +203,33 @@ function corsHeaders(request: Request, env: Env): Record<string, string> {
    runtime throw "Can't read from request stream after response has been sent",
    which stalls the next request on the connection. Any early return from a
    request that carries a body must drop it first. */
+/* Returning a response while an unread request body is still open makes the
+   runtime throw "Can't read from request stream after response has been sent",
+   which stalls the next request on the connection. Any early return from a
+   request that carries a body must deal with that body first.
+
+   Read it and throw it away. Do not cancel it. Cancelling a body the client is
+   still uploading tears the stream down mid-flight, and that is not merely
+   noisy: it can take the whole process down. An oversized upload killed
+   `wrangler dev` within two attempts, and shrinking the body did not help, which
+   is what showed the size was never the point. Draining always worked.
+
+   The cost accepted is that declining a request means reading what the client
+   chose to send. Ingress is not billed, the declared length is already rejected
+   before any of this when it exceeds the cap, and the per-IP upload limit bounds
+   how often anyone can make us do it. Weighed against a way to stop the worker
+   with one request, reading the bytes is clearly the cheaper side. */
 async function discardBody(request: Request): Promise<void> {
+  const body = request.body;
+  if (!body) return;
   try {
-    await request.body?.cancel();
+    const reader = body.getReader();
+    for (;;) {
+      const { done } = await reader.read();
+      if (done) return;
+    }
   } catch {
-    /* Already consumed or closed. */
+    /* Already consumed, already closed, or cancelled somewhere else. */
   }
 }
 
@@ -268,6 +376,13 @@ export default {
       );
       /* A 101 response carries the WebSocket and its headers are immutable. */
       if (res.status === 101) return res;
+      /* The object may have answered without draining the body, which every
+         early return in it does on purpose. Cancelling in there cancels the
+         object's copy; this incoming request is a separate handle onto the same
+         upload, and returning while it is unread throws "Can't read from
+         request stream after response has been sent" out here instead. Harmless
+         when the body was already consumed. */
+      await discardBody(request);
       const out = new Response(res.body, res);
       for (const [k, v] of Object.entries(cors)) out.headers.set(k, v);
       return out;
@@ -479,15 +594,18 @@ export class ArrowwordSession implements DurableObject {
           status: 400,
         });
       }
-      if (
-        !Array.isArray(cells) ||
-        cells.length !== rows ||
-        cells.some((r) => r.length !== cols)
-      ) {
-        return new Response("cells must be rows x cols", { status: 400 });
+      const checked = checkCells(cells, rows, cols);
+      if (!checked.ok) return new Response(checked.problem, { status: 400 });
+
+      const alignmentProblem = invalidAlignment(body.alignment);
+      if (alignmentProblem)
+        return new Response(alignmentProblem, { status: 400 });
+
+      if (typeof body.title === "string" && body.title.length > MAX_TITLE) {
+        return new Response(`title must be ${MAX_TITLE} characters or fewer`, {
+          status: 400,
+        });
       }
-      if (!body.alignment)
-        return new Response("alignment required", { status: 400 });
 
       const next = await this.save({
         ...doc,
@@ -495,7 +613,7 @@ export class ArrowwordSession implements DurableObject {
         rows,
         cols,
         alignment: body.alignment as GridAlignment,
-        cells,
+        cells: checked.cells,
         puzzleSaved: true,
       });
       this.broadcast({ type: "state", doc: next });
@@ -506,46 +624,49 @@ export class ArrowwordSession implements DurableObject {
       if (!request.body) {
         return new Response("photo body required", { status: 400 });
       }
-      /* An honest client is turned away before uploading anything. This header
-         is an optimization and nothing more: the loop below is the enforcing
-         check, which is invariant 9 and the whole point of this milestone. */
-      const claimed = Number(request.headers.get("Content-Length") ?? "0");
-      if (claimed > MAX_PHOTO_BYTES) {
+
+      /* Content-Length is required, and it is a declaration rather than a claim
+         we trust: FixedLengthStream below enforces it byte for byte, so a client
+         that lies gets an errored stream instead of a stored photo. Requiring it
+         is acceptable because every browser sets it for a Blob or a typed array,
+         which is what the wizard sends. */
+      const declared = Number(request.headers.get("Content-Length"));
+      if (!Number.isInteger(declared) || declared <= 0) {
+        await discardBody(request);
+        return new Response("photo needs a Content-Length", { status: 411 });
+      }
+      if (declared > maxPhotoBytes(this.env)) {
         await discardBody(request);
         return new Response("photo too large", { status: 413 });
       }
 
-      /* Counted into memory rather than piped straight to R2, because R2 needs
-         a known length and a TransformStream has none: `put` rejects with
-         "Provided readable stream must have a known length". Buffering is
-         bounded by the very cap being enforced, so the ceiling on memory is the
-         8 MB we already refuse to exceed, and rejecting before R2 is touched is
-         what turns a mid-stream abort into an honest 413. */
-      const reader = request.body.getReader();
-      const chunks: Uint8Array[] = [];
-      let seen = 0;
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        seen += value.byteLength;
-        if (seen > MAX_PHOTO_BYTES) {
-          await reader.cancel();
-          return new Response("photo too large", { status: 413 });
-        }
-        chunks.push(value);
-      }
+      /* Streamed straight to R2 through a FixedLengthStream, which gives `put`
+         the known length it demands while capping how much is ever read.
 
-      const body = new Uint8Array(seen);
-      let offset = 0;
-      for (const chunk of chunks) {
-        body.set(chunk, offset);
-        offset += chunk.byteLength;
-      }
+         This replaces buffering the whole body in memory and cancelling past the
+         cap, which was a way to kill the worker: a single 9 MB upload against an
+         8 MB ceiling took `wrangler dev` down within two attempts, reproducibly,
+         with an empty error. On a public endpoint that is a denial of service
+         rather than a flaky test. Nothing is accumulated now, and a liar is cut
+         off at the length it declared rather than at the cap. */
+      const fixed = new FixedLengthStream(declared);
+      /* Not awaited: R2 consumes the readable half while this fills the writable
+         half, and awaiting here would deadlock. A rejection is expected whenever
+         the body and the declared length disagree, and surfaces below as a
+         failed `put`. */
+      void request.body.pipeTo(fixed.writable).catch(() => {});
 
       const key = `photos/${this.ctx.id.toString()}.jpg`;
-      await this.env.PHOTOS.put(key, body, {
-        httpMetadata: { contentType: "image/jpeg" },
-      });
+      try {
+        await this.env.PHOTOS.put(key, fixed.readable, {
+          httpMetadata: { contentType: "image/jpeg" },
+        });
+      } catch {
+        /* R2 writes are atomic, so a stream that errored stored nothing. */
+        return new Response("photo did not match its declared length", {
+          status: 400,
+        });
+      }
       await this.save({ ...doc, photoKey: key });
       return json({ ok: true, photoKey: key });
     }

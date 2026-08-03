@@ -7,16 +7,33 @@
 
 import { useState } from "preact/hooks";
 import type { GridAlignment } from "../../types";
-import { ApiError, createSession, photoUrl, uploadPhoto } from "../lib/api.ts";
+import type { Cell } from "../../types";
+import {
+  ApiError,
+  createSession,
+  photoUrl,
+  savePuzzle,
+  uploadPhoto,
+} from "../lib/api.ts";
 import { defaultAlignment } from "../lib/alignment.ts";
 import { downscale, kb, LONGEST_EDGE } from "../lib/photo.ts";
 import { remember } from "../lib/local.ts";
 import { navigate } from "../lib/router.ts";
 import { AlignmentEditor } from "../components/AlignmentEditor.tsx";
+import { CellTagger } from "../components/CellTagger.tsx";
+import { ShareLink } from "../components/ShareLink.tsx";
 
 const MAX_SIDE = 30; /* Spec section 7. */
 
-type Step = "photo" | "grid";
+type Step = "photo" | "grid" | "tag" | "saved";
+
+/* Everything starts as an answer cell, because a Persian arrowword is mostly
+   answer cells: defaulting the other way would mean tagging the whole grid. */
+function blankCells(rows: number, cols: number): Cell[][] {
+  return Array.from({ length: rows }, () =>
+    Array.from({ length: cols }, (): Cell => ({ type: "answer" })),
+  );
+}
 
 /* `?session=<id>` resumes at the grid step. Without it, a reload after the
    upload would strand a session that already has a photo and make the user pay
@@ -38,6 +55,8 @@ export function New() {
   const [rows, setRows] = useState(11);
   const [cols, setCols] = useState(11);
   const [alignment, setAlignment] = useState<GridAlignment>(defaultAlignment);
+  const [cells, setCells] = useState<Cell[][]>(() => blankCells(11, 11));
+  const [title, setTitle] = useState("");
 
   async function onPick(file: File) {
     setError(null);
@@ -69,6 +88,35 @@ export function New() {
           : err instanceof Error
             ? err.message
             : "Something went wrong preparing that photo.",
+      );
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function onSave() {
+    if (!sessionId) return;
+    setError(null);
+    try {
+      setBusy("Saving");
+      await savePuzzle(sessionId, {
+        title: title.trim() || "Untitled",
+        rows,
+        cols,
+        alignment,
+        cells,
+      });
+      remember(sessionId, title.trim() || "Untitled");
+      setStep("saved");
+    } catch (err) {
+      /* A 409 means this session already has a puzzle, which invariant 4 makes
+         permanent. Saying so beats a retry button that can never succeed. */
+      setError(
+        err instanceof ApiError
+          ? err.failure.kind === "conflict"
+            ? "This puzzle was already saved once, and a saved puzzle cannot be changed. Start a new one to make a different grid."
+            : err.failure.message
+          : "Could not save the puzzle.",
       );
     } finally {
       setBusy(null);
@@ -184,13 +232,90 @@ export function New() {
               </p>
             )}
 
-            <div class="notice">
-              Tagging each cell and saving arrives with milestone A2. Your photo
-              and this session are already saved, so the link keeps working.
-              <div class="row" style="margin-top:0.75rem">
-                <button onClick={() => navigate("/")}>Back to start</button>
-              </div>
+            <div class="row">
+              <button
+                class="primary"
+                onClick={() => {
+                  /* Sized here rather than on every keystroke, so changing rows
+                     mid-typing does not repeatedly discard tagging. */
+                  setCells(blankCells(rows, cols));
+                  setStep("tag");
+                }}
+              >
+                Corners look right, tag the cells
+              </button>
+              <button onClick={() => navigate("/")}>Save for later</button>
             </div>
+          </div>
+        </>
+      )}
+      {step === "tag" && sessionId && (
+        <>
+          <p class="lede">
+            Mark what each cell is. Everything starts as an answer cell, so you
+            only have to mark the clues, the dead cells, and any letters already
+            printed.
+          </p>
+
+          <div class="stack">
+            <CellTagger
+              photoSrc={photoUrl(sessionId)}
+              rows={rows}
+              cols={cols}
+              alignment={alignment}
+              cells={cells}
+              onChange={setCells}
+            />
+
+            <div class="card">
+              <label for="title">Name this puzzle</label>
+              <input
+                id="title"
+                type="text"
+                maxLength={200}
+                placeholder="Untitled"
+                value={title}
+                onInput={(e) =>
+                  setTitle((e.currentTarget as HTMLInputElement).value)
+                }
+              />
+            </div>
+
+            <div class="notice">
+              Saving fixes the grid permanently. Letters people type are stored
+              separately, so the puzzle itself cannot be edited afterwards.
+            </div>
+
+            {error && (
+              <p class="notice error" role="alert">
+                {error}
+              </p>
+            )}
+
+            <div class="row">
+              <button
+                class="primary"
+                disabled={busy !== null}
+                onClick={() => void onSave()}
+              >
+                {busy ?? "Save and get the share link"}
+              </button>
+              <button disabled={busy !== null} onClick={() => setStep("grid")}>
+                Back to corners
+              </button>
+            </div>
+          </div>
+        </>
+      )}
+
+      {step === "saved" && sessionId && (
+        <>
+          <p class="lede">
+            Saved. Send this link to whoever is solving with you.
+          </p>
+          <div class="stack">
+            <ShareLink id={sessionId} />
+            <button onClick={() => navigate("/")}>Back to start</button>
           </div>
         </>
       )}

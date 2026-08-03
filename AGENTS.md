@@ -10,9 +10,10 @@ Parent project: the personal website, `github.com/mhshakouri/mhshakouri.dev`,
 local path `../mhshakouri`. It links to this project and describes it; it never
 hosts it. Design tokens are copied from there, never imported.
 
-**State: A1 complete 2026-08-03. A2, tagging and save, is next.** The backend is
-finished. The UI has a landing page, the photo step, and the alignment editor;
-what remains is tagging, play rendering, and sync. See spec section 12.
+**State: A2 code complete 2026-08-03, awaiting its human check. A2.5, the
+demo puzzle, is next.** A puzzle can
+now be made end to end: photo, alignment, tagging, save, share link. What
+remains is the demo template, play rendering, and sync. See spec section 12.
 
 **This is a public app** as of 2026-08-02 (spec v6): open to visitors with no
 credentials, linked from the playground series on mhshakouri.dev. There is no

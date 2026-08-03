@@ -8,7 +8,7 @@ Changed 2026-08-02 (v6): this is a public playground app, linked from mhshakouri
 
 Changed 2026-08-03 (v7): AI generated crossword-style puzzles are scheduled as the B series, so this revision fills in everything the generated path needs from generation through to play. The shaping decision throughout is **smallest playable**: small grids, few entries, no auto-advance, no correctness checking, no prefilled cells, and answers that are not treated as secret. See ADR-12 and ADR-13.
 
-**Build status: A1 complete 2026-08-03. A2 is next.** The backend is finished and deployed at `arrowword.mhshakouri.dev`. The UI has a landing page, the photo step, and the alignment editor. See section 12.
+**Build status: A2 code complete 2026-08-03, awaiting its human check. A2.5 is next.** A puzzle can be made end to end and shared: photo, alignment, tagging, save, link. Play rendering is A3. Deployed at `arrowword.mhshakouri.dev`. See section 12.
 
 ---
 
@@ -289,7 +289,30 @@ The client must not have to guess. Every rejection is one of these.
 
 An expired session is indistinguishable from one that never existed, and deliberately so: distinguishing them would confirm that a given id was once real, which turns a 404 into an oracle.
 
-Any early return from a request that carries a body must cancel that body first. Returning while the body is unread makes the runtime throw `Can't read from request stream after response has been sent`, which stalls the next request on the connection. This cost 146 seconds of wall time once; the acceptance test now guards it.
+Any early return from a request that carries a body must deal with that body before returning. Returning while it is unread makes the runtime throw `Can't read from request stream after response has been sent`, which stalls the next request on the connection. This cost 146 seconds of wall time once; the acceptance test guards it.
+
+**A single oversized upload could kill the worker, and did.** Found chasing the above, and much worse than it. A0.5 enforced the photo cap by reading the body into memory and cancelling past the ceiling, on the reasoning that buffering was bounded by the cap being enforced. It is, and that was still wrong: a 9 MB upload against an 8 MB ceiling took `wrangler dev` down within two attempts, reproducibly. The first attempt dropped the connection, the second answered 500, the third found nothing listening, and the only clue was an empty error. On a public endpoint that is a denial of service, reachable by anyone, costing one request.
+
+The upload now streams straight to R2 through a `FixedLengthStream` built from `Content-Length`, which is what R2 wants anyway and what its earlier error message was pointing at. Nothing is buffered.
+
+Content-Length is therefore **required**, answered with 411 when missing, and it is a declaration rather than a claim taken on trust: `FixedLengthStream` enforces it byte for byte, so a client that declares 120 and sends 9 MB is cut off after 120 bytes and stores nothing. That inverts the old shape usefully. Before, a lie meant reading up to the cap before refusing; now a lie is bounded by the lie itself. Requiring the header is acceptable because every browser sets it for a Blob or a typed array, which is what the wizard sends.
+
+**Corrected 2026-08-03 (A2): drain the body, never cancel it.** This paragraph used to say cancel, and cancelling turned out to be the cause of the very error it was meant to prevent, and worse than the error.
+
+Tearing down a body the client is still uploading makes the runtime complain asynchronously, after the status has gone out, so the failure appears as an uncaught error beside whichever request came _next_ and kills `wrangler dev` rather than failing a check. Three passes went into placing it: the first blamed the wrong request, the second blamed the body's size. Neither was right. Shrinking the body from 9 MB to 8 KB reproduced it exactly, which is what showed size was never the point. `discardBody` now reads to completion and never cancels.
+
+The cost accepted is that declining a request means reading whatever the client chose to send. Ingress is not billed, a declared length over the cap is rejected before any of this, and the per-IP upload limit bounds how often anyone can force it. Against a way to stop the worker with a single request, reading the bytes is clearly the cheaper side.
+
+Two related mistakes, both fixed:
+
+- **Cancelling inside the Durable Object does not drain the worker's request.** The worker forwards a second `Request` wrapping the same upload, so the object's copy and the incoming one are separate handles. The worker drains its own after the object answers, which is a no-op when the object already consumed it.
+- **The symptom is not local to the guilty request.** It surfaces after the response, so the log shows it next to the request that followed. Read the one before it.
+
+### Testing a limit costs less than reaching it
+
+The photo cap has its own run, `test/photo-limit.mjs`, on a worker started with `--var MAX_PHOTO_BYTES:2048`. Testing an 8 MB ceiling honestly means moving more than 8 MB, and `wrangler dev` does not survive a request body that size: it exits with an empty error and no JS exception, taking the suite with it. Six megabytes is fine, so it is the emulator's limit rather than the worker's.
+
+Setting the ceiling to 2 KB exercises the same code for a thousandth of the bytes, and it tests more than the big version did: a body exactly at the cap, one byte over, one that lies about its length, and four refusals in a row to prove the process survives them. `RETENTION_MS` already worked this way for expiry, and the pattern generalizes: when a limit is expensive to reach, make the limit configurable rather than the test enormous.
 
 ### Learned while building A0.5
 
@@ -314,6 +337,7 @@ Values a coding agent would otherwise invent. All enforced server side.
 | Limit                          | Value            | Reason                                                           |
 | ------------------------------ | ---------------- | ---------------------------------------------------------------- |
 | Photo size                     | 8 MB             | Client downscales to 2000px first, so this is a generous ceiling |
+| Photo `Content-Length`         | required         | Enforced by `FixedLengthStream`, not trusted; 411 when missing   |
 | Grid rows                      | 30               | See storage note below                                           |
 | Grid columns                   | 30               | See storage note below                                           |
 | Title length                   | 200 chars        | Display only                                                     |
@@ -452,8 +476,12 @@ This is the specialist path, not the front door. Most visitors should never reac
 1. Photo: pick or take, downscale, `POST /session` then `PUT photo`.
 2. Grid size: rows and cols, within the limits in section 7.
 3. Align: drag four corners, live overlay of computed cell lines.
-4. Tag: tap cells to cycle type; prompt for prefilled letters. Legend visible.
+4. Tag: pick a type from the legend, then tap or drag cells to apply it. Given letters are tap-only and ask for the letter.
 5. Save: `PUT puzzle`, show the share link prominently (copy button), go to play.
+
+Changed 2026-08-03 (A2): step 4 was "tap cells to cycle type". Cycling costs one tap per step and punishes overshooting, and on an 11 by 11 grid that is 121 chances to tap once too many with no way back except cycling all the way round. Picking a type and painting is the same number of taps in the common case, forgiving when you miss, and lets a run of dead cells be dragged in one gesture. Cells start as `answer`, because a Persian arrowword is mostly answer cells and defaulting the other way means tagging the entire grid by hand.
+
+Given letters are deliberately excluded from drag painting: being asked for a letter mid-gesture, once per cell, would be hostile.
 
 ## 11. Play flow
 
@@ -541,14 +569,22 @@ A1 adds no endpoints, so the server's exposure is unchanged. What changed is on 
 
 **States owed by A1 and now delivered:** rate limited, and photo too large. Both render as sentences with what to do next, and a dropped connection was added alongside them, since that is the likeliest failure on a phone and is not a status code at all.
 
-### A2 Tagging and save, status: NEXT
+### A2 Tagging and save, status: CODE COMPLETE 2026-08-03, awaiting the human check
 
 Tap to cycle cell type, prefilled letter prompt, save, share link with copy button.
 
-- Automated: a test that posts a tagged puzzle and reloads it through the API
-- Human: tag a real puzzle end to end, open the share link in a second browser
+- Automated: a tagged puzzle is posted and reloaded through the API with its cells and given letters intact, plus six rejection cases for the validation described below
+- Human, outstanding: tag a real puzzle end to end and open the share link in a second browser
 
-### A2.5 Demo puzzle and clone flow, status: TODO
+**Security pass.** A2 adds no endpoints, and the one thing it does add is validation that was missing.
+
+Before A2 nothing produced cells except a test, and the save path checked only the shape of the grid. It did not check cell types, so `{ "type": "banana" }` was storable; it did not check given letters, so an entire sentence could be smuggled into a cell that no player can edit; it did not check alignment values, so points outside 0 to 1 could place cells off the photo; and it ignored the 200 character title cap in section 7. Invariant 4 makes a saved puzzle permanent, so each of those would have been wrong forever. All four are now rejected with 400 and a reason naming the cell.
+
+Given letters are held to exactly one grapheme by `Intl.Segmenter`, the same rule the WebSocket write path applies to player letters, and the client applies it too so the two agree rather than merely coexisting.
+
+Worth stating for A3: a given letter is the first untrusted string this project renders. It is author-supplied rather than stranger-supplied, and it is capped at one grapheme, so it is a narrow surface. Invariant 8 still applies to it, and A3 widens that surface considerably.
+
+### A2.5 Demo puzzle and clone flow, status: NEXT once A2's human check passes
 
 The front door. Depends on A2, because building the template needs the tagging UI.
 

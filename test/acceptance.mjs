@@ -244,51 +244,94 @@ check(
 const badId = await req(`${BASE}/session/not-a-real-id/photo`);
 check("bad session id rejected", badId.status === 400, `got ${badId.status}`);
 
+/* ---- A2: the puzzle body is validated, and cells are immutable once saved ---- */
+
+/* A2 is the first milestone that produces cells from a UI, and none of this was
+   checked before it: invariant 4 makes a saved puzzle permanent, so an unknown
+   cell type or a sentence smuggled in as a prefilled letter would have been
+   wrong forever and rendered to players. */
+const rejects = [
+  [
+    "unknown cell type",
+    [
+      [{ type: "clue" }, { type: "answer" }],
+      [{ type: "answer" }, { type: "banana" }],
+    ],
+  ],
+  [
+    "prefilled letter of two graphemes",
+    [
+      [{ type: "clue" }, { type: "answer" }],
+      [{ type: "answer" }, { type: "prefilled", letter: "به" }],
+    ],
+  ],
+  [
+    "prefilled cell with no letter",
+    [
+      [{ type: "clue" }, { type: "answer" }],
+      [{ type: "answer" }, { type: "prefilled" }],
+    ],
+  ],
+  [
+    "letter on a cell that is not prefilled",
+    [
+      [{ type: "clue" }, { type: "answer", letter: "x" }],
+      [{ type: "answer" }, { type: "dead" }],
+    ],
+  ],
+];
+
+for (const [what, badCells] of rejects) {
+  const target = await newSession();
+  const res = await req(
+    `${BASE}/session/${target}/puzzle`,
+    as(MAIN, {
+      method: "PUT",
+      body: JSON.stringify({ ...puzzle, cells: badCells }),
+      headers: { "Content-Type": "application/json" },
+    }),
+  );
+  check(`rejects ${what}`, res.status === 400, `got ${res.status}`);
+}
+
+const badAlignment = await req(
+  `${BASE}/session/${await newSession()}/puzzle`,
+  as(MAIN, {
+    method: "PUT",
+    body: JSON.stringify({
+      ...puzzle,
+      alignment: { ...puzzle.alignment, topLeft: { x: 4, y: 0 } },
+    }),
+    headers: { "Content-Type": "application/json" },
+  }),
+);
+check(
+  "rejects an alignment point outside 0..1",
+  badAlignment.status === 400,
+  `got ${badAlignment.status}`,
+);
+
+const longTitle = await req(
+  `${BASE}/session/${await newSession()}/puzzle`,
+  as(MAIN, {
+    method: "PUT",
+    body: JSON.stringify({ ...puzzle, title: "x".repeat(201) }),
+    headers: { "Content-Type": "application/json" },
+  }),
+);
+check(
+  "rejects a title over 200 characters",
+  longTitle.status === 400,
+  `got ${longTitle.status}`,
+);
+
 /* ---- A0.5: the upload cap is enforced on the stream, not the header ---- */
 
-/* The defect this milestone exists to fix. Content-Length claims something
-   small, the body is 9 MB, and only counting the bytes catches it.
-
-   Two things are asserted, and the second is the one that matters. A client
-   whose upload is refused mid-body may see a clean 413 or a dropped
-   connection, since that is up to how the runtime tears down a request it
-   stopped reading. What must never vary is that nothing got stored. */
-const liarSession = await newSession(`${RUN}-liar`);
-/* Deliberately a plain fetch, not req: a refused connection is one of the two
-   accepted outcomes here, so retrying would push 9 MB eight times to reach the
-   same conclusion. */
-const liar = await fetch(
-  `${BASE}/session/${liarSession}/photo`,
-  as(`${RUN}-liar`, {
-    method: "PUT",
-    body: new Uint8Array(9 * 1024 * 1024),
-    headers: { "Content-Type": "image/jpeg", "Content-Length": "120" },
-  }),
-).catch((err) => ({ status: `refused the connection: ${err.message}` }));
-check(
-  "oversize upload does not succeed despite a lying Content-Length",
-  liar.status !== 200,
-  `got ${liar.status}`,
-);
-const liarPhoto = await req(`${BASE}/session/${liarSession}/photo`);
-check(
-  "oversize upload stored nothing",
-  liarPhoto.status === 404,
-  `got ${liarPhoto.status}`,
-);
-
-/* A photo at the ceiling is still accepted: the cap is a cap, not a smaller
-   one enforced by accident. */
-const atLimit = await newSession(`${RUN}-big`);
-const big = await req(
-  `${BASE}/session/${atLimit}/photo`,
-  as(`${RUN}-big`, {
-    method: "PUT",
-    body: new Uint8Array(6 * 1024 * 1024),
-    headers: { "Content-Type": "image/jpeg" },
-  }),
-);
-check("a 6 MB photo is accepted", big.ok, `got ${big.status}`);
+/* The photo cap has its own run, test/photo-limit.mjs, because testing an 8 MB
+   ceiling means moving more than 8 MB and `wrangler dev` does not survive that:
+   it dies with an empty error and takes the suite with it. That run starts a
+   worker with a 2 KB cap instead, which exercises the same code for a
+   thousandth of the bytes. */
 
 /* ---- A0.5: internal Durable Object paths are not publicly reachable ---- */
 
@@ -582,6 +625,42 @@ a.close();
 b.close();
 c.close();
 await wait(200);
+
+/* A2's named check: a tagged puzzle survives a round trip through the API,
+   prefilled letters included. */
+const tagged = await newSession();
+const taggedCells = [
+  [{ type: "clue" }, { type: "answer" }, { type: "dead" }],
+  [{ type: "answer" }, { type: "prefilled", letter: "ک" }, { type: "answer" }],
+  [{ type: "dead" }, { type: "answer" }, { type: "clue" }],
+];
+await req(
+  `${BASE}/session/${tagged}/puzzle`,
+  as(MAIN, {
+    method: "PUT",
+    body: JSON.stringify({
+      title: "Tagged",
+      rows: 3,
+      cols: 3,
+      alignment: puzzle.alignment,
+      cells: taggedCells,
+    }),
+    headers: { "Content-Type": "application/json" },
+  }),
+);
+await wsReady(`${BASE.replace("http", "ws")}/session/${tagged}/ws`);
+const taggedWs = await open(
+  `${BASE.replace("http", "ws")}/session/${tagged}/ws`,
+);
+await wait(300);
+const taggedDoc = taggedWs.messages.find((m) => m.type === "state")?.doc;
+check(
+  "a tagged puzzle reloads with its cells intact",
+  JSON.stringify(taggedDoc?.cells) === JSON.stringify(taggedCells),
+  `got ${JSON.stringify(taggedDoc?.cells)?.slice(0, 60)}`,
+);
+check("the title round-trips", taggedDoc?.title === "Tagged");
+taggedWs.close();
 
 console.log(`PASS ${ok.length}`);
 for (const t of ok) console.log("  ok   " + t);
