@@ -77,19 +77,49 @@ async function wsReady(url) {
 }
 
 let worker = null;
+let shuttingDown = false;
+/* wrangler's own output, kept so that a crash produces a cause instead of an
+   opaque ECONNREFUSED stack from whichever fetch happened to be next. CI hit
+   exactly that: the worker answered one request, vanished, and the failure said
+   nothing about why. */
+const workerLog = [];
+
 if (await isUp()) {
   console.log(`using the dev server already on :${PORT}\n`);
 } else {
   console.log(`starting wrangler dev on :${PORT} ...`);
   worker = spawn("npx", ["wrangler", "dev", "--port", String(PORT)], {
-    stdio: "ignore",
+    stdio: ["ignore", "pipe", "pipe"],
     detached: false,
   });
+  const keep = (chunk) => {
+    workerLog.push(chunk.toString());
+    if (workerLog.length > 60) workerLog.shift();
+  };
+  worker.stdout.on("data", keep);
+  worker.stderr.on("data", keep);
+  worker.on("exit", (code, signal) => {
+    if (shuttingDown) return;
+    console.error(
+      `\nwrangler dev exited before the suite finished (code ${code}, signal ${signal}).`,
+    );
+    console.error(`Its last output:\n${workerLog.join("")}`);
+    process.exit(1);
+  });
+
+  /* Two consecutive probes, not one. A single success has been observed from a
+     worker that then died 140ms later, which read as "ready" and then failed on
+     the next request with no explanation. */
   const deadline = Date.now() + 60_000;
-  while (!(await isUp())) {
+  let streak = 0;
+  while (streak < 2) {
+    streak = (await isUp()) ? streak + 1 : 0;
+    if (streak >= 2) break;
     if (Date.now() > deadline) {
+      shuttingDown = true;
       worker.kill();
       console.error(`wrangler dev did not come up on :${PORT} within 60s`);
+      console.error(`Its last output:\n${workerLog.join("")}`);
       process.exit(1);
     }
     await sleep(500);
@@ -98,6 +128,7 @@ if (await isUp()) {
 }
 
 const stopWorker = () => {
+  shuttingDown = true;
   if (worker && !worker.killed) worker.kill("SIGTERM");
 };
 process.on("exit", stopWorker);

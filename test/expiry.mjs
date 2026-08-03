@@ -43,9 +43,28 @@ const worker = spawn(
     "--var",
     `RETENTION_MS:${RETENTION_MS}`,
   ],
-  { stdio: "ignore", detached: false },
+  { stdio: ["ignore", "pipe", "pipe"], detached: false },
 );
+let shuttingDown = false;
+/* Same reasoning as the acceptance suite: without this, a worker that dies
+   mid-run produces an ECONNREFUSED stack and no cause. */
+const workerLog = [];
+const keep = (chunk) => {
+  workerLog.push(chunk.toString());
+  if (workerLog.length > 60) workerLog.shift();
+};
+worker.stdout.on("data", keep);
+worker.stderr.on("data", keep);
+worker.on("exit", (code, signal) => {
+  if (shuttingDown) return;
+  console.error(
+    `\nwrangler dev exited before the expiry checks finished (code ${code}, signal ${signal}).`,
+  );
+  console.error(`Its last output:\n${workerLog.join("")}`);
+  process.exit(1);
+});
 const stopWorker = () => {
+  shuttingDown = true;
   if (worker && !worker.killed) worker.kill("SIGTERM");
 };
 process.on("exit", stopWorker);
@@ -54,11 +73,16 @@ process.on("SIGINT", () => {
   process.exit(130);
 });
 
+/* Two consecutive probes, for the reason documented in the acceptance suite. */
 const deadline = Date.now() + 60_000;
-while (!(await isUp())) {
+let streak = 0;
+while (streak < 2) {
+  streak = (await isUp()) ? streak + 1 : 0;
+  if (streak >= 2) break;
   if (Date.now() > deadline) {
-    stopWorker();
     console.error(`wrangler dev did not come up on :${PORT} within 60s`);
+    console.error(`Its last output:\n${workerLog.join("")}`);
+    stopWorker();
     process.exit(1);
   }
   await sleep(500);
