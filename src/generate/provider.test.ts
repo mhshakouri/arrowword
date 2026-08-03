@@ -7,7 +7,12 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { clean, recordedProvider, type Proposal } from "./provider.ts";
+import {
+  clean,
+  GENERATION_MODEL,
+  recordedProvider,
+  type Proposal,
+} from "./provider.ts";
 import {
   CROSSING_RICH,
   MESSY,
@@ -202,4 +207,25 @@ test("a recorded provider cleans what it replays", async () => {
 
 test("a recorded provider with no proposals is a programming error", () => {
   assert.throws(() => recordedProvider([]), /needs proposals/);
+});
+
+/* ---- The model id ----
+
+   B3 shipped with `@cf/meta/llama-3.1-8b-instruct`, which Workers AI does not
+   serve; the real id carries an `-fp8` suffix. Every call threw, the loop
+   counted each throw as a failed attempt exactly as designed, and the first
+   person to try the feature was told their theme was the problem.
+
+   Nothing here can ask Cloudflare what exists, because CI holds no credential
+   and must not. What it can do is stop the value drifting silently: this test
+   fails if the id changes, so changing it is a deliberate act with a reason in
+   the diff rather than an edit nobody reviews. `wrangler ai models list` is
+   the ten seconds that would have caught it. */
+
+test("the generation model id is pinned, and changing it is deliberate", () => {
+  assert.equal(GENERATION_MODEL, "@cf/meta/llama-3.1-8b-instruct-fp8");
+});
+
+test("the model id looks like a Workers AI id at all", () => {
+  assert.match(GENERATION_MODEL, /^@cf\/[a-z0-9-]+\/[a-z0-9.-]+$/);
 });

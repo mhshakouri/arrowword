@@ -270,3 +270,62 @@ test("problems carry the validator's own detail strings", () => {
   ]);
   assert.deepEqual(out, ["reaches 9,9"]);
 });
+
+/* ---- An outage is not a bad theme ----
+
+   The first real generation failed because the model id was wrong, and the
+   loop reported it as the theme's fault, which sent the person who tried it
+   away rewording a word that was fine. A message that blames the wrong party
+   is worse than a vague one. */
+
+test("a provider that always throws says it was unreachable", async () => {
+  const provider: Provider = {
+    async proposeLayout() {
+      throw new Error("model not found");
+    },
+    async repair() {
+      throw new Error("model not found");
+    },
+    async propose() {
+      throw new Error("model not found");
+    },
+  };
+  const out = await generate(provider, "rivers", SMALL);
+  assert.equal(out.status, "failed");
+  if (out.status !== "failed") return;
+  assert.match(out.reason, /unreachable/);
+});
+
+test("a model that answers but says nothing usable blames the theme, not the network", async () => {
+  const provider = recordedProvider([UNUSABLE], LAYOUT_NEVER_VALID);
+  const out = await generate(provider, "nonsense", SMALL);
+  assert.equal(out.status, "failed");
+  if (out.status !== "failed") return;
+  assert.doesNotMatch(out.reason, /unreachable/);
+});
+
+test("one throw among working calls does not read as an outage", async () => {
+  let first = true;
+  const provider: Provider = {
+    async proposeLayout() {
+      if (first) {
+        first = false;
+        throw new Error("flaky");
+      }
+      return LAYOUT_NEVER_VALID[0]!;
+    },
+    async repair() {
+      return LAYOUT_NEVER_VALID[0]!;
+    },
+    /* Empty rather than the UNUSABLE fixture: a hand-rolled provider does not
+       run `clean()`, so returning that fixture raw would hand the loop five
+       usable-looking candidates and produce a packing rather than a failure. */
+    async propose() {
+      return { theme: "t", candidates: [] };
+    },
+  };
+  const out = await generate(provider, "t", SMALL);
+  assert.equal(out.status, "failed");
+  if (out.status !== "failed") return;
+  assert.doesNotMatch(out.reason, /unreachable/);
+});

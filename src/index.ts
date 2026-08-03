@@ -69,6 +69,9 @@ export interface Env {
      acceptance suite can drive generation without an API key and without
      spending a neuron. */
   GENERATION_FIXTURES?: string;
+  /* "1" logs the model's raw output, truncated. Diagnosis only: section 16
+     forbids logging puzzle content, and this is the one thing that would. */
+  GENERATION_DEBUG?: string;
 }
 
 const SESSION_ID = /^[0-9a-f]{32}$/;
@@ -292,7 +295,7 @@ function providerFor(env: Env): Provider {
     );
   }
   if (!env.AI) throw new Error("no generation provider configured");
-  return workersAiProvider(env.AI);
+  return workersAiProvider(env.AI, env.GENERATION_DEBUG === "1");
 }
 
 function sanitizeNickname(raw: unknown): string {
@@ -1483,6 +1486,25 @@ export class ArrowwordSession implements DurableObject {
       const doc = await this.doc();
       if (!doc) return;
 
+      /* Section 16: log enough to answer "why did this session fail" without
+         logging puzzle content. The outcome and the reason are exactly that,
+         and B3 shipped without them, which is why the first real failure was
+         invisible. No session id: it is the credential (section 16). */
+      console.log(
+        JSON.stringify({
+          at: "generate",
+          outcome: outcome.status,
+          themeChars: theme.length,
+          ...(outcome.status === "failed" ? { reason: outcome.reason } : {}),
+          ...(outcome.status === "pack"
+            ? { candidates: outcome.candidates.length }
+            : {}),
+          ...(outcome.status === "playable"
+            ? { entries: outcome.entries.length }
+            : {}),
+        }),
+      );
+
       if (outcome.status === "playable") {
         const cells = cellsFrom(outcome.entries, outcome.rows, outcome.cols);
         const next = await this.save({
@@ -1529,7 +1551,14 @@ export class ArrowwordSession implements DurableObject {
 
       await this.save({ ...doc, status: "failed" }, false);
       this.broadcast({ type: "failed", reason: outcome.reason });
-    } catch {
+    } catch (error) {
+      console.log(
+        JSON.stringify({
+          at: "generate",
+          outcome: "threw",
+          message: String((error as Error)?.message ?? error).slice(0, 200),
+        }),
+      );
       const doc = await this.doc();
       if (doc) await this.save({ ...doc, status: "failed" }, false);
       this.broadcast({

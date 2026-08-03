@@ -866,6 +866,16 @@ Checks:
 
 **What remains:** the neuron measurement that sets the daily ceiling, and the human checks. Neither is blocked on a handoff; the measurement is blocked on deciding to spend neurons.
 
+**The model id was wrong, and every automated check passed anyway.** B3 shipped naming `@cf/meta/llama-3.1-8b-instruct`, which Workers AI does not serve: the real id carries an `-fp8` suffix. Every call threw, the loop counted each throw as a failed attempt exactly as designed, exhausted its repairs, fell through to the word list, threw again, and reported `failed`. The first person to try the feature was told their theme was the problem.
+
+Three separate lessons, and the middle one is the expensive one:
+
+- **The id was written from memory rather than from `wrangler ai models list`**, which takes ten seconds. Every fact in this document that came from a vendor was checked except this one.
+- **A failure mode that blames the wrong party is worse than a vague one.** "Some themes give the model too little to work with" sent somebody away rewording a word that was fine. The loop now counts how many attempts threw rather than merely failed, and an outage says so. This is not a message improvement; it is the difference between a bug report and a shrug.
+- **No automated check could have caught it, and none was ever going to.** CI holds no credential by design (ADR-11), so nothing in the suite calls the real model. The suite tested every path around the provider and none through it. The mitigation is a test that pins the id so changing it is deliberate, plus knowing that the first real call is the first real test.
+
+**No logging existed on the generation path**, which is why the failure was invisible from outside. Section 16 has required "log enough to answer why did this session fail" since v5. Added: outcome, reason, and counts, with no session id, because the id is the credential.
+
 **Two things the browser found that no test would have.** A generated puzzle was titled "Untitled", because nothing gives it a name: there is no photo to recognize it by and no person typing a title, so every generated puzzle in a visitor's own list would have been called the same thing. It takes its theme now. And the clue buttons had **no accessible name at all**: the number, the clue and the length are three spans, and the computed name came out empty, so a screen reader read "button" and stopped. Section 16 has required state announced to assistive tech since v5, and the automated checks cannot see it. Both were found by opening the page, which is the argument for the human line in every milestone's checks.
 
 **Learned wiring the endpoint, and it is the kind of bug that only appears in production.** Generation finishes whenever it finishes, and the client that asked for it is still navigating to the session when it does. Broadcasting the fallback's word list reached whoever happened to be connected, which on a fast generation is nobody, and the session then sat in `generating` holding a request no one was ever told about until it expired thirty days later. The fix is to store the request before broadcasting it and replay it to any socket that connects while the session is still generating. Found by an acceptance test that connected too late, which is exactly what a real browser does.

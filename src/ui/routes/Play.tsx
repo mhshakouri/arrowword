@@ -122,8 +122,13 @@ export function Play({ id }: { id: string }) {
       <main>
         <h1>That theme did not work out</h1>
         <p class="lede">
-          {session.failure ??
-            "The puzzle could not be built. Some themes give the model too little to work with."}
+          {/* Only blame the theme when the theme was the problem. An outage
+              reported as a bad theme sends somebody away rewording a word that
+              was fine, which is what happened the first time this ran. */}
+          {doc.status === "failed" && !session.failure
+            ? "The puzzle writer could not be reached just now. This is not your theme, and it is worth trying again in a few minutes."
+            : (session.failure ??
+              "The puzzle could not be built. Some themes give the model too little to work with.")}
         </p>
         <a class="button primary" href="/generate">
           Try another theme
