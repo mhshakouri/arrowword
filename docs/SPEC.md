@@ -864,6 +864,14 @@ Alternatives weighed:
 - **No bundler at all**, plain ES modules served as files. Genuinely tempting for a project this small, and rejected for two specific things it would cost: no dev server with hot reload while dragging alignment handles, which is the one part of A1 that needs tight iteration, and manual dependency management the first time a real dependency appears.
 - **Astro or SvelteKit.** Rejected as answering a question this app does not ask; both earn their complexity on content or routing, and this is one interactive canvas.
 
+Amended 2026-08-03: **Preact renders the UI.** ADR-10 chose Vite and deliberately left open what runs inside it, and the deciding case was the alignment step, where four draggable handles drive a live overlay. That is the most state-heavy thing in the project, and hand-written DOM updates for it reliably grow into a homemade framework nobody chose.
+
+Alternatives: vanilla TypeScript, which is free of runtime dependencies and pays for it exactly where the work is hardest; and React, which matches the site's stack but spends roughly 45 KB against a budget written for a mid-range phone on 4G, for a three-screen app. Preact is that programming model at roughly 4 KB.
+
+No router dependency. The app has three routes, `/`, `/new`, and `/s/:id`, so a few lines of path matching is less code than a library and one fewer thing to keep current. JSX is configured through Vite's esbuild options rather than `@preact/preset-vite`, which avoids a second dependency for a two-line setting.
+
+Design tokens are copied from the site's `globals.css`, never imported, per ADR-6.
+
 Consequences: a build step, so the check suite gains a build and CI gains a job. Assets ship through the Workers static assets binding, which means routing needs care: `/session/*` must reach the worker while client routes like `/new` and `/s/:id` must fall back to `index.html`. The worker keeps API paths and delegates everything else to the assets binding, which is also what keeps the app same-origin and CORS-free per section 2.
 
 **ADR-11: GitHub Actions is the quality gate, Cloudflare Workers Builds is the delivery mechanism.** Decided 2026-08-03, adopting the split already running on the parent site, which documents it in the "Push to publish" post. Actions runs checks only and never holds Cloudflare credentials. Workers Builds deploys every push to `main` and never runs checks.

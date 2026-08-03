@@ -5,7 +5,14 @@
   "compilerOptions": {
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
     // "node" is here for the unit tests, which run on node:test.
-    "types": ["node"]
+    "types": ["node"],
+    "jsx": "react-jsx",
+    "jsxImportSource": "preact"
   },
-  "include": ["src/ui/**/*.ts", "src/types.ts", "vite.config.ts"]
+  "include": [
+    "src/ui/**/*.ts",
+    "src/ui/**/*.tsx",
+    "src/types.ts",
+    "vite.config.ts"
+  ]
 }

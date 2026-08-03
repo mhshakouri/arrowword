@@ -5,6 +5,9 @@ import { defineConfig } from "vite";
    See docs/SPEC.md ADR-10 and section 2. */
 export default defineConfig({
   root: "src/ui",
+  /* Preact through esbuild's JSX options rather than @preact/preset-vite, which
+     would be a second dependency for a two-line setting. See ADR-10. */
+  esbuild: { jsx: "automatic", jsxImportSource: "preact" },
   build: {
     /* Relative to `root`, so this lands at ./dist in the repository, which is
        what the assets binding in wrangler.jsonc points at. */
