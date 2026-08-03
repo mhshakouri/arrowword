@@ -31,6 +31,10 @@ export interface Env {
      means moving more than 8 MB, and `wrangler dev` does not survive that. Unset
      in production. */
   MAX_PHOTO_BYTES?: string;
+  /* Comma-separated session ids that are demo templates: never expire, never
+     writable, meant to be cloned. Configuration rather than data on purpose, so
+     that no request can mint an object exempt from expiry. See ADR-12. */
+  TEMPLATE_SESSIONS?: string;
 }
 
 const SESSION_ID = /^[0-9a-f]{32}$/;
@@ -290,6 +294,31 @@ export default {
       return json({ id }, { headers: cors });
     }
 
+    /* What the UI needs to know that only the deploy knows. Kept to exactly
+       that: it is public, cached briefly, and must never grow into a place where
+       anything sensitive is convenient to put. */
+    if (
+      request.method === "GET" &&
+      parts.length === 1 &&
+      parts[0] === "config"
+    ) {
+      const demo = (env.TEMPLATE_SESSIONS ?? "")
+        .split(",")
+        .map((id) => id.trim())
+        .filter((id) => SESSION_ID.test(id))[0];
+      return json(
+        { demoSessionId: demo ?? null },
+        {
+          headers: {
+            ...cors,
+            /* Short, so naming a template takes effect without a purge, and
+               non-zero, so the landing page does not ask on every view. */
+            "Cache-Control": "public, max-age=60",
+          },
+        },
+      );
+    }
+
     /* DELETE /session/:id has only two segments, so it needs its own branch. */
     if (
       request.method === "DELETE" &&
@@ -444,7 +473,11 @@ export class ArrowwordSession implements DurableObject {
   private async doc(): Promise<SessionDoc | null> {
     const stored = await this.ctx.storage.get<SessionDoc>("doc");
     /* Section 16: never assume a stored document matches the current type. */
-    return stored ? migrate(stored) : null;
+    if (!stored) return null;
+    /* `template` is always taken from configuration, never from storage. The
+       stored field exists because it is part of the document shape, and its
+       value is ignored so that nothing can write itself into being a template. */
+    return { ...migrate(stored), template: this.isTemplate() };
   }
 
   /* Persist, slide the expiry window, and keep lastActiveAt honest. Templates
@@ -456,6 +489,27 @@ export class ArrowwordSession implements DurableObject {
       await this.ctx.storage.setAlarm(Date.now() + retentionMs(this.env));
     }
     return next;
+  }
+
+  /* Whether this object is a configured demo template.
+
+     Derived rather than stored, and derived from the object's *own* identity
+     rather than from anything a request carries. `idFromName` is deterministic,
+     so comparing each configured session id's derived object id against this
+     one answers the question with nothing to forge: no header, no query
+     parameter, and no stored flag a write could flip. That is what makes
+     "templates are created by hand" true rather than aspirational, since there
+     is no code path that turns an ordinary session into one. */
+  private isTemplate(): boolean {
+    const configured = (this.env.TEMPLATE_SESSIONS ?? "")
+      .split(",")
+      .map((id) => id.trim())
+      .filter((id) => SESSION_ID.test(id));
+    if (configured.length === 0) return false;
+    const own = this.ctx.id.toString();
+    return configured.some(
+      (id) => this.env.ARROWWORD_SESSION.idFromName(id).toString() === own,
+    );
   }
 
   /* Invariant 6: a session owns exactly the object keyed by its own id, so a

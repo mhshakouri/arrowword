@@ -9,14 +9,15 @@
     "dev:ui": "vite",
     "build": "vite build",
     "typecheck": "tsc -p tsconfig.worker.json && tsc -p tsconfig.ui.json",
-    "test": "npm run test:unit && node test/acceptance.mjs && node test/photo-limit.mjs && node test/expiry.mjs",
+    "test": "npm run test:unit && node test/acceptance.mjs && node test/photo-limit.mjs && node test/template.mjs && node test/expiry.mjs",
     "test:acceptance": "node test/acceptance.mjs",
     "test:expiry": "node test/expiry.mjs",
     "deploy": "wrangler deploy",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "test:unit": "node --test src/ui/lib/*.test.ts",
-    "test:photo": "node test/photo-limit.mjs"
+    "test:photo": "node test/photo-limit.mjs",
+    "test:template": "node test/template.mjs"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260731.1",

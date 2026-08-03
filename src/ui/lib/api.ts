@@ -76,6 +76,13 @@ async function request(path: string, init?: RequestInit): Promise<Response> {
   return res;
 }
 
+/* What the deploy knows and the bundle must not hard-code: which session, if
+   any, is the demo template. Naming one stays a single configuration change. */
+export async function loadConfig(): Promise<{ demoSessionId: string | null }> {
+  const res = await request("/config");
+  return (await res.json()) as { demoSessionId: string | null };
+}
+
 export async function createSession(): Promise<string> {
   const res = await request("/session", { method: "POST" });
   const body = (await res.json()) as { id: string };

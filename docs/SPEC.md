@@ -584,20 +584,23 @@ Given letters are held to exactly one grapheme by `Intl.Segmenter`, the same rul
 
 Worth stating for A3: a given letter is the first untrusted string this project renders. It is author-supplied rather than stranger-supplied, and it is capped at one grapheme, so it is a narrow surface. Invariant 8 still applies to it, and A3 widens that surface considerably.
 
-### A2.5 Demo puzzle and clone flow, status: NEXT once A2's human check passes
+### A2.5 Demo puzzle and clone flow, status: PLUMBING DONE 2026-08-03, awaiting a real puzzle and A3
 
 The front door. Depends on A2, because building the template needs the tagging UI.
 
-- Hossein photographs and tags one good puzzle, which becomes the template
-- Mark it `template: true` by hand, not through an endpoint (section 5)
-- Template view: read-only grid, one primary action, "open a copy"
-- Landing page at `/` leads with the demo
+- Hossein photographs and tags one good puzzle, which becomes the template. **Outstanding**, and the only content this project needs from a human
+- Name it in `TEMPLATE_SESSIONS` and deploy. Done as a mechanism, see the ADR-12 amendment
+- Landing page at `/` leads with the demo. **Done**: it reads the id from `GET /config` and cloning is the click
 - Link it from the playground page in the mhshakouri.dev repo, which is a change in that repository, not this one
+
+Changed 2026-08-03: **there is no template view.** The plan was a read-only grid with an "open a copy" action, and that needed a grid renderer, which is most of A3 built twice. Instead nobody is ever sent to the template: "open the demo" clones first and navigates to the visitor's own copy. That is one click to a playable grid, which is what section 1 actually asks for, and it removes the need to explain a screen where typing does nothing.
+
+Consequence to be honest about: **A2.5's payoff depends on A3.** A clone lands on `/s/:id`, which renders a placeholder until play rendering exists, so a visitor still cannot type. The plumbing is finished and verified; the experience is not, and will not be until A3.
 
 Checks:
 
-- First, decide how a template gets created: the two candidates are in A0.5's note. Nothing can create one today
-- Automated: a test that clones the template, confirms the clone has the same grid and empty letters, confirms the clone borrows rather than copies `photoKey`, and confirms writes to the template are refused. The first three already pass in A0.5 against an ordinary saved puzzle; the fourth is what waits on template creation existing
+- Decided: templates are configuration. See the ADR-12 amendment
+- Automated, done: `test/template.mjs`, 15 checks. A session is made ordinary, proven writable, then named in configuration and the worker restarted, after which the same session refuses writes with `this puzzle is read only`, refuses deletion with 403, outlives the retention window, and clones into an ordinary session that borrows the photo, starts empty, is not itself a template, records what it came from, and is writable. Deleting that clone leaves the template's photo intact, which is invariant 6 and the failure that would take the demo down for everyone
 - Human: open the published playground link on a phone, in a browser with no history for this site, and reach a typeable grid in one click
 
 ### A3 Play rendering, status: TODO
@@ -698,7 +701,7 @@ Amended 2026-08-03. A0.5 added six failure modes and could not satisfy rule 4 on
 | Session expired or deleted   | HTTP 404                      | A3      |
 | Session full                 | HTTP 503 `session full`       | A3      |
 | Write before choosing a name | WS `pick a nickname first`    | A3      |
-| Template is read only        | WS `this puzzle is read only` | A2.5    |
+| Template is read only        | WS `this puzzle is read only` | A3      |
 
 A milestone in that table cannot pass its own rule 4 while leaving its row unaddressed. 5. The status marker in section 12 is updated, in the same commit as the work. 6. Anything learned the hard way is written into this spec, in the same commit. 7. The repo check suite passes: `npm run typecheck`, `npm run format:check`, `npm test`. These are the three CI runs in `.github/workflows/ci.yml`; keep this list and that file in sync.
 
