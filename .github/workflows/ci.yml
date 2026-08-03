@@ -1,5 +1,11 @@
 name: CI
 
+# Checks only, no deploying. Cloudflare Workers Builds owns deployment, so this
+# workflow never holds Cloudflare credentials and Cloudflare never runs checks.
+# What makes that safe is branch protection: `checks` is a required status on
+# main, so nothing untested reaches the branch Workers Builds deploys from. See
+# ADR-11, and the same split on the parent site.
+
 on:
   pull_request:
   push:
@@ -7,9 +13,7 @@ on:
 
 concurrency:
   group: ci-${{ github.ref }}
-  # Cancel superseded pull request runs, but never cancel a run that may be
-  # mid-deploy: killing `wrangler deploy` partway is not a state worth being in.
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -30,31 +34,3 @@ jobs:
       # with a short retention window. Each starts and stops its own wrangler
       # dev. See docs/SPEC.md section 12 under A0.5.
       - run: npm test
-
-  deploy:
-    # The whole point of automating this is to make "merged" mean "tested and
-    # live", so deploy waits on the checks rather than running beside them.
-    needs: checks
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
-    # The environment is created on first use and gives a deployment record,
-    # plus somewhere to hang approval rules later. It needs deployments: write,
-    # which the read-only default at the top of this file would otherwise deny.
-    # A pull request run cannot catch that, because this job skips on one.
-    environment: production
-    permissions:
-      contents: read
-      deployments: write
-    steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
-        with:
-          node-version: 24
-          cache: npm
-      - run: npm ci
-      # Uses the wrangler pinned in devDependencies, not a floating latest, so
-      # a deploy is reproducible from the lockfile.
-      - run: npx wrangler deploy
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

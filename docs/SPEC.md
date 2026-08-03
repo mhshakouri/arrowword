@@ -521,17 +521,25 @@ Uncommenting `routes` would fix that, and it was deliberately not done yet for o
 
 The framework question is decided (ADR-10) and the deploy is live, so A1 needs no handoff.
 
-### Blocking automated deploys: a Cloudflare API token
+### Blocking automated deploys: connect Workers Builds
 
-1. **Blocked:** merging to `main` does not deploy, so every release is a manual `npm run deploy` and "merged" does not mean "live". Completing this closes that gap.
-2. **Do**, in the Cloudflare dashboard: My Profile, API Tokens, Create Token, use the **Edit Cloudflare Workers** template. Then run `npx wrangler whoami` locally to read the account id. Add both to the repository under Settings, Secrets and variables, Actions:
-   - `CLOUDFLARE_API_TOKEN`, the token value
-   - `CLOUDFLARE_ACCOUNT_ID`, the account id from `whoami`
-3. **Success:** both secrets listed in the repository's Actions secrets.
-4. **Verify:** merge anything to `main` and watch the `deploy` job in the CI run go green. Until the secrets exist that job fails, which is the intended signal rather than a silent skip.
-5. **Paste back:** the result of the first automatic deploy.
+Replaces an earlier handoff that asked for two GitHub secrets. Those were for the Actions deploy job, which ADR-11 removed.
 
-The account id is a second secret rather than committed config because `wrangler` cannot infer the account when a token can see more than one, and that failure appears only in CI.
+1. **Blocked:** nothing deploys `main` any more, since the Actions deploy job is gone and Workers Builds is not connected yet. Until this is done, releases are a manual `npm run deploy`.
+2. **Do**, in the Cloudflare dashboard on the `arrowword` worker, under Settings, Build:
+   - Connect the `mhshakouri/arrowword` repository
+   - **Production branch:** `main`
+   - **Build command: leave it empty.** The dashboard auto-detects `npm run build`, and **there is no `build` script in this repository yet**, so accepting the default fails with a missing-script error. `wrangler deploy` bundles the TypeScript itself, so there is nothing to compile before it
+   - **Deploy command:** `npx wrangler deploy`, which is the default
+   - Leave non-production branch builds **off** for now, see the caveat below
+     Then delete the `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` repository secrets, since Actions no longer deploys and should hold no Cloudflare credentials.
+3. **Success:** a build appears in the Cloudflare dashboard on the next push to `main` and finishes green.
+4. **Verify:** `npx wrangler deployments list` shows a new version whose author is the build system rather than your own account.
+5. **Paste back:** confirmation that the first automatic build deployed.
+
+**This changes at A1.** Once the Vite app exists, its output has to be built before `wrangler deploy` can upload it as assets, so the build command becomes `npm run build`. Set it in the same commit that adds the script, or the first deploy after A1 ships a worker with no UI attached.
+
+**Preview builds carry a risk here that the site does not have.** Enabling non-production branch builds gives a preview URL per branch, which is genuinely useful, but a preview version of this worker binds to the **same Durable Objects and the same R2 bucket as production**. On a static site a preview is an inert copy; here it is live code pointed at real sessions and real photos. Treat that as production access, and never exercise `DELETE` or expiry against a preview. Leaving it off until A1 costs nothing, because a preview URL of a worker with no UI is a 404.
 
 ### Blocking A2.5: the demo puzzle
 
@@ -664,6 +672,14 @@ Alternatives weighed:
 - **Astro or SvelteKit.** Rejected as answering a question this app does not ask; both earn their complexity on content or routing, and this is one interactive canvas.
 
 Consequences: a build step, so the check suite gains a build and CI gains a job. Assets ship through the Workers static assets binding, which means routing needs care: `/session/*` must reach the worker while client routes like `/new` and `/s/:id` must fall back to `index.html`. The worker keeps API paths and delegates everything else to the assets binding, which is also what keeps the app same-origin and CORS-free per section 2.
+
+**ADR-11: GitHub Actions is the quality gate, Cloudflare Workers Builds is the delivery mechanism.** Decided 2026-08-03, adopting the split already running on the parent site, which documents it in the "Push to publish" post. Actions runs checks only and never holds Cloudflare credentials. Workers Builds deploys every push to `main` and never runs checks.
+
+What makes that safe is not the pipeline, it is **branch protection**: `checks` is a required status on `main`, so nothing untested can reach the branch Workers Builds deploys from. `main` is deployable by construction, which is what lets the delivery side trust it blindly. Remove that protection and this arrangement silently becomes deploy-without-tests.
+
+Alternative, and it was built first in the previous commit: a deploy job inside the Actions workflow, gated on `needs: checks`. It worked and was deployed twice. Rejected for consistency with the site rather than on merit; two personal projects on the same platform with two different deployment stories is a cost paid every time either one is touched. Its one real advantage, that the gate is visible in the same file as the deploy, is replaced by branch protection enforcing the same thing one level up.
+
+Consequences: the `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` repository secrets become unnecessary and should be deleted, because the point of the split is that Actions holds no credentials it does not need. Deploy logs move from the Actions tab to the Cloudflare dashboard. Non-production branch builds are available and give preview URLs, with a caveat that does not apply to the site, recorded in section 14: a preview version of this worker shares production's Durable Objects and R2 bucket.
 
 ## 18. Open questions (non-blocking)
 
