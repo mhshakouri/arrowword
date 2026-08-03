@@ -605,7 +605,10 @@ Worth stating for A3: a given letter is the first untrusted string this project 
 
 The front door. Depends on A2, because building the template needs the tagging UI.
 
-- Hossein photographs and tags one good puzzle, which becomes the template. **Done 2026-08-03**: 19 by 13, 247 cells, 48 clue and 189 answer and 10 dead, with a 547 KB photo, which is the first real evidence the 600 KB budget in section 16 is sized right
+- Hossein photographs and tags one good puzzle, which becomes the template. **Done 2026-08-03**: "Persian Arrowword Puzzle", 19 by 13, 247 cells, 48 clue and 189 answer and 10 dead, with a 547 KB photo, which is the first real evidence the 600 KB budget in section 16 is sized right.
+
+Remade once, because a saved puzzle is immutable and that includes its title (invariant 4). The first attempt was called "Puzzle Template #1", which is a fine working name and a poor public one, and there is no way to rename it. Worth knowing before making a template: the title is the one decision that cannot be revised afterwards. The abandoned session is no longer configured, so it is an ordinary session again and expires on the usual 30 day clock
+
 - Name it in `TEMPLATE_SESSIONS` and deploy. Done as a mechanism, see the ADR-12 amendment
 - Landing page at `/` leads with the demo. **Done**: it reads the id from `GET /config` and cloning is the click
 - Link it from the playground page in the mhshakouri.dev repo, which is a change in that repository, not this one
