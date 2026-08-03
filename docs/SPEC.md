@@ -71,7 +71,11 @@ The authoritative copy of these types is `src/types.ts`. Keep the two in sync; t
 
 Changed 2026-08-02: `v` went to 2, adding per-player identity, write attribution, and the fields that drive self-expiry and the demo template. Implemented in A0.5.
 
-Changed 2026-08-03: the block below is **`v: 3`**, adding what generated puzzles need. It is not implemented: `src/types.ts` is at v2, which is what runs in production, and v3 lands in B1. So this section is deliberately one version ahead of the code again, for the same reason as last time, and the drift closes when B1 does. Unlike the v2 bump, **this one will run against live data**, which is why B1's first task is giving `migrate()` the test coverage it has never had. Doing it before any deploy was deliberate: it cost one edit, where after A2 it would have cost a migrate-on-read path. `migrate()` exists anyway, because section 16 says never assume a stored document matches the current type, and the next bump will not have that luxury.
+Changed 2026-08-03: the block below is **`v: 3`**, adding what generated puzzles need. **Implemented in B1**, so this section and `src/types.ts` are back in step; the drift this note used to warn about is closed.
+
+Unlike the v2 bump, this one runs against live data, which is why B1's first task was giving `migrate()` the test coverage it had never had. That coverage now exists and characterizes the old behavior as well as the new, so the v1 path is proved not to have changed rather than assumed. `migrate()` is written as a chain, one step per version, so a v1 document reaches v3 through the same v2 code every v2 document uses and the two paths cannot drift apart.
+
+One rule the bump added: **`status` and `puzzleSaved` describe the same session from two angles and are always written together.** A migrated document derives `status` from `puzzleSaved` rather than defaulting it, and both places the worker sets `puzzleSaved: true` now set `status: "playable"` in the same object. They were allowed to disagree for about ten minutes during B1, which is exactly long enough for it to have shipped.
 
 ```ts
 export type CellType = "dead" | "clue" | "answer" | "prefilled";
@@ -335,6 +339,16 @@ Two related mistakes, both fixed:
 **Giving up on reconnection is worse than waiting.** The first backoff stopped after five attempts and told the reader to reload the page. Two things made that show up immediately: attempts were counted in two places, a failed probe and a closed socket, so the list burned through at twice the intended rate, and a few seconds offline looked like a network that was never coming back. Counting moved to one place, and the last backoff value now repeats forever. A puzzle left open should still be there when the signal is.
 
 **A protocol change is not recorded until it is in section 7.** A3 changed the socket cap from an HTTP 503 to an error frame and its commit said the change was recorded here. It was not, and the table still promised a 503 for another milestone. Section 4 has a rule about keeping the spec and `src/types.ts` in sync and nothing enforces the same for section 7, so it is worth saying plainly: changing what the server sends means editing the table in the same commit, not intending to.
+
+### Learned while building B1
+
+**Runs are computed, never stored.** `cells` is immutable once a puzzle is saved (invariant 4), so runs are a pure function of something that cannot change, and a stored copy could only ever be a second source of truth waiting to disagree with the first. This is why `entries` stays empty for a photo puzzle even after run detection exists: entries carry clues, which generation writes, and runs carry geometry, which the grid already implies.
+
+**Two fields describing one thing must be written together or not at all.** `status` and `puzzleSaved` both say whether a puzzle is finished, and for a short stretch of B1 the worker set one without the other. Nothing failed, because nothing read `status` yet, which is precisely what makes this the kind of defect that ships. The rule now is in section 4 and both write sites say so in a comment.
+
+**Numbering follows the grid, not the script.** Crossword numbering is top to bottom, left to right in every language including right-to-left ones, so run detection needed no direction awareness beyond across and down. That is a small confirmation of ADR-5's claim that RTL affects nothing until auto-advance exists, and it is worth recording because the opposite was assumed at the start of the milestone.
+
+**Test the version bump against the shape actually on disk.** The unit tests build a v2 document field for field as A0.5's writer produced one, rather than by taking the current type and deleting the new fields. Those two are not the same thing: the second would drift with the type and quietly stop testing the real stored shape, which is the only shape that matters.
 
 ### Learned while building C1
 
@@ -764,7 +778,7 @@ What went in, and each of these came from using it rather than from the list:
 
 Checks:
 
-- Automated: the full suite, 99 checks. 23 unit, 51 acceptance, 7 photo, 3 expiry, plus 15 local template
+- Automated: the full suite as it stood at A5, 99 checks. 23 unit, 51 acceptance, 7 photo, 3 expiry, plus 15 local template. C1 and B1 have since taken it to 167 in CI and 182 with the template run
 - Human, done 2026-08-03 **with two players, not the three this gate asked for**. A complete real puzzle was solved start to finish and behaved correctly. The third player is what the gate wanted and is untested: two players exercise that the player list exists, three exercise that it tells people apart, which is the whole reason per-player colors moved into v1. Recorded rather than quietly closed, so that if the colors turn out wrong it is visible that nobody looked
 
 **Security pass.** A5 adds no endpoints and one validation rule, which tightens rather than loosens: a grapheme that renders nothing is no longer storable, on the server as well as the client, which closes a way to leave a cell that looks unanswered and is not. Nothing else about the threat model moves. The invite button surfaces a link the player already holds, so it grants nothing they could not already copy from the address bar.
@@ -816,7 +830,7 @@ Checks:
 
 **Postponed 2026-08-03** in favor of the C series, and postponed rather than cancelled: nothing about ADR-12 or ADR-13 changed, and the reasoning below stands as written. Scheduled 2026-08-03 (ADR-12). **Two milestones, not three:** B2 required a signed-in user for generation and was deleted on 2026-08-03 when Workers AI turned out to fail closed rather than bill, which removed the only reason it existed. See the amendment in ADR-12. Begins after A5, because generation needs play rendering to exist before it has anywhere to render, and because finishing v1 first keeps the showcase coherent. It **could** start after A3 instead, at the cost of leaving sync and polish unfinished; that trade is worth revisiting only if generation becomes the more important demonstration.
 
-#### B1 Runs and direction, status: TODO
+#### B1 Runs and direction, status: DONE 2026-08-03
 
 The prerequisite ADR-5 deferred to v2, and generation is what makes it due. An entry's cells cannot be known without it, whichever puzzle form is used.
 
@@ -827,8 +841,12 @@ The prerequisite ADR-5 deferred to v2, and generation is what makes it due. An e
 
 Checks:
 
-- Automated: unit tests over run detection on hand-built grids, including a single-cell run, an entry touching each edge, and a grid with no runs at all
+- Automated: `npm run test:unit`, now 92 checks, up from 23. 26 over run detection on hand-built grids including a single-cell run, an entry touching each edge in turn, a grid with no runs at all, and a ragged grid; 24 over `migrate()`; 19 over the WAV encoder owed from C1
 - Human: none
+
+**Security pass.** B1 adds no endpoint, no message, and no stored field a client can set. `detectRuns` is pure and reads a grid that invariant 4 already made immutable, so there is nothing for a stranger to influence: the input was validated when the puzzle was saved and cannot change afterward. The v3 fields are all server-derived on migration rather than accepted from a request, and `source`, `lang`, `status` and `theme` have no write path at all yet. `status` is the one addition a future milestone could get wrong, which is why it is written only alongside `puzzleSaved` and never on its own.
+
+**What B1 deliberately did not do.** Arrow rendering stays deferred, since generated puzzles are crossword-style. **Auto-advance stays out entirely (ADR-5, upheld),** and this is the milestone where upholding it took an actual decision rather than none: before run detection the app could not have advanced a cursor to the next cell of a word if it wanted to, and now it could. Knowing where a word ends is not permission to move the cursor there. The runs module says so at the top so that the next person to read it is told before they are tempted.
 
 #### B3 AI puzzle generation, status: TODO
 

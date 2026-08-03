@@ -11,8 +11,9 @@ local path `../mhshakouri`. It links to this project and describes it; it never
 hosts it. Design tokens are copied from there, never imported.
 
 **State: v1 complete 2026-08-03. C1, push to talk, is code complete and awaiting
-its human check; C2 is live WebRTC voice. The B series, AI generated puzzles, is
-postponed behind both (ADR-14).** There
+its human check in Iran. B1 is done: `SessionDoc` is at `v: 3` and run detection
+exists. Next is B3, AI generation, or C2, live WebRTC voice, and ADR-14 argues
+C2 is the weaker of the two.** There
 are two ways in and both work end to end: clone the demo from the landing page
 and type into the grid, or make a puzzle from a photo through alignment,
 tagging, save, and share link. See spec section 12.
@@ -50,8 +51,8 @@ limits are load-bearing rather than nice to have.
 - `npm run dev:ui` - Vite with hot reload, proxying the API to :8787. Run both
 - `npm run build` - the UI into `dist/`, which the worker serves as assets
 - `npm run typecheck` - two configs: the worker has no DOM, the UI has no Workers
-- `npm test` - the CI suite: unit, acceptance, photo cap, expiry. 98 checks
-- `npm run test:all` - the above plus the template run. 113 checks
+- `npm test` - the CI suite: unit, acceptance, photo cap, expiry. 167 checks
+- `npm run test:all` - the above plus the template run. 182 checks
 - `npm run deploy` - deploy by hand. Normally a merge to `main` does it
 - `npm run format` / `format:check` - Prettier
 
@@ -76,7 +77,8 @@ named, which is a config edit plus a deploy rather than an API call.
 ## Conventions
 
 - The ten invariants in spec section 4 must never break. Check changes against them.
-  `src/types.ts` is deliberately one version behind the spec until A0.5 lands v2.
+  `src/types.ts` and spec section 4 are in step at `v: 3` since B1. If they ever
+  drift again, the spec is the source of truth and the code is the bug.
 - Every milestone passes the ready/done gate in spec section 13 before it counts
   as finished. A milestone without a runnable check is not done.
 - Stop and ask on the triggers in spec section 15. Decide and record everything
