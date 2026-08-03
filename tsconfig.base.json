@@ -1,15 +1,15 @@
 {
   "compilerOptions": {
     "target": "ES2022",
-    "lib": ["ES2022"],
     "module": "ESNext",
     "moduleResolution": "bundler",
-    "types": ["@cloudflare/workers-types"],
     "strict": true,
     "noUncheckedIndexedAccess": true,
     "noEmit": true,
     "skipLibCheck": true,
-    "isolatedModules": true
-  },
-  "include": ["src/**/*.ts"]
+    "isolatedModules": true,
+    // Node 24 runs the unit tests with native type stripping, which needs the
+    // explicit .ts extension on relative imports.
+    "allowImportingTsExtensions": true
+  }
 }

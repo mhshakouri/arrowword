@@ -18,6 +18,28 @@
     // deleting one is not: see spec section 16 under Rollback.
     { "tag": "v2", "new_sqlite_classes": ["RateLimiter"] },
   ],
+  // The Vite build output, served by this same worker so the UI and the API are
+  // same-origin and CORS is unnecessary (ADR-10, spec section 2).
+  "assets": {
+    "directory": "./dist",
+    "binding": "ASSETS",
+    // Client routes like /new and /s/:id are not files on disk, so an unmatched
+    // path returns index.html and the app routes it.
+    "not_found_handling": "single-page-application",
+    // Explicit rather than relying on precedence: these prefixes must reach the
+    // worker even though the SPA fallback would otherwise answer them. Getting
+    // this wrong would serve index.html for API calls.
+    // `/session` and `/session/*` are both listed on purpose: the wildcard
+    // needs a trailing segment, so listing only `/session/*` sent `POST
+    // /session` to the asset worker, which answers GET and returned 405.
+    "run_worker_first": [
+      "/session",
+      "/session/*",
+      "/generate",
+      "/auth",
+      "/auth/*",
+    ],
+  },
   "r2_buckets": [
     {
       "binding": "PHOTOS",

@@ -1,0 +1,10 @@
+{
+  // The worker deliberately has no DOM types. Without this split, `document`
+  // would typecheck inside src/index.ts, where it does not exist at runtime.
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ES2022"],
+    "types": ["@cloudflare/workers-types"]
+  },
+  "include": ["src/index.ts", "src/types.ts"]
+}

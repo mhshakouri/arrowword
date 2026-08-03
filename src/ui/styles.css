@@ -1,0 +1,147 @@
+/* Design tokens copied from the site's globals.css, never imported (ADR-6).
+   If the site's palette changes, this file is updated by hand and on purpose. */
+:root {
+  --background: #ffffff;
+  --foreground: #171717;
+  --muted: #f5f5f5;
+  --muted-foreground: #666666;
+  --border: #e5e5e5;
+  --accent: #047857;
+  --accent-foreground: #ffffff;
+  --danger: #b91c1c;
+
+  --radius: 8px;
+  --gap: 1rem;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: #0a0a0a;
+    --foreground: #ededed;
+    --muted: #171717;
+    --muted-foreground: #a3a3a3;
+    --border: #262626;
+    --accent: #34d399;
+    --accent-foreground: #022c22;
+    --danger: #f87171;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  /* The site's Geist fonts have no Arabic-script glyphs, so answer letters fall
+     back to the system stack. See spec section 9. */
+  font-family:
+    system-ui,
+    -apple-system,
+    "Segoe UI",
+    sans-serif;
+  background: var(--background);
+  color: var(--foreground);
+  line-height: 1.5;
+}
+
+main {
+  max-width: 40rem;
+  margin: 0 auto;
+  padding: 1.5rem 1rem 4rem;
+}
+
+h1 {
+  font-size: 1.5rem;
+  margin: 0 0 0.25rem;
+}
+
+p.lede {
+  color: var(--muted-foreground);
+  margin: 0 0 1.5rem;
+}
+
+button,
+.button {
+  font: inherit;
+  border: 1px solid var(--border);
+  background: var(--muted);
+  color: var(--foreground);
+  border-radius: var(--radius);
+  padding: 0.7rem 1rem;
+  cursor: pointer;
+  display: inline-block;
+  text-decoration: none;
+}
+
+button.primary,
+.button.primary {
+  background: var(--accent);
+  color: var(--accent-foreground);
+  border-color: transparent;
+  font-weight: 600;
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Accessibility: visible focus is a requirement in section 16, not a default. */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap);
+}
+
+.row {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1rem;
+}
+
+.notice {
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius);
+  padding: 0.75rem 1rem;
+  background: var(--muted);
+}
+
+.notice.error {
+  border-left-color: var(--danger);
+}
+
+.muted {
+  color: var(--muted-foreground);
+  font-size: 0.9rem;
+}
+
+label {
+  display: block;
+  font-weight: 600;
+  margin-bottom: 0.25rem;
+}
+
+input[type="number"],
+input[type="text"] {
+  font: inherit;
+  padding: 0.55rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--background);
+  color: var(--foreground);
+  width: 100%;
+}

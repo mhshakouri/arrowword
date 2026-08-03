@@ -10,9 +10,9 @@ Parent project: the personal website, `github.com/mhshakouri/mhshakouri.dev`,
 local path `../mhshakouri`. It links to this project and describes it; it never
 hosts it. Design tokens are copied from there, never imported.
 
-**State: A0.5 complete and deployed 2026-08-03, live at `arrowword.mhshakouri.dev`.
-A1, the photo and alignment UI, is next.** The backend is finished: everything
-remaining is UI. See spec section 12.
+**State: A1 complete 2026-08-03. A2, tagging and save, is next.** The backend is
+finished. The UI has a landing page, the photo step, and the alignment editor;
+what remains is tagging, play rendering, and sync. See spec section 12.
 
 **This is a public app** as of 2026-08-02 (spec v6): open to visitors with no
 credentials, linked from the playground series on mhshakouri.dev. There is no
@@ -25,8 +25,12 @@ limits are load-bearing rather than nice to have.
 - Cloudflare Worker, one Durable Object per session (`ArrowwordSession`), R2 for photos
 - One DO alarm per session drives self-expiry, 30 days of inactivity (ADR-8)
 - TypeScript strict, `noUncheckedIndexedAccess`
-- No framework on the server. UI is a Vite single page app served as static
-  assets from this same worker (ADR-10), which keeps everything same-origin.
+- No framework on the server. UI is a Vite single page app on Preact, served as
+  static assets from this same worker (ADR-10), which keeps everything
+  same-origin. `run_worker_first` in `wrangler.jsonc` decides what reaches the
+  worker instead of the asset handler.
+- Two tsconfigs on purpose: the worker gets Workers types and no DOM, the UI
+  gets DOM and no Workers types.
 - CI is GitHub Actions, checks only. CD is Cloudflare Workers Builds, which
   deploys every push to `main` (ADR-11). Branch protection requiring `checks`
   is what keeps `main` deployable, so do not remove it.

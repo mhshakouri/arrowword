@@ -30,7 +30,10 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm run format:check
-      # Two runs: the acceptance suite, then expiry, which needs its own worker
-      # with a short retention window. Each starts and stops its own wrangler
-      # dev. See docs/SPEC.md section 12 under A0.5.
+      # Must precede the tests. The assets binding points at ./dist, so
+      # `wrangler dev` has nothing to serve until this has run.
+      - run: npm run build
+      # Three runs: the alignment unit tests, the acceptance suite, then expiry,
+      # which needs its own worker with a short retention window. Each worker
+      # run starts and stops itself. See docs/SPEC.md section 12.
       - run: npm test

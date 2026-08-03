@@ -1,0 +1,18 @@
+{
+  // The UI has no Workers types, for the mirror-image reason: a Durable Object
+  // binding is not reachable from the browser.
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    // "node" is here for the unit tests, which run on node:test.
+    "types": ["node"],
+    "jsx": "react-jsx",
+    "jsxImportSource": "preact"
+  },
+  "include": [
+    "src/ui/**/*.ts",
+    "src/ui/**/*.tsx",
+    "src/types.ts",
+    "vite.config.ts"
+  ]
+}
