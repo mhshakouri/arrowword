@@ -1,4 +1,4 @@
-# Arrowword Co-op: Aligned Spec (v7)
+# Arrowword Co-op: Aligned Spec (v8)
 
 A cooperative web app for solving Persian arrowword puzzles together, from a photo, on any number of devices, without any OCR.
 
@@ -8,7 +8,9 @@ Changed 2026-08-02 (v6): this is a public playground app, linked from mhshakouri
 
 Changed 2026-08-03 (v7): AI generated crossword-style puzzles are scheduled as the B series, so this revision fills in everything the generated path needs from generation through to play. The shaping decision throughout is **smallest playable**: small grids, few entries, no auto-advance, no correctness checking, no prefilled cells, and answers that are not treated as secret. See ADR-12 and ADR-13.
 
-**Build status: v1 complete 2026-08-03, A0 through A5. Next is the B series, which is v2.** The demo is playable and survives a dropped connection: letters typed offline are kept and sent when it returns. A puzzle can be made end to end and shared: photo, alignment, tagging, save, link. Deployed at `arrowword.mhshakouri.dev`. See section 12.
+Changed 2026-08-03 (v8): **players in a session can talk to each other.** The shaping rule is new and it is not the usual one: **the transport that survives the worst network wins.** Push to talk over the WebSocket that already carries the puzzle ships first and works anywhere the app itself works; live WebRTC voice is an enhancement for networks that permit it. The B series is postponed rather than cancelled. See ADR-14.
+
+**Build status: v1 complete 2026-08-03, A0 through A5. Next is the C series, voice, which runs ahead of the postponed B series.** The demo is playable and survives a dropped connection: letters typed offline are kept and sent when it returns. A puzzle can be made end to end and shared: photo, alignment, tagging, save, link. Deployed at `arrowword.mhshakouri.dev`. See section 12.
 
 ---
 
@@ -173,9 +175,15 @@ These must never break. Check any change against this list.
 11. A generated puzzle has no `photoKey` and no `alignment`. A photo puzzle has no `entries` and no `theme`. Nothing carries both.
 12. Generated puzzles contain no `clue` cells and no `prefilled` cells (section 3).
 13. Cloning copies `entries` and `theme` along with the grid, and borrows a photo only where one exists.
-14. The server, not the client, enforces 1 through 13.
+14. Voice never starts without an explicit user gesture. No microphone is opened and no audio is captured on page load, on joining a session, or on any other event a visitor did not deliberately cause.
+15. Audio is never stored. A voice clip is relayed to the sockets currently in the session and then dropped. It reaches neither R2 nor Durable Object storage, and no code path writes it anywhere.
+16. Every relayed voice or signaling payload carries a `from` stamped by the server from the socket's own identity. A client-supplied `from` is discarded, never trusted.
+17. A voice or signaling payload is relayed only to sockets in the same session that have sent `hello` and joined voice. A spectating socket receives nothing.
+18. The server, not the client, enforces 1 through 17.
 
 Invariant 8 is deliberately broad about text. Nicknames were the first untrusted string rendered to other people; clue text and themes are the second and third, and one is model output rather than human input. Anything displayed is sanitized on write and rendered as text.
+
+Invariants 14 through 17 are the ones that are **policy rather than structure**, and they are written as invariants precisely because of that. Photos are private because there is no listing endpoint, which is a property of the design; audio is unrecorded only because no code writes it, which is a promise a future commit can break without noticing. See ADR-14 for why that trade was accepted.
 
 ## 5. Sessions and sharing (replaces Auth)
 
@@ -252,6 +260,17 @@ Added 2026-08-02: `clone`, which is the demo front door in section 5, and `DELET
 - server to all: `{ type: "cell", row, col, ch | null, at, by }`
 - server to all on join and leave: `{ type: "peers", players: [{ id, nickname, color }] }`
 - server to one, on a rejected write: `{ type: "error", message, row?, col? }`
+
+Added in the C series, and all of it requires `hello` first:
+
+- client to server: `{ type: "voice-join" }` or `{ type: "voice-leave" }`
+- server to all in voice: `{ type: "voice-peers", players: [{ id, mode }] }`, where `mode` is `"ptt"` or `"live"`
+- client to server, C1: `{ type: "clip", seq, audio }`, where `audio` is base64 WAV within the size cap in the limits table
+- server to all others in voice, C1: `{ type: "clip", seq, audio, from, at }`
+- client to server, C2: `{ type: "rtc", to, payload }` for offers, answers, and batched ICE candidates
+- server to exactly one socket, C2: `{ type: "rtc", from, payload }`
+
+`to` must name a player with a live socket in this session that has joined voice; anything else is refused rather than relayed. `from` is stamped by the server in both directions and a client-supplied `from` is dropped (invariant 16). `payload` is opaque to the server, size capped, and never rendered anywhere, so invariant 8 does not apply to it and a size limit does instead.
 
 Changed 2026-08-02: `peers` carries the player list instead of a bare count, and `cell` carries `by`. A socket that has not sent `hello` may read but not write, which keeps anonymous spectating possible without letting an unnamed writer produce unattributed letters.
 
@@ -382,6 +401,11 @@ Values a coding agent would otherwise invent. All enforced server side.
 | Clue length                    | 120 chars         | Model output, rendered to other people                           |
 | Generations per IP             | 2 per day         | Plus Turnstile, since IP alone is a weak key. See below          |
 | Generations per day, all users | **measure first** | Derived from the Workers AI neuron allocation, not chosen        |
+| Voice clip length              | 8 seconds         | Long enough for a clue, short enough to stay under the size cap  |
+| Voice clip size                | 256 KB            | 16 kHz mono 16-bit PCM for 8 seconds, with headroom              |
+| Voice clips per player         | 6 per minute      | Bounds a flood; the message cap counts messages, not bytes       |
+| Signaling payload size         | 16 KB             | An SDP blob fits; the server never parses or renders it          |
+| Players in voice per session   | 4                 | Sockets stay at 10. Voice is a smaller room than the puzzle      |
 
 Added 2026-08-02: everything from nickname length down. Section 16 has required rate limiting since v5 and nothing implemented it, which was survivable while the app was private and is not now.
 
@@ -725,9 +749,45 @@ Checks:
 
 **Security pass.** A5 adds no endpoints and one validation rule, which tightens rather than loosens: a grapheme that renders nothing is no longer storable, on the server as well as the client, which closes a way to leave a cell that looks unanswered and is not. Nothing else about the threat model moves. The invite button surfaces a link the player already holds, so it grants nothing they could not already copy from the address bar.
 
+### C series: voice, so players can talk while they solve
+
+Scheduled 2026-08-03 (ADR-14), and it **runs before the B series** even though its letter is later. The letters record when each series was designed, not the order it ships in, which is why C is not renumbered: renaming B to C after ADR-12 already scheduled it would make every earlier reference wrong to save one letter of confusion here.
+
+Two milestones, and the first is complete on its own. If C2 is never built, nothing is missing.
+
+#### C1 Push to talk, status: TODO
+
+Hold a button, speak, release. The clip goes over the WebSocket that already carries the puzzle and plays on every other device in the session. **This is the milestone that works for the people this feature exists for**, and it needs no new host, no new protocol, and nothing from Hossein.
+
+- `AudioWorklet` capture, downsampled to 16 kHz mono, sent as WAV. Not `MediaRecorder`: Safari records to mp4/aac and cannot play the webm that Chrome produces, so the recorded-container path needs a transcode that raw PCM does not
+- Opt in per player, per session. The microphone opens on the button press and not before (invariant 14)
+- Server relays and drops. Nothing is stored, and nothing reaches R2 (invariant 15)
+- A visible list of who is in voice, so nobody is heard by an audience they cannot see
+- The clip, size, and rate limits in section 7, enforced server side
+
+Checks:
+
+- Automated: a clip reaches every other socket in voice and no one else; a spectating socket that never sent `hello` receives nothing and can send nothing; a client-supplied `from` is replaced by the server's; an oversize clip is refused; a seventh clip in a minute is refused; the voice room caps at 4 while sockets stay at 10
+- Human: one clip from a phone in Iran arrives and is audible. That is the whole point of the milestone and no local test substitutes for it
+
+#### C2 Live voice over WebRTC, status: TODO
+
+An enhancement, and only where the network permits. Signaling rides the existing WebSocket, media does not touch the server.
+
+- Cloudflare's STUN at `stun.cloudflare.com`, which is free, unlimited, and needs no credential. **No TURN**, which is the decision ADR-14 records and the one most likely to be revisited
+- ICE candidates are **batched into one message per peer** rather than trickled. The 20 messages per second cap is per socket and unbatched trickle across three peers exceeds it, and every message also wakes a hibernating object
+- **The room has one mode.** Live voice engages only when every participant connects. Anyone failing drops the whole room to C1 with a message saying so, because a room where two people talk and a third hears nothing is broken rather than degraded
+- Per-peer local block: close that one `RTCPeerConnection`. It works without the server precisely because mesh relationships are independent, which is the one thing a mesh does better than an SFU here
+- `iceConnectionState === "failed"` is a visible state with words, never silence
+
+Checks:
+
+- Automated: signaling reaches exactly one named peer and no other socket; an unknown `to` is refused; a `to` naming a player who has not joined voice is refused; an oversize payload is refused; a pre-`hello` socket cannot signal
+- Human: two phones on different networks, one on mobile data, hear each other live. Not testable in CI for the same reason as section 7's template note
+
 ### B series: v2, AI puzzle generation
 
-Scheduled 2026-08-03 (ADR-12). **Two milestones, not three:** B2 required a signed-in user for generation and was deleted on 2026-08-03 when Workers AI turned out to fail closed rather than bill, which removed the only reason it existed. See the amendment in ADR-12. Begins after A5, because generation needs play rendering to exist before it has anywhere to render, and because finishing v1 first keeps the showcase coherent. It **could** start after A3 instead, at the cost of leaving sync and polish unfinished; that trade is worth revisiting only if generation becomes the more important demonstration.
+**Postponed 2026-08-03** in favor of the C series, and postponed rather than cancelled: nothing about ADR-12 or ADR-13 changed, and the reasoning below stands as written. Scheduled 2026-08-03 (ADR-12). **Two milestones, not three:** B2 required a signed-in user for generation and was deleted on 2026-08-03 when Workers AI turned out to fail closed rather than bill, which removed the only reason it existed. See the amendment in ADR-12. Begins after A5, because generation needs play rendering to exist before it has anywhere to render, and because finishing v1 first keeps the showcase coherent. It **could** start after A3 instead, at the cost of leaving sync and polish unfinished; that trade is worth revisiting only if generation becomes the more important demonstration.
 
 #### B1 Runs and direction, status: TODO
 
@@ -761,7 +821,7 @@ Checks:
 - Human: generate three puzzles from three themes and solve one end to end
 - Published with the milestone, from a script run by hand against the real model: the measured rate at which first proposals validate, repair rescues them, and the fallback runs. ADR-12 treats that measurement as the deliverable, not a footnote
 
-Out of v1: OCR, auto grid detection, perspective correction, correctness checking, accounts of any kind. AI puzzle generation is scheduled as the B series below, which is v2.
+Out of v1: OCR, auto grid detection, perspective correction, correctness checking, accounts of any kind. Voice is the C series and AI puzzle generation is the B series, both above, both v2.
 
 Changed 2026-08-02: **per-player colors moved into v1** (A3 and A5). With an unbounded number of players and unverified nicknames, telling people apart stops being polish and becomes the only way the player list means anything.
 
@@ -854,6 +914,12 @@ Verified 2026-08-03 on the pull request that introduced this arrangement, becaus
 
 What that leaves: opening a preview URL runs that branch's code against production data. Treat a preview URL as production access. Never exercise `DELETE` or expiry from one, and never point a preview at a session that matters. The reason this is an acceptable trade rather than a bad one is that everything in the bucket is a throwaway public puzzle on a thirty day clock; if that ever stops being true, previews need their own bindings before they need anything else.
 
+### Blocking C1 and C2: nothing
+
+Stated rather than left silent, because every other v2 milestone needs something from Hossein and these two do not. C1 adds no host and no vendor. C2 uses Cloudflare's STUN, which is free, unlimited, and takes no credential, so there is no token to mint and no secret to store. If TURN is ever added, that becomes a handoff and this section grows one.
+
+The one thing worth doing before C1 rather than after: confirm the app itself loads for the person in Iran this feature exists for. Audio rides the same WebSocket as the puzzle, so if letters sync, clips will too, and if the page never loads there is nothing to build.
+
 ### Blocking B3: a generation provider
 
 1. **Blocked:** there is nothing to generate with. Completing this unblocks B3, and it may need nothing from Hossein at all.
@@ -930,6 +996,12 @@ Escape hatch, pre-decided so it is not designed under pressure: if abuse appears
 **Logging and observability.** The worker runs with observability enabled. **Session ids must never be logged in full**, because the id is the credential; log a short hash prefix instead. Log enough to answer "why did this session fail" without logging puzzle content or letters.
 
 **Data and privacy.** Photos are personal content and may show more than the puzzle. They are private to the link, there is no listing endpoint, and no session is ever enumerable.
+
+Changed 2026-08-03 (C series): **voice is the first personal data that passes through the server rather than around it.** A photo is content someone chose to upload; a voice clip is a recording of a person, made seconds ago, in whatever room they are sitting in. Three consequences, stated because they are easy to leave implicit:
+
+- The claim is "we do not store it", not "we cannot hear it". WebRTC media in C2 is encrypted between peers and genuinely unreadable to the server; a C1 clip is not. Invariant 15 is what keeps the first claim true and it is a promise a future commit can break, which is why it is an invariant and not a paragraph.
+- **Any client can record what it receives.** True of every voice system, WhatsApp included, so it is not a defect. Written down once here so nobody later believes this app promised otherwise.
+- C2 exposes each player's IP address to every other player, because that is what a direct connection is. Accepted deliberately in ADR-14, and the reason C1 rather than C2 is the default.
 
 Changed 2026-08-02: retention is 30 days of inactivity, not indefinite. Indefinite retention was an accepted cost for a private tool with two users; for a public app it makes storage a one-way ratchet where a burst in month one keeps billing in month twelve. The delete endpoint that v5 listed as "required before any link is shared outside the household" is now in A0.5, because that condition is met the moment this ships.
 
@@ -1014,7 +1086,7 @@ Alternative, and it was built first in the previous commit: a deploy job inside 
 
 Consequences: the `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` repository secrets become unnecessary and should be deleted, because the point of the split is that Actions holds no credentials it does not need. Deploy logs move from the Actions tab to the Cloudflare dashboard. Non-production branch builds are available and give preview URLs, with a caveat that does not apply to the site, recorded in section 14: a preview version of this worker shares production's Durable Objects and R2 bucket.
 
-**ADR-12: AI puzzle generation.** Decided 2026-08-03, and **scheduled as milestones B1 and B3** in section 12. The B series is v2 work and begins after A5 completes v1.
+**ADR-12: AI puzzle generation.** Decided 2026-08-03, and **scheduled as milestones B1 and B3** in section 12. The B series is v2 work and begins after A5 completes v1. Postponed later the same day by ADR-14, which puts voice ahead of it. Nothing in this record changed; only its position in the queue did.
 
 This record was originally titled "and sign-in that gates only it", and half of it argued for requiring an account to generate. That half was withdrawn the same day; the amendment is at the end and the title no longer claims it.
 
@@ -1081,6 +1153,32 @@ An earlier draft of ADR-12 required the opposite: `state` would become a server-
 The reasoning: this is a puzzle you generated for yourself and can regenerate in one click. The worst outcome of a leak is that someone spoils their own game, and ADR-1 already promises the app never checks answers, so there is no score, no completion state, and nothing to defend. Weighed against that, a projection puts every future code path one forgotten call away from a leak it was built to prevent, which is a real maintenance hazard traded for an imaginary benefit.
 
 Consequences: `state` keeps its current shape, `{ type: "state", doc }`, which is one fewer protocol change and one fewer thing that can rot. Anyone reading the WebSocket frames in developer tools can see the answers, which is accepted. If a future feature ever does keep score, this decision is the first thing that has to be revisited, and the invariant list has no rule about solution secrecy precisely so that its absence is visible rather than assumed.
+
+**ADR-14: Voice is push to talk over the existing WebSocket, and WebRTC is the enhancement.** Decided 2026-08-03, scheduled as the C series in section 12. Players in a session can talk to each other. The default mechanism records a clip and relays it through the session's Durable Object; live peer to peer voice is added on top, for the networks that allow it.
+
+This inverts the ordering everyone reaches for first, so the reason matters more than the decision.
+
+**What decided it was a network test, not an architecture argument.** The motivating case is one person in Iran talking to the person who built this. On that connection WhatsApp and Telegram are not merely degraded, they are unreachable. Live WebRTC needs UDP to work, a reachable STUN host, and a direct path through carrier-grade NAT and probably a VPN. Those are four separate things that can each be blocked and they compound. Push to talk needs none of them: it rides the WebSocket that is already delivering letters, so if the puzzle syncs, audio syncs. There is no new host, no second protocol, and nothing additional to block.
+
+That makes push to talk the primary path rather than the fallback, which is the whole of this record. Building WebRTC first would have shipped a feature that did not work for the person it was for.
+
+**ADR-3 already reached the same conclusion for a different layer**, and it is worth noticing that it holds twice. That record rejected WebRTC for state sync partly because "mobile CGNAT makes direct connections unreliable without a TURN relay". The same sentence decides voice. A design that routes through one Durable Object per session keeps being the answer here because the Durable Object is the only path guaranteed to exist.
+
+Alternatives weighed:
+
+- **WebRTC mesh with TURN over TLS on 443.** The strongest technical option, and the one that survives hostile networks best, because relayed media on 443 is indistinguishable from ordinary HTTPS. Rejected as the starting point on cost of complexity rather than money: it needs a TURN token, a secret, a handoff, and it still cannot be verified without the very network that is hard to reach. Kept as the pre-decided upgrade if C2 turns out to fail often for people who are not behind a national firewall.
+- **An SFU, Cloudflare Realtime.** Scales past four, leaks no IP addresses, and TURN comes free alongside it. Rejected as disproportionate: this is a two to four person puzzle, and an SFU brings an App ID, a secret, vendor session management, and a second cost model to reason about, in exchange for scale nothing here needs.
+- **Continuous audio streaming over the WebSocket**, which is push to talk without the button. Rejected after working the numbers. Durable Object billing is not the obstacle, since incoming WebSocket messages bill at a 20:1 ratio and outgoing messages are free. The obstacles are that WebSocket is TCP, where a retransmit stalls everything behind it and produces a gap then a rush; that end to end latency lands around 350 to 600ms once batching and a jitter buffer are included, which is past the point where people stop being able to take turns; that it requires WebCodecs, which reached Safari only in version 26.0 and whose Opus support is reported unreliable there; and that a continuously awake object gives up hibernation, changing the cost model from "scales with activity" to "scales with call minutes". Push to talk deletes every one of those problems at once, because a whole utterance in one message needs no jitter buffer, no clock drift correction, and no playback scheduling.
+- **A third-party room embedded in the page.** Twenty lines and no build. Rejected: it puts another party's iframe inside a page carrying Hossein's name, next to his resume, and it teaches nothing.
+
+Consequences, including the ones that cost something:
+
+- **Audio transits the server, so privacy becomes a policy rather than a property.** Invariants 15 and 16 exist to make that policy enforced and testable rather than intended. Section 16 says the same thing at more length.
+- **Latency is not hidden, it is designed away.** The 350 to 600ms that makes conversation impossible is invisible when the interaction is already turn-taking, and puzzle talk ("try ب at 4 across") is turn-taking anyway.
+- **C2 exposes player IP addresses to each other**, because a direct connection is a direct connection. In an app with no accounts, where the link gets pasted into group chats, that is a real cost. It is accepted because C2 is opt in, capped at four, and never the default, and it is the first thing to revisit if voice ever becomes the reason people come.
+- **The room has one mode**, chosen by the weakest connection. Mixed rooms were rejected as broken rather than degraded: a push to talk player hears nothing from a pair on live audio, which is worse than everyone being on the same footing.
+- Sixteen kHz mono PCM is chosen over Opus for C1 because every browser decodes WAV and Safari decodes no webm at all. It costs roughly ten times the bytes. If that hurts on a slow connection, 8-bit µ-law halves it for almost no loss on speech and an Opus wasm encoder cuts it tenfold, in that order.
+- No credential, no vendor, and no handoff, for either milestone. That is unusual for v2 work here and section 14 says so explicitly.
 
 ## 18. Open questions (non-blocking)
 
