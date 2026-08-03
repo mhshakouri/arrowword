@@ -8,7 +8,7 @@ Changed 2026-08-02 (v6): this is a public playground app, linked from mhshakouri
 
 Changed 2026-08-03 (v7): AI generated crossword-style puzzles are scheduled as the B series, so this revision fills in everything the generated path needs from generation through to play. The shaping decision throughout is **smallest playable**: small grids, few entries, no auto-advance, no correctness checking, no prefilled cells, and answers that are not treated as secret. See ADR-12 and ADR-13.
 
-**Build status: A5 code complete 2026-08-03, awaiting the full-puzzle check. That is the last of v1.** The demo is playable and survives a dropped connection: letters typed offline are kept and sent when it returns. A puzzle can be made end to end and shared: photo, alignment, tagging, save, link. Play rendering is A3. Deployed at `arrowword.mhshakouri.dev`. See section 12.
+**Build status: v1 complete 2026-08-03, A0 through A5. Next is the B series, which is v2.** The demo is playable and survives a dropped connection: letters typed offline are kept and sent when it returns. A puzzle can be made end to end and shared: photo, alignment, tagging, save, link. Deployed at `arrowword.mhshakouri.dev`. See section 12.
 
 ---
 
@@ -705,7 +705,7 @@ Typing syncs both ways, optimistic echo, reconnect with fresh state, retry of th
 1. **`row` and `col` on a refusal tell a client only about a write it just made**, so they leak nothing it did not already know. They exist because reverting the wrong cell is worse than not reverting.
 2. **A client can now hold writes and send them later**, which means the server sees writes with client-chosen timing but not client-chosen content: every one still goes through the same validation, still requires `hello`, and still counts against nothing the client controls. The 20-messages-per-second cap in section 7 is per socket and unchanged, so a long queue flushing on reconnect is bounded by it.
 
-### A5 Polish, status: CODE COMPLETE 2026-08-03, awaiting the full-puzzle check
+### A5 Polish, status: DONE 2026-08-03, with one caveat on its human check
 
 Persian keyboard hardening, loading and empty and error states, player list, copy-link UX, expired-session state.
 
@@ -721,7 +721,7 @@ What went in, and each of these came from using it rather than from the list:
 Checks:
 
 - Automated: the full suite, 99 checks. 23 unit, 51 acceptance, 7 photo, 3 expiry, plus 15 local template
-- Human, outstanding: solve one complete real puzzle together, start to finish, with at least three players
+- Human, done 2026-08-03 **with two players, not the three this gate asked for**. A complete real puzzle was solved start to finish and behaved correctly. The third player is what the gate wanted and is untested: two players exercise that the player list exists, three exercise that it tells people apart, which is the whole reason per-player colors moved into v1. Recorded rather than quietly closed, so that if the colors turn out wrong it is visible that nobody looked
 
 **Security pass.** A5 adds no endpoints and one validation rule, which tightens rather than loosens: a grapheme that renders nothing is no longer storable, on the server as well as the client, which closes a way to leave a cell that looks unanswered and is not. Nothing else about the threat model moves. The invite button surfaces a link the player already holds, so it grants nothing they could not already copy from the address bar.
 
@@ -830,11 +830,11 @@ Uncommenting `routes` would fix that, and it was deliberately not done yet for o
 
 The framework question is decided (ADR-10) and the deploy is live, so A1 needs no handoff.
 
-### Blocking automated deploys: connect Workers Builds
+### Done 2026-08-03: automated deploys via Workers Builds
 
-Replaces an earlier handoff that asked for two GitHub secrets. Those were for the Actions deploy job, which ADR-11 removed.
+Replaced an earlier handoff that asked for two GitHub secrets. Those were for the Actions deploy job, which ADR-11 removed. Kept in full rather than deleted, because the preview-build caveat at the end of it is a standing hazard rather than a setup note.
 
-1. **Blocked:** nothing deploys `main` any more, since the Actions deploy job is gone and Workers Builds is not connected yet. Until this is done, releases are a manual `npm run deploy`.
+1. **Was blocked:** nothing deployed `main` once the Actions deploy job was gone and Workers Builds was not yet connected, so releases were a manual `npm run deploy`. Connected 2026-08-03 and confirmed working: a documentation-only commit on `main` produced a deployment half an hour later, and the deployed asset hash matches a clean local `npm run build`.
 2. **Do**, in the Cloudflare dashboard on the `arrowword` worker, under Settings, Build:
    - Connect the `mhshakouri/arrowword` repository
    - **Production branch:** `main`

@@ -10,12 +10,10 @@ Parent project: the personal website, `github.com/mhshakouri/mhshakouri.dev`,
 local path `../mhshakouri`. It links to this project and describes it; it never
 hosts it. Design tokens are copied from there, never imported.
 
-**State: A5 code complete 2026-08-03, awaiting the full-puzzle check. That is
-the last of v1; after it, the B series adds AI generated puzzles.** The demo is playable end to end: clone it from the landing
-page and type into the grid. What remains is optimistic echo, reconnection, and
-retry of an unacknowledged write. A puzzle can
-now be made end to end: photo, alignment, tagging, save, share link. What
-remains is the demo template, play rendering, and sync. See spec section 12.
+**State: v1 complete 2026-08-03. Next is the B series, AI generated puzzles,
+which is B1 then B3.** There are two ways in and both work end to end: clone the
+demo from the landing page and type into the grid, or make a puzzle from a photo
+through alignment, tagging, save, and share link. See spec section 12.
 
 **This is a public app** as of 2026-08-02 (spec v6): open to visitors with no
 credentials, linked from the playground series on mhshakouri.dev. There is no
