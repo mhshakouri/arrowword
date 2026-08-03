@@ -192,11 +192,34 @@ function corsHeaders(request: Request, env: Env): Record<string, string> {
    runtime throw "Can't read from request stream after response has been sent",
    which stalls the next request on the connection. Any early return from a
    request that carries a body must drop it first. */
+const DRAIN_LIMIT = 64 * 1024;
+
 async function discardBody(request: Request): Promise<void> {
+  const body = request.body;
+  if (!body) return;
   try {
-    await request.body?.cancel();
+    /* Read and throw away rather than cancel. Cancelling a body the client is
+       still uploading is itself what raises the error this function exists to
+       prevent: the stream is torn down mid-flight and the runtime complains
+       asynchronously, after the status has already gone out. Draining lets the
+       upload finish and the response leave cleanly.
+
+       Bounded, because a caller must never be made to read unlimited bytes just
+       to decline a request. Past the ceiling, cancelling is the lesser evil and
+       the client may see a dropped connection instead of the status. */
+    const reader = body.getReader();
+    let seen = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) return;
+      seen += value.byteLength;
+      if (seen > DRAIN_LIMIT) {
+        await reader.cancel();
+        return;
+      }
+    }
   } catch {
-    /* Already consumed or closed. */
+    /* Already consumed, already closed, or cancelled somewhere else. */
   }
 }
 
@@ -343,6 +366,13 @@ export default {
       );
       /* A 101 response carries the WebSocket and its headers are immutable. */
       if (res.status === 101) return res;
+      /* The object may have answered without draining the body, which every
+         early return in it does on purpose. Cancelling in there cancels the
+         object's copy; this incoming request is a separate handle onto the same
+         upload, and returning while it is unread throws "Can't read from
+         request stream after response has been sent" out here instead. Harmless
+         when the body was already consumed. */
+      await discardBody(request);
       const out = new Response(res.body, res);
       for (const [k, v] of Object.entries(cors)) out.headers.set(k, v);
       return out;

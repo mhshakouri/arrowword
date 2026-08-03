@@ -289,7 +289,16 @@ The client must not have to guess. Every rejection is one of these.
 
 An expired session is indistinguishable from one that never existed, and deliberately so: distinguishing them would confirm that a given id was once real, which turns a 404 into an oracle.
 
-Any early return from a request that carries a body must cancel that body first. Returning while the body is unread makes the runtime throw `Can't read from request stream after response has been sent`, which stalls the next request on the connection. This cost 146 seconds of wall time once; the acceptance test now guards it.
+Any early return from a request that carries a body must deal with that body before returning. Returning while it is unread makes the runtime throw `Can't read from request stream after response has been sent`, which stalls the next request on the connection. This cost 146 seconds of wall time once; the acceptance test guards it.
+
+**Corrected 2026-08-03 (A2): drain the body, do not cancel it.** This paragraph used to say cancel, and cancelling turned out to be a cause of the very error it was meant to prevent. Tearing down a body the client is still uploading makes the runtime complain asynchronously, after the status has already gone out, so the failure appears as an uncaught error with no request to blame and it kills `wrangler dev` rather than failing a check. It reproduced about twice in six runs, always immediately after the write-once 409 on `PUT /puzzle`.
+
+`discardBody` now reads and throws away up to 64 KB, and only cancels past that ceiling, because a caller must never be made to read unlimited bytes in order to decline a request. Past the ceiling a dropped connection is the lesser evil, which is the same trade the oversize upload path already accepts.
+
+Two related things that were also wrong, and both cost time:
+
+- **Cancelling inside the Durable Object does not drain the worker's request.** The worker forwards a second `Request` wrapping the same upload, so the object's copy and the incoming one are separate handles. The worker now drains its own after the object answers, which is harmless when the object already consumed it.
+- **The symptom is not local to the guilty request.** The error surfaces after the response, so the log shows it next to whichever request came after. Read the request _before_ it.
 
 ### Learned while building A0.5
 
