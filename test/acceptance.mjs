@@ -41,6 +41,24 @@ async function req(url, init) {
   );
 }
 
+/* Wait for something to become true rather than sleeping and hoping. A fixed
+   pause before asserting that a WebSocket message arrived is a flake waiting to
+   happen: it passed locally and failed on a loaded CI runner, where 300ms was
+   not enough for a broadcast to land. Polling costs nothing when the condition
+   is already met and buys headroom when the machine is busy.
+
+   Only for assertions that something *did* happen. Proving a message never
+   arrives still needs a real pause, and those keep one. */
+async function eventually(predicate, what, timeout = 5000) {
+  const deadline = Date.now() + timeout;
+  for (;;) {
+    const value = predicate();
+    if (value) return value;
+    if (Date.now() > deadline) return null;
+    await sleep(50);
+  }
+}
+
 /* Rate limits are per caller, in a fixed one hour window, and `wrangler dev`
    keeps its Durable Object state in .wrangler between runs. A fixed caller id
    would therefore inherit a spent budget from the previous run and fail on the
@@ -486,7 +504,7 @@ const a = await open(wsUrl);
 await wait(200);
 check(
   "client A receives state",
-  a.messages.some((m) => m.type === "state"),
+  await eventually(() => a.messages.some((m) => m.type === "state")),
 );
 check(
   "state carries the saved puzzle",
@@ -500,8 +518,10 @@ a.send(JSON.stringify({ type: "set", row: 0, col: 1, ch: "م" }));
 await wait(250);
 check(
   "write before hello refused",
-  a.messages.some(
-    (m) => m.type === "error" && m.message === "pick a nickname first",
+  await eventually(() =>
+    a.messages.some(
+      (m) => m.type === "error" && m.message === "pick a nickname first",
+    ),
   ),
 );
 
@@ -510,11 +530,13 @@ hello(a, playerA, "Hossein");
 await wait(250);
 check(
   "hello is acknowledged with a player list",
-  a.messages.some(
-    (m) =>
-      m.type === "peers" &&
-      m.players.length === 1 &&
-      m.players[0].nickname === "Hossein",
+  await eventually(() =>
+    a.messages.some(
+      (m) =>
+        m.type === "peers" &&
+        m.players.length === 1 &&
+        m.players[0].nickname === "Hossein",
+    ),
   ),
 );
 
@@ -542,17 +564,21 @@ hello(b, playerB, "Partner");
 await wait(300);
 check(
   "peers carries every named player",
-  a.messages
-    .filter((m) => m.type === "peers")
-    .at(-1)
-    ?.players.some((p) => p.nickname === "Partner"),
+  await eventually(() =>
+    a.messages
+      .filter((m) => m.type === "peers")
+      .at(-1)
+      ?.players.some((p) => p.nickname === "Partner"),
+  ),
 );
 
 a.messages.length = 0;
 b.messages.length = 0;
 b.send(JSON.stringify({ type: "set", row: 0, col: 1, ch: "م" }));
 await wait(300);
-const cellMsg = a.messages.find((m) => m.type === "cell");
+const cellMsg = await eventually(() =>
+  a.messages.find((m) => m.type === "cell"),
+);
 check(
   "A sees B's letter",
   cellMsg?.ch === "م" && cellMsg?.row === 0 && cellMsg?.col === 1,
@@ -588,7 +614,9 @@ b.send(JSON.stringify({ type: "clear", row: 0, col: 1 }));
 await wait(300);
 check(
   "clear propagates",
-  a.messages.some((m) => m.type === "cell" && m.ch === null),
+  await eventually(() =>
+    a.messages.some((m) => m.type === "cell" && m.ch === null),
+  ),
 );
 
 /* Reconnect: a fresh client must see the letters already set. */
@@ -596,7 +624,9 @@ b.send(JSON.stringify({ type: "set", row: 1, col: 0, ch: "ک" }));
 await wait(300);
 const c = await open(wsUrl);
 await wait(300);
-const state = c.messages.find((m) => m.type === "state");
+const state = await eventually(() =>
+  c.messages.find((m) => m.type === "state"),
+);
 check(
   "new client sees persisted letters",
   state?.doc?.letters?.["1,0"]?.ch === "ک",
@@ -613,7 +643,9 @@ const cloneWs = await open(
   `${BASE.replace("http", "ws")}/session/${cloneId}/ws`,
 );
 await wait(300);
-const cloneDoc = cloneWs.messages.find((m) => m.type === "state")?.doc;
+const cloneDoc = await eventually(
+  () => cloneWs.messages.find((m) => m.type === "state")?.doc,
+);
 check("clone has the same grid", cloneDoc?.rows === 2 && cloneDoc?.cols === 2);
 check(
   "clone starts with no letters",
@@ -653,7 +685,9 @@ const taggedWs = await open(
   `${BASE.replace("http", "ws")}/session/${tagged}/ws`,
 );
 await wait(300);
-const taggedDoc = taggedWs.messages.find((m) => m.type === "state")?.doc;
+const taggedDoc = await eventually(
+  () => taggedWs.messages.find((m) => m.type === "state")?.doc,
+);
 check(
   "a tagged puzzle reloads with its cells intact",
   JSON.stringify(taggedDoc?.cells) === JSON.stringify(taggedCells),
