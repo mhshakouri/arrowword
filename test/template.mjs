@@ -111,7 +111,7 @@ const cells = [
 ];
 const jpg = new Uint8Array([0xff, 0xd8, 0xff, 0xd9]);
 
-function socket(id) {
+function connectOnce(id) {
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(`${BASE.replace("http", "ws")}/session/${id}/ws`);
     ws.messages = [];
@@ -120,6 +120,27 @@ function socket(id) {
     ws.addEventListener("error", () => reject(new Error("socket failed")));
     setTimeout(() => reject(new Error("socket timed out")), 10_000);
   });
+}
+
+/* Retried, because `wrangler dev` serves HTTP and even runs the Durable Object
+   before the WebSocket upgrade path reliably accepts connections. The acceptance
+   suite has known that since A0 and this file was written without it, which cost
+   a CI failure: the readiness probe is an HTTP request, so it says nothing about
+   whether a socket will connect. Doubly relevant here, where a restart means
+   going through a cold start twice. */
+async function socket(id) {
+  let last;
+  for (let attempt = 0; attempt < 8; attempt++) {
+    try {
+      return await connectOnce(id);
+    } catch (err) {
+      last = err;
+      await sleep(600);
+    }
+  }
+  throw new Error(
+    `could not open a socket for ${id} after 8 tries: ${last?.message}`,
+  );
 }
 
 async function eventually(predicate, timeout = 5000) {
