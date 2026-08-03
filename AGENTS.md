@@ -27,8 +27,9 @@ limits are load-bearing rather than nice to have.
 - TypeScript strict, `noUncheckedIndexedAccess`
 - No framework on the server. UI is a Vite single page app served as static
   assets from this same worker (ADR-10), which keeps everything same-origin.
-- Merging to `main` deploys, once the two Cloudflare secrets in spec section 14
-  exist. Until then the `deploy` job fails on purpose rather than skipping.
+- CI is GitHub Actions, checks only. CD is Cloudflare Workers Builds, which
+  deploys every push to `main` (ADR-11). Branch protection requiring `checks`
+  is what keeps `main` deployable, so do not remove it.
 
 ## Commands
 

@@ -18,6 +18,28 @@ const check = (name, pass, detail = "") =>
   (pass ? ok : bad).push(`${name}${detail ? ` (${detail})` : ""}`);
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+/* `wrangler dev` reloads its worker after the initial bundle: the parent process
+   stays alive, so nothing exits, but the port refuses connections for a moment
+   while it swaps. CI hit that twice, as an uncaught ECONNREFUSED from whichever
+   request came next. Readiness checks cannot fix it, because the window can open
+   after readiness. So every request tolerates a connection error and retries.
+
+   Only connection errors are retried. An HTTP response, including a failing one,
+   is returned untouched: this hides a flaky socket, never a flaky assertion. */
+async function req(url, init) {
+  let last;
+  for (let attempt = 0; attempt < 8; attempt++) {
+    try {
+      return await fetch(url, init);
+    } catch (err) {
+      last = err;
+      await sleep(400);
+    }
+  }
+  throw new Error(
+    `${url} refused ${8} connection attempts, last: ${last?.message}`,
+  );
+}
 
 /* Rate limits are per caller, in a fixed one hour window, and `wrangler dev`
    keeps its Durable Object state in .wrangler between runs. A fixed caller id
@@ -77,19 +99,49 @@ async function wsReady(url) {
 }
 
 let worker = null;
+let shuttingDown = false;
+/* wrangler's own output, kept so that a crash produces a cause instead of an
+   opaque ECONNREFUSED stack from whichever fetch happened to be next. CI hit
+   exactly that: the worker answered one request, vanished, and the failure said
+   nothing about why. */
+const workerLog = [];
+
 if (await isUp()) {
   console.log(`using the dev server already on :${PORT}\n`);
 } else {
   console.log(`starting wrangler dev on :${PORT} ...`);
   worker = spawn("npx", ["wrangler", "dev", "--port", String(PORT)], {
-    stdio: "ignore",
+    stdio: ["ignore", "pipe", "pipe"],
     detached: false,
   });
+  const keep = (chunk) => {
+    workerLog.push(chunk.toString());
+    if (workerLog.length > 60) workerLog.shift();
+  };
+  worker.stdout.on("data", keep);
+  worker.stderr.on("data", keep);
+  worker.on("exit", (code, signal) => {
+    if (shuttingDown) return;
+    console.error(
+      `\nwrangler dev exited before the suite finished (code ${code}, signal ${signal}).`,
+    );
+    console.error(`Its last output:\n${workerLog.join("")}`);
+    process.exit(1);
+  });
+
+  /* Two consecutive probes, not one. A single success has been observed from a
+     worker that then died 140ms later, which read as "ready" and then failed on
+     the next request with no explanation. */
   const deadline = Date.now() + 60_000;
-  while (!(await isUp())) {
+  let streak = 0;
+  while (streak < 2) {
+    streak = (await isUp()) ? streak + 1 : 0;
+    if (streak >= 2) break;
     if (Date.now() > deadline) {
+      shuttingDown = true;
       worker.kill();
       console.error(`wrangler dev did not come up on :${PORT} within 60s`);
+      console.error(`Its last output:\n${workerLog.join("")}`);
       process.exit(1);
     }
     await sleep(500);
@@ -98,6 +150,7 @@ if (await isUp()) {
 }
 
 const stopWorker = () => {
+  shuttingDown = true;
   if (worker && !worker.killed) worker.kill("SIGTERM");
 };
 process.on("exit", stopWorker);
@@ -109,7 +162,7 @@ process.on("SIGINT", () => {
 const MAIN = `${RUN}-main`;
 
 async function newSession(ip = MAIN) {
-  const res = await fetch(`${BASE}/session`, as(ip, { method: "POST" }));
+  const res = await req(`${BASE}/session`, as(ip, { method: "POST" }));
   if (!res.ok) throw new Error(`could not create session: ${res.status}`);
   return (await res.json()).id;
 }
@@ -126,7 +179,7 @@ const jpg = new Uint8Array([
   0xff,
   0xd9,
 ]);
-const up = await fetch(
+const up = await req(
   `${BASE}/session/${id}/photo`,
   as(MAIN, {
     method: "PUT",
@@ -136,7 +189,7 @@ const up = await fetch(
 );
 check("upload photo", up.ok);
 
-const got = await fetch(`${BASE}/session/${id}/photo`);
+const got = await req(`${BASE}/session/${id}/photo`);
 check(
   "fetch photo",
   got.status === 200 && got.headers.get("content-type") === "image/jpeg",
@@ -158,7 +211,7 @@ const puzzle = {
   },
   cells,
 };
-const saved = await fetch(
+const saved = await req(
   `${BASE}/session/${id}/puzzle`,
   as(MAIN, {
     method: "PUT",
@@ -168,7 +221,7 @@ const saved = await fetch(
 );
 check("save puzzle", saved.ok);
 
-const again = await fetch(
+const again = await req(
   `${BASE}/session/${id}/puzzle`,
   as(MAIN, {
     method: "PUT",
@@ -180,7 +233,7 @@ check("puzzle is write-once", again.status === 409, `got ${again.status}`);
 
 /* The 409 above left an unread body. If that stalls the connection, this hangs. */
 const t0 = Date.now();
-const afterReject = await fetch(`${BASE}/session/${id}/photo`);
+const afterReject = await req(`${BASE}/session/${id}/photo`);
 const elapsed = Date.now() - t0;
 check(
   "no stall after rejected write",
@@ -188,7 +241,7 @@ check(
   `${elapsed}ms`,
 );
 
-const badId = await fetch(`${BASE}/session/not-a-real-id/photo`);
+const badId = await req(`${BASE}/session/not-a-real-id/photo`);
 check("bad session id rejected", badId.status === 400, `got ${badId.status}`);
 
 /* ---- A0.5: the upload cap is enforced on the stream, not the header ---- */
@@ -201,6 +254,9 @@ check("bad session id rejected", badId.status === 400, `got ${badId.status}`);
    connection, since that is up to how the runtime tears down a request it
    stopped reading. What must never vary is that nothing got stored. */
 const liarSession = await newSession(`${RUN}-liar`);
+/* Deliberately a plain fetch, not req: a refused connection is one of the two
+   accepted outcomes here, so retrying would push 9 MB eight times to reach the
+   same conclusion. */
 const liar = await fetch(
   `${BASE}/session/${liarSession}/photo`,
   as(`${RUN}-liar`, {
@@ -214,7 +270,7 @@ check(
   liar.status !== 200,
   `got ${liar.status}`,
 );
-const liarPhoto = await fetch(`${BASE}/session/${liarSession}/photo`);
+const liarPhoto = await req(`${BASE}/session/${liarSession}/photo`);
 check(
   "oversize upload stored nothing",
   liarPhoto.status === 404,
@@ -224,7 +280,7 @@ check(
 /* A photo at the ceiling is still accepted: the cap is a cap, not a smaller
    one enforced by accident. */
 const atLimit = await newSession(`${RUN}-big`);
-const big = await fetch(
+const big = await req(
   `${BASE}/session/${atLimit}/photo`,
   as(`${RUN}-big`, {
     method: "PUT",
@@ -238,7 +294,7 @@ check("a 6 MB photo is accepted", big.ok, `got ${big.status}`);
 
 /* Without the allowlist this would create a session at a chosen id and skip
    the rate limit on POST /session entirely. */
-const internal = await fetch(
+const internal = await req(
   `${BASE}/session/${"a".repeat(32)}/init`,
   as(MAIN, { method: "POST" }),
 );
@@ -248,7 +304,7 @@ check(
   `got ${internal.status}`,
 );
 
-const internalDoc = await fetch(`${BASE}/session/${id}/doc`, as(MAIN));
+const internalDoc = await req(`${BASE}/session/${id}/doc`, as(MAIN));
 check(
   "internal doc path is not reachable",
   internalDoc.status === 404,
@@ -257,14 +313,14 @@ check(
 
 /* ---- A0.5: clone ---- */
 
-const cloneRes = await fetch(
+const cloneRes = await req(
   `${BASE}/session/${id}/clone`,
   as(MAIN, { method: "POST" }),
 );
 const cloneId = cloneRes.ok ? (await cloneRes.json()).id : null;
 check("clone a saved puzzle", cloneRes.ok && /^[0-9a-f]{32}$/.test(cloneId));
 
-const draftClone = await fetch(
+const draftClone = await req(
   `${BASE}/session/${await newSession()}/clone`,
   as(MAIN, { method: "POST" }),
 );
@@ -282,17 +338,17 @@ check(
    and every other clone would render over a hole. The earlier delete check uses
    a session with no photo, so it only ever exercised the ownership test in the
    direction that says yes. */
-const borrower = await fetch(
+const borrower = await req(
   `${BASE}/session/${id}/clone`,
   as(MAIN, { method: "POST" }),
 );
 const borrowerId = borrower.ok ? (await borrower.json()).id : null;
-const borrowerDeleted = await fetch(
+const borrowerDeleted = await req(
   `${BASE}/session/${borrowerId}`,
   as(MAIN, { method: "DELETE" }),
 );
 check("delete a clone", borrowerDeleted.ok, `got ${borrowerDeleted.status}`);
-const sourcePhoto = await fetch(`${BASE}/session/${id}/photo`);
+const sourcePhoto = await req(`${BASE}/session/${id}/photo`);
 check(
   "deleting a clone leaves the borrowed photo intact",
   sourcePhoto.status === 200,
@@ -300,12 +356,12 @@ check(
 );
 
 const doomed = await newSession();
-const del = await fetch(
+const del = await req(
   `${BASE}/session/${doomed}`,
   as(MAIN, { method: "DELETE" }),
 );
 check("delete a session", del.ok, `got ${del.status}`);
-const afterDelete = await fetch(`${BASE}/session/${doomed}/photo`);
+const afterDelete = await req(`${BASE}/session/${doomed}/photo`);
 check(
   "deleted session is gone",
   afterDelete.status === 404,
@@ -318,7 +374,7 @@ check(
    caller of its own must be refused, and other callers must be unaffected. */
 let burst = null;
 for (let i = 0; i < 11; i++) {
-  const res = await fetch(
+  const res = await req(
     `${BASE}/session`,
     as(`${RUN}-burst`, { method: "POST" }),
   );
@@ -335,7 +391,7 @@ check(
     : "never refused",
 );
 
-const otherCaller = await fetch(
+const otherCaller = await req(
   `${BASE}/session`,
   as(`${RUN}-other`, { method: "POST" }),
 );
@@ -508,7 +564,7 @@ check(
 );
 
 /* The clone borrowed the template's photo and started empty. */
-const cloneState = await fetch(`${BASE}/session/${cloneId}/photo`);
+const cloneState = await req(`${BASE}/session/${cloneId}/photo`);
 check("clone serves the borrowed photo", cloneState.ok);
 const cloneWs = await open(
   `${BASE.replace("http", "ws")}/session/${cloneId}/ws`,
