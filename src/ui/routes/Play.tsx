@@ -18,6 +18,7 @@ import { firstGrapheme, graphemes } from "../lib/grapheme.ts";
 import { Board } from "../components/Board.tsx";
 import { ClueZoom } from "../components/ClueZoom.tsx";
 import { ShareLink } from "../components/ShareLink.tsx";
+import { PushToTalk } from "../components/PushToTalk.tsx";
 
 const MAX_NICKNAME = 24;
 
@@ -228,6 +229,15 @@ export function Play({ id }: { id: string }) {
           ) : (
             <button onClick={() => setSharing(true)}>Invite someone</button>
           )}
+
+          <PushToTalk
+            peers={session.peers}
+            voicePeers={session.voicePeers}
+            lastClip={session.lastClip}
+            onJoin={session.joinVoice}
+            onLeave={session.leaveVoice}
+            onClip={session.sendClip}
+          />
         </>
       )}
 

@@ -13,7 +13,8 @@ import {
   useRef,
   useState,
 } from "preact/hooks";
-import type { PeerInfo, SessionDoc } from "../../types";
+import type { PeerInfo, SessionDoc, VoicePeer } from "../../types";
+import type { IncomingClip } from "./voice.ts";
 import { nickname as storedNickname, playerId } from "./local.ts";
 import {
   confirm,
@@ -49,6 +50,15 @@ export interface LiveSession {
   introduce: (nickname: string) => void;
   setLetter: (row: number, col: number, ch: string) => void;
   clearLetter: (row: number, col: number) => void;
+  /* Voice, C1. This hook is the transport only: it moves clips and knows who is
+     in the room. Microphones, encoding and playback are voice.ts, because the
+     two fail in completely different ways and mixing them would make a denied
+     permission look like a dropped connection. */
+  voicePeers: VoicePeer[];
+  lastClip: IncomingClip | null;
+  joinVoice: () => void;
+  leaveVoice: () => void;
+  sendClip: (audio: string) => void;
 }
 
 /* Section 16 budgets a reconnect within five seconds of a drop, so the first two
@@ -69,6 +79,8 @@ export function useSession(id: string): LiveSession {
   const [refusal, setRefusal] = useState<string | null>(null);
   const [named, setNamed] = useState(false);
   const [pending, setPending] = useState<PendingMap>({});
+  const [voicePeers, setVoicePeers] = useState<VoicePeer[]>([]);
+  const [lastClip, setLastClip] = useState<IncomingClip | null>(null);
 
   const socketRef = useRef<WebSocket | null>(null);
   const attemptRef = useRef(0);
@@ -81,6 +93,9 @@ export function useSession(id: string): LiveSession {
   /* The document, mirrored so a write can read the current letters without
      depending on it and without reading it inside another state updater. */
   const docRef = useRef<SessionDoc | null>(null);
+  /* Whether this client wants to be in voice, which is not the same as whether
+     the current socket is: the socket forgets on every reconnect. */
+  const voiceRef = useRef(false);
   pendingRef.current = pending;
   docRef.current = doc;
 
@@ -158,6 +173,13 @@ export function useSession(id: string): LiveSession {
                 JSON.stringify({ type: "hello", playerId: me, nickname: name }),
               );
               setNamed(true);
+              /* Voice lives on the socket attachment, not in the document, so a
+                 reconnect drops out of the room silently. Re-joining here is
+                 what stops a tunnel costing somebody their voice room while
+                 their letters come back on their own. Ordered after hello
+                 because the server refuses voice from an unnamed socket. */
+              if (voiceRef.current)
+                ws.send(JSON.stringify({ type: "voice-join" }));
             }
 
             /* Then repair. `retriable` decides what is still safe to re-send
@@ -207,6 +229,21 @@ export function useSession(id: string): LiveSession {
           }
           case "peers":
             setPeers(msg.players as PeerInfo[]);
+            break;
+          case "voice-peers":
+            setVoicePeers(msg.players as VoicePeer[]);
+            break;
+          case "clip":
+            /* Stored as the newest clip rather than appended to a list. Nothing
+               keeps audio around: voice.ts queues it for playback and drops it,
+               and holding a history here would be storage by another name
+               (invariant 15, on the client's side of it). */
+            setLastClip({
+              seq: msg.seq as number,
+              audio: msg.audio as string,
+              from: msg.from as string,
+              at: msg.at as number,
+            });
             break;
           case "error": {
             if (msg.message === "session full") {
@@ -310,6 +347,30 @@ export function useSession(id: string): LiveSession {
 
   const waiting = useMemo(() => Object.keys(pending).length, [pending]);
 
+  const joinVoice = useCallback(() => {
+    voiceRef.current = true;
+    send({ type: "voice-join" });
+  }, [send]);
+
+  const leaveVoice = useCallback(() => {
+    voiceRef.current = false;
+    setVoicePeers([]);
+    setLastClip(null);
+    send({ type: "voice-leave" });
+  }, [send]);
+
+  /* `seq` counts this client's own clips. The server echoes it back untouched,
+     which is what lets a sender recognize its own clip in the broadcast without
+     comparing a quarter of a megabyte of base64. */
+  const seqRef = useRef(0);
+  const sendClip = useCallback(
+    (audio: string) => {
+      seqRef.current += 1;
+      send({ type: "clip", seq: seqRef.current, audio });
+    },
+    [send],
+  );
+
   return {
     status,
     doc,
@@ -320,5 +381,10 @@ export function useSession(id: string): LiveSession {
     introduce,
     setLetter,
     clearLetter,
+    voicePeers,
+    lastClip,
+    joinVoice,
+    leaveVoice,
+    sendClip,
   };
 }

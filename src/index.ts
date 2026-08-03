@@ -10,6 +10,7 @@ import {
   type PeerInfo,
   type ServerMessage,
   type SessionDoc,
+  type VoicePeer,
 } from "./types";
 
 export interface Env {
@@ -50,6 +51,33 @@ const MAX_PLAYERS = 50;
 const MAX_SOCKETS = 10;
 const PALETTE_SIZE = 10;
 const DEFAULT_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+
+/* Section 7 voice limits. The room is deliberately smaller than the session:
+   ten people can watch a puzzle without anyone minding, and four is where
+   talking over each other stops being solvable by taking turns. */
+const MAX_VOICE_PLAYERS = 4;
+/* 16 kHz mono 16-bit PCM for 8 seconds is 256 KB, and base64 inflates by a
+   third. The cap is on the encoded string because that is what arrives. */
+const MAX_CLIP_BASE64 = 350 * 1024;
+const CLIP_RATE_LIMIT = 6;
+const CLIP_RATE_WINDOW_MS = 60_000;
+/* The per-socket message ceiling from section 7. It has been in the limits
+   table since v6 and had no implementation until C1 needed the same mechanism
+   for clips: see "Learned while building C1". */
+const MAX_MESSAGES_PER_SECOND = 20;
+
+/* What a socket remembers about itself across hibernation. The DO's memory does
+   not survive eviction and these sockets outlive it, so anything per-socket has
+   to live here rather than in a field. Attachments are capped at 2 KB, which is
+   why the rate windows hold timestamps rather than every message. */
+interface SocketState {
+  playerId?: string;
+  voice?: boolean;
+  /* Recent clip send times, newest last, trimmed to the rate window. */
+  clips?: number[];
+  /* Message times within the current second, for MAX_MESSAGES_PER_SECOND. */
+  msgs?: number[];
+}
 
 function maxPhotoBytes(env: Env): number {
   const override = Number(env.MAX_PHOTO_BYTES);
@@ -569,15 +597,56 @@ export class ArrowwordSession implements DurableObject {
     return doc.photoKey === own ? own : null;
   }
 
+  /* Every read of per-socket state goes through here, so the shape is asserted
+     in exactly one place rather than at each call site. */
+  private state(ws: WebSocket): SocketState {
+    return (ws.deserializeAttachment() as SocketState | null) ?? {};
+  }
+
+  private setState(ws: WebSocket, patch: Partial<SocketState>): SocketState {
+    const next = { ...this.state(ws), ...patch };
+    ws.serializeAttachment(next);
+    return next;
+  }
+
+  /* One entry per player in voice, not one per socket: the same person with two
+     tabs open is one voice participant, which is also what makes the room cap
+     count people rather than connections. */
+  private voicePeers(except?: WebSocket): VoicePeer[] {
+    const out: VoicePeer[] = [];
+    const seen = new Set<string>();
+    for (const ws of this.ctx.getWebSockets()) {
+      if (ws === except) continue;
+      const { playerId, voice } = this.state(ws);
+      if (!playerId || !voice || seen.has(playerId)) continue;
+      seen.add(playerId);
+      out.push({ id: playerId, mode: "ptt" });
+    }
+    return out;
+  }
+
+  /* Invariant 17: a payload reaches only sockets that opted into voice. A
+     spectator, and a player who never joined, receive nothing. */
+  private broadcastVoice(message: ServerMessage, except?: WebSocket): void {
+    const payload = JSON.stringify(message);
+    for (const ws of this.ctx.getWebSockets()) {
+      if (ws === except) continue;
+      const { playerId, voice } = this.state(ws);
+      if (!playerId || !voice) continue;
+      try {
+        ws.send(payload);
+      } catch {
+        /* Gone already; webSocketClose will tidy up. */
+      }
+    }
+  }
+
   private peers(doc: SessionDoc, except?: WebSocket): PeerInfo[] {
     const out: PeerInfo[] = [];
     const seen = new Set<string>();
     for (const ws of this.ctx.getWebSockets()) {
       if (ws === except) continue;
-      const attachment = ws.deserializeAttachment() as {
-        playerId?: string;
-      } | null;
-      const playerId = attachment?.playerId;
+      const playerId = this.state(ws).playerId;
       if (!playerId || seen.has(playerId)) continue;
       const player = doc.players[playerId];
       if (!player) continue;
@@ -845,6 +914,19 @@ export class ArrowwordSession implements DurableObject {
     raw: string | ArrayBuffer,
   ): Promise<void> {
     if (typeof raw !== "string") return;
+
+    /* Before parsing, because parsing a flood is most of the cost of a flood.
+       Section 7 has capped this since v6 and nothing enforced it until C1. */
+    const now = Date.now();
+    const msgs = [...(this.state(ws).msgs ?? []), now].filter(
+      (t) => now - t < 1000,
+    );
+    this.setState(ws, { msgs });
+    if (msgs.length > MAX_MESSAGES_PER_SECOND) {
+      this.fail(ws, "slow down");
+      return;
+    }
+
     let msg: ClientMessage;
     try {
       msg = JSON.parse(raw) as ClientMessage;
@@ -874,19 +956,85 @@ export class ArrowwordSession implements DurableObject {
         color: existing?.color ?? Object.keys(players).length % PALETTE_SIZE,
         firstSeenAt: existing?.firstSeenAt ?? Date.now(),
       };
-      ws.serializeAttachment({ playerId });
+      this.setState(ws, { playerId });
       /* Joining is not solving, so it does not slide the expiry window. */
       const next = await this.save({ ...doc, players }, false);
       this.broadcast({ type: "peers", players: this.peers(next) });
       return;
     }
 
-    const attachment = ws.deserializeAttachment() as {
-      playerId?: string;
-    } | null;
-    const by = attachment?.playerId;
+    const by = this.state(ws).playerId;
     if (!by) {
       this.fail(ws, "pick a nickname first", cellAt(msg));
+      return;
+    }
+
+    /* Voice. Deliberately above the template check: a read-only demo puzzle
+       still lets the people looking at it talk, because talking is not a write
+       to the puzzle and invariant 7 is about letters. */
+    if (msg.type === "voice-join") {
+      const room = this.voicePeers();
+      if (!room.some((p) => p.id === by) && room.length >= MAX_VOICE_PLAYERS) {
+        this.fail(ws, "voice is full");
+        return;
+      }
+      this.setState(ws, { voice: true });
+      this.broadcastVoice({ type: "voice-peers", players: this.voicePeers() });
+      return;
+    }
+
+    if (msg.type === "voice-leave") {
+      /* Told before the flag drops, so the leaver's own client learns the room
+         it just left and can render an empty state rather than a stale one. */
+      this.setState(ws, { voice: false, clips: [] });
+      this.broadcastVoice({ type: "voice-peers", players: this.voicePeers() });
+      ws.send(
+        JSON.stringify({
+          type: "voice-peers",
+          players: [],
+        } satisfies ServerMessage),
+      );
+      return;
+    }
+
+    if (msg.type === "clip") {
+      if (!this.state(ws).voice) {
+        this.fail(ws, "join voice before talking");
+        return;
+      }
+      if (typeof msg.audio !== "string" || !msg.audio) {
+        this.fail(ws, "clip has no audio");
+        return;
+      }
+      if (msg.audio.length > MAX_CLIP_BASE64) {
+        this.fail(ws, "clip is too long");
+        return;
+      }
+      const recent = (this.state(ws).clips ?? []).filter(
+        (t) => now - t < CLIP_RATE_WINDOW_MS,
+      );
+      if (recent.length >= CLIP_RATE_LIMIT) {
+        this.fail(ws, "too many clips, wait a moment");
+        return;
+      }
+      this.setState(ws, { clips: [...recent, now] });
+      /* Invariant 15: relayed and dropped. Nothing is written, here or
+         anywhere, and `save` is deliberately not called: a clip is not activity
+         on the puzzle and must not slide the expiry window either.
+
+         Invariant 16: `from` is this socket's own identity. Whatever the client
+         put in the message was discarded when it was parsed as a `clip`, which
+         carries no `from` field at all. */
+      this.broadcastVoice(
+        {
+          type: "clip",
+          seq: Number.isInteger(msg.seq) ? msg.seq : 0,
+          audio: msg.audio,
+          from: by,
+          at: now,
+        },
+        ws,
+      );
       return;
     }
     if (doc.template) {
@@ -943,6 +1091,14 @@ export class ArrowwordSession implements DurableObject {
     const doc = await this.doc();
     if (!doc) return;
     this.broadcast({ type: "peers", players: this.peers(doc, ws) }, ws);
+    /* Only when it was in voice, so a spectator leaving does not tell the room
+       anything about itself. */
+    if (this.state(ws).voice) {
+      this.broadcastVoice(
+        { type: "voice-peers", players: this.voicePeers(ws) },
+        ws,
+      );
+    }
   }
 
   /* Expiry. At-least-once delivery with retries means this can run twice for
