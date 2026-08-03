@@ -40,29 +40,38 @@ async function isUp() {
 }
 
 let worker = null;
-let shuttingDown = false;
 const workerLog = [];
 
+/* Each spawned worker owns its own stop flag, captured in its own exit handler.
+   A single shared flag has a race across a restart: stopping worker A sets it,
+   starting worker B clears it, and A's exit event can arrive after that and be
+   read as B crashing. That is exactly what failed in CI while passing locally,
+   where the event happened to arrive sooner. */
 async function startWorker(vars) {
-  shuttingDown = false;
   workerLog.length = 0;
   const args = ["wrangler", "dev", "--port", String(PORT)];
   for (const [k, v] of Object.entries(vars)) args.push("--var", `${k}:${v}`);
-  worker = spawn("npx", args, { stdio: ["ignore", "pipe", "pipe"] });
+  const child = spawn("npx", args, { stdio: ["ignore", "pipe", "pipe"] });
+  let stopped = false;
   const keep = (c) => {
     workerLog.push(c.toString());
     if (workerLog.length > 60) workerLog.shift();
   };
-  worker.stdout.on("data", keep);
-  worker.stderr.on("data", keep);
-  worker.on("exit", (code, signal) => {
-    if (shuttingDown) return;
+  child.stdout.on("data", keep);
+  child.stderr.on("data", keep);
+  child.on("exit", (code, signal) => {
+    if (stopped) return;
     console.error(
       `\nwrangler dev exited before the template checks finished (code ${code}, signal ${signal}).`,
     );
     console.error(`Its last output:\n${workerLog.join("")}`);
     process.exit(1);
   });
+  child.stop = () => {
+    stopped = true;
+    if (!child.killed) child.kill("SIGTERM");
+  };
+  worker = child;
 
   const deadline = Date.now() + 60_000;
   let streak = 0;
@@ -80,8 +89,7 @@ async function startWorker(vars) {
 }
 
 function stopWorker() {
-  shuttingDown = true;
-  if (worker && !worker.killed) worker.kill("SIGTERM");
+  worker?.stop?.();
 }
 
 async function restartWorker(vars) {
@@ -89,7 +97,7 @@ async function restartWorker(vars) {
   /* The port has to be free before the next worker binds it. */
   const gone = Date.now() + 15_000;
   while ((await isUp()) && Date.now() < gone) await sleep(250);
-  await sleep(500);
+  await sleep(1000);
   await startWorker(vars);
 }
 
