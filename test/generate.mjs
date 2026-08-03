@@ -79,7 +79,7 @@ let shuttingDown = false;
 const workerLog = [];
 
 function start(vars) {
-  const args = ["wrangler", "dev", "--port", String(PORT)];
+  const args = ["wrangler", "dev", "--local", "--port", String(PORT)];
   for (const [k, v] of Object.entries(vars)) args.push("--var", `${k}:${v}`);
   const child = spawn("npx", args, { stdio: ["ignore", "pipe", "pipe"] });
   const keep = (c) => {

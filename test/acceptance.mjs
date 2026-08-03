@@ -128,10 +128,14 @@ if (await isUp()) {
   console.log(`using the dev server already on :${PORT}\n`);
 } else {
   console.log(`starting wrangler dev on :${PORT} ...`);
-  worker = spawn("npx", ["wrangler", "dev", "--port", String(PORT)], {
-    stdio: ["ignore", "pipe", "pipe"],
-    detached: false,
-  });
+  worker = spawn(
+    "npx",
+    ["wrangler", "dev", "--local", "--port", String(PORT)],
+    {
+      stdio: ["ignore", "pipe", "pipe"],
+      detached: false,
+    },
+  );
   const keep = (chunk) => {
     workerLog.push(chunk.toString());
     if (workerLog.length > 60) workerLog.shift();
