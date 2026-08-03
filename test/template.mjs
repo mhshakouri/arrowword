@@ -11,10 +11,12 @@
    Durable Object state persists in .wrangler between the two, which is what lets
    the session outlive a restart exactly as it outlives a deploy. */
 import { spawn } from "node:child_process";
+import { rmSync } from "node:fs";
 
 const PORT = 8790;
 const BASE = `http://localhost:${PORT}`;
 const RETENTION_MS = 3000;
+const PERSIST = ".wrangler/state/template-test";
 const ok = [];
 const bad = [];
 const check = (name, pass, detail = "") =>
@@ -49,7 +51,18 @@ const workerLog = [];
    where the event happened to arrive sooner. */
 async function startWorker(vars) {
   workerLog.length = 0;
-  const args = ["wrangler", "dev", "--port", String(PORT)];
+  /* Both phases persist to the same explicit directory. The default location is
+     shared with the other runs and is not guaranteed to survive the restart this
+     test depends on: in CI the session came back 404 afterwards, which is what
+     made the checks look like a worker crash. Naming it removes the guess. */
+  const args = [
+    "wrangler",
+    "dev",
+    "--port",
+    String(PORT),
+    "--persist-to",
+    PERSIST,
+  ];
   for (const [k, v] of Object.entries(vars)) args.push("--var", `${k}:${v}`);
   const child = spawn("npx", args, { stdio: ["ignore", "pipe", "pipe"] });
   let stopped = false;
@@ -169,6 +182,10 @@ async function hello(ws, playerId, nickname) {
 
 /* ---- Phase one: an ordinary puzzle, made the way anyone would ---- */
 
+/* A clean slate, so phase one always seeds the session this run will name rather
+   than finding one left by a previous run with a different id. */
+rmSync(PERSIST, { recursive: true, force: true });
+
 console.log(`starting wrangler dev on :${PORT}, no templates configured ...`);
 await startWorker({ RETENTION_MS });
 console.log("worker ready\n");
@@ -204,6 +221,11 @@ const wroteBefore = await eventually(() =>
 );
 check("an ordinary saved puzzle accepts a letter", wroteBefore?.ch === "م");
 beforeWs.close();
+
+/* Durable Object writes need to reach disk before the process is killed, or the
+   restart finds nothing. An abrupt SIGTERM after the last write is what made this
+   look like lost state in CI while passing locally. */
+await sleep(1500);
 
 /* ---- Phase two: name it in configuration, restart, and it is a template ---- */
 
