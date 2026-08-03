@@ -66,5 +66,12 @@
     // Same-origin once the UI is served from this worker, so this stays empty
     // unless a different origin ever needs access.
     "ALLOWED_ORIGINS": "",
+    // Turnstile, B3. Public by design: it ships in the client bundle, which is
+    // why it belongs here and not in a secret. Its partner, TURNSTILE_SECRET,
+    // is set with `wrangler secret put` and must never appear in this file.
+    // Verified 2026-08-03 by rendering the widget against localhost; the
+    // hostname list on the widget must include both localhost and the
+    // production subdomain or the challenge fails with a domain error.
+    "TURNSTILE_SITE_KEY": "0x4AAAAAAEFf0D8w4Nnv-fZm",
   },
 }
