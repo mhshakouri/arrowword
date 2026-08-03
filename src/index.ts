@@ -16,6 +16,11 @@ export interface Env {
   ARROWWORD_SESSION: DurableObjectNamespace;
   RATE_LIMITER: DurableObjectNamespace;
   PHOTOS: R2Bucket;
+  /* The Vite build, served from this same worker. Only reached for paths that
+     `run_worker_first` sends here and the worker declines, which today is
+     nothing: everything else is answered by the asset worker before this code
+     runs. Declared so a future handler can serve the shell deliberately. */
+  ASSETS: Fetcher;
   /* Comma-separated. Empty in dev means allow any origin. */
   ALLOWED_ORIGINS?: string;
   /* Milliseconds of inactivity before a session deletes itself. Overridable
