@@ -8,7 +8,7 @@ Changed 2026-08-02 (v6): this is a public playground app, linked from mhshakouri
 
 Changed 2026-08-03 (v7): AI generated crossword-style puzzles are scheduled as the B series, so this revision fills in everything the generated path needs from generation through to play. The shaping decision throughout is **smallest playable**: small grids, few entries, no auto-advance, no correctness checking, no prefilled cells, and answers that are not treated as secret. See ADR-12 and ADR-13.
 
-**Build status: A2 complete 2026-08-03. A2.5 is next.** A puzzle can be made end to end and shared: photo, alignment, tagging, save, link. Play rendering is A3. Deployed at `arrowword.mhshakouri.dev`. See section 12.
+**Build status: A2 code complete 2026-08-03, awaiting its human check. A2.5 is next.** A puzzle can be made end to end and shared: photo, alignment, tagging, save, link. Play rendering is A3. Deployed at `arrowword.mhshakouri.dev`. See section 12.
 
 ---
 
@@ -545,7 +545,7 @@ A1 adds no endpoints, so the server's exposure is unchanged. What changed is on 
 
 **States owed by A1 and now delivered:** rate limited, and photo too large. Both render as sentences with what to do next, and a dropped connection was added alongside them, since that is the likeliest failure on a phone and is not a status code at all.
 
-### A2 Tagging and save, status: DONE 2026-08-03
+### A2 Tagging and save, status: CODE COMPLETE 2026-08-03, awaiting the human check
 
 Tap to cycle cell type, prefilled letter prompt, save, share link with copy button.
 
@@ -560,7 +560,7 @@ Given letters are held to exactly one grapheme by `Intl.Segmenter`, the same rul
 
 Worth stating for A3: a given letter is the first untrusted string this project renders. It is author-supplied rather than stranger-supplied, and it is capped at one grapheme, so it is a narrow surface. Invariant 8 still applies to it, and A3 widens that surface considerably.
 
-### A2.5 Demo puzzle and clone flow, status: NEXT
+### A2.5 Demo puzzle and clone flow, status: NEXT once A2's human check passes
 
 The front door. Depends on A2, because building the template needs the tagging UI.
 

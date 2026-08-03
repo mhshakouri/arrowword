@@ -10,7 +10,8 @@ Parent project: the personal website, `github.com/mhshakouri/mhshakouri.dev`,
 local path `../mhshakouri`. It links to this project and describes it; it never
 hosts it. Design tokens are copied from there, never imported.
 
-**State: A2 complete 2026-08-03. A2.5, the demo puzzle, is next.** A puzzle can
+**State: A2 code complete 2026-08-03, awaiting its human check. A2.5, the
+demo puzzle, is next.** A puzzle can
 now be made end to end: photo, alignment, tagging, save, share link. What
 remains is the demo template, play rendering, and sync. See spec section 12.
 
