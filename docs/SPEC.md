@@ -850,7 +850,11 @@ Checks:
 
 **What B1 deliberately did not do.** Arrow rendering stays deferred, since generated puzzles are crossword-style. **Auto-advance stays out entirely (ADR-5, upheld),** and this is the milestone where upholding it took an actual decision rather than none: before run detection the app could not have advanced a cursor to the next cell of a word if it wanted to, and now it could. Knowing where a word ends is not permission to move the cursor there. The runs module says so at the top so that the next person to read it is told before they are tempted.
 
-#### B3 AI puzzle generation, status: TODO
+#### B3 AI puzzle generation, status: IN PROGRESS, validator landed 2026-08-03
+
+**What exists:** the validator, `src/generate/validate.ts`, with 25 unit tests. That is the trust boundary and it was built first deliberately, because it is the one part of B3 that needs no key, no neurons, and no handoff, and because everything else in this milestone produces input for it.
+
+**What remains:** the provider interface and fixtures, the browser packer, `POST /generate` with its async progress messages, Turnstile, the two rate limits, the crossword renderer, and the neuron measurement that sets the daily ceiling. Two of those are blocked on section 14 handoffs.
 
 - **First, measure.** Generate one puzzle and read its neuron cost, then set the daily ceiling from what 10,000 neurons a day actually buys. The number in section 7 is deliberately blank until then
 - Turnstile on the generate endpoint, and two generations per IP per day. No sign-in (ADR-12, amended)
@@ -966,6 +970,22 @@ What that leaves: opening a preview URL runs that branch's code against producti
 Stated rather than left silent, because every other v2 milestone needs something from Hossein and these two do not. C1 adds no host and no vendor. C2 uses Cloudflare's STUN, which is free, unlimited, and takes no credential, so there is no token to mint and no secret to store. If TURN is ever added, that becomes a handoff and this section grows one.
 
 The one thing worth doing before C1 rather than after: confirm the app itself loads for the person in Iran this feature exists for. Audio rides the same WebSocket as the puzzle, so if letters sync, clips will too, and if the page never loads there is nothing to build.
+
+### Blocking B3: a Turnstile widget
+
+**Added 2026-08-03, and it should have been here from the start.** Turnstile is required by section 7, listed in B3's bullets, named in the error contract, and load-bearing in ADR-12, and section 14 never told anyone to create one. Found while starting B3. The lesson generalizes: a mechanism the spec depends on needs a handoff the moment it is decided, not the moment it is needed, or it is discovered as a blocker rather than planned as a step.
+
+1. **Blocked:** `POST /generate` has no way to tell a person from a script. Completing this is what lets generation ship at all, because without it one script drains the day's neurons and every visitor after meets "out of budget", which section 7 calls a denial of service against the showcase.
+2. **Do**, in the Cloudflare dashboard under **Turnstile**, **Add widget**:
+   - Name it `arrowword`
+   - **Hostnames:** `arrowword.mhshakouri.dev`, and add `localhost` so the acceptance suite and `npm run dev` can pass it
+   - **Widget mode: Managed.** Invisible is tempting and wrong here: a challenge that never shows cannot be diagnosed when it starts failing, and this endpoint is used rarely enough that a visible check costs nothing
+   - Then `npx wrangler secret put TURNSTILE_SECRET` and paste the **secret key**
+3. **Success:** the widget page shows a **site key** starting `0x4`, and `npx wrangler secret list` shows `TURNSTILE_SECRET`.
+4. **Verify:** the site key is public and belongs in the client bundle, so it goes in `wrangler.jsonc` under `vars` rather than in a secret. Confirm the two are not swapped: a secret key in the bundle is the whole protection gone, and section 16 already requires that no secret reaches the client.
+5. **Paste back:** the **site key** only. Never the secret; it goes straight from your dashboard into `wrangler secret put` and nowhere else.
+
+**Cloudflare provides test keys** that always pass or always fail, documented with Turnstile. Those are what CI uses, so the suite needs no real widget and holds no secret, the same rule ADR-11 applies to Cloudflare credentials in Actions.
 
 ### Blocking B3: a generation provider
 

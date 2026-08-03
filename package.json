@@ -15,7 +15,7 @@
     "deploy": "wrangler deploy",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "test:unit": "node --test src/*.test.ts src/ui/lib/*.test.ts",
+    "test:unit": "node --test src/*.test.ts src/generate/*.test.ts src/ui/lib/*.test.ts",
     "test:photo": "node test/photo-limit.mjs",
     "test:template": "node test/template.mjs",
     "test:all": "npm test && npm run test:template"
