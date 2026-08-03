@@ -1,38 +1,66 @@
-/* The live session: one WebSocket, the document it delivers, and the letters
-   people type into it.
+/* The live session: one WebSocket, the document it delivers, the letters people
+   type into it, and what happens when the connection goes away.
 
-   Deliberately not resilient yet. Optimistic echo, reconnection, and retry of an
-   unacknowledged write are A4, and the seams they need are marked rather than
-   filled: `status` already distinguishes the states a reconnect would move
-   between, and `send` already funnels every write through one place. */
+   Resilience is section 7's "client resilience" and A4: optimistic echo on type,
+   reconnect with a fresh state on a drop, and retry of writes that were never
+   acknowledged. The decisions about *which* writes to retry live in pending.ts,
+   pure and unit-tested, because that is where a mistake is silent. */
 
-import { useCallback, useEffect, useRef, useState } from "preact/hooks";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "preact/hooks";
 import type { PeerInfo, SessionDoc } from "../../types";
 import { nickname as storedNickname, playerId } from "./local.ts";
+import {
+  confirm,
+  echo,
+  type Letters,
+  type PendingMap,
+  remember,
+  retriable,
+  revert,
+} from "./pending.ts";
 
 export type SessionStatus =
   | "connecting"
   | "live"
+  /* Dropped, and trying again. Distinct from `closed` so the UI can say
+     "reconnecting" rather than "reload the page". */
+  | "reconnecting"
   /* The session is gone: expired after 30 days idle, or deleted by someone
      holding the link. Section 7 makes those indistinguishable on purpose, so
      this state has to describe both without guessing which. */
   | "missing"
   /* Ten sockets already, per the cap in section 7. */
-  | "full"
-  | "closed";
+  | "full";
 
 export interface LiveSession {
   status: SessionStatus;
   doc: SessionDoc | null;
   peers: PeerInfo[];
-  /* The most recent refusal from the server, which the UI shows verbatim
-     because the server's wording is the authority on why a write failed. */
   refusal: string | null;
   named: boolean;
+  /* How many letters are typed but not yet acknowledged. Zero almost always. */
+  waiting: number;
   introduce: (nickname: string) => void;
   setLetter: (row: number, col: number, ch: string) => void;
   clearLetter: (row: number, col: number) => void;
 }
+
+/* Section 16 budgets a reconnect within five seconds of a drop, so the first two
+   attempts happen well inside that. The last value repeats forever rather than
+   the list running out: **this never gives up.**
+
+   It did at first, after five attempts, and that was wrong in a way only trying
+   it showed. A phone in a tunnel for a minute came back to "could not reconnect,
+   reload the page", which is a worse outcome than waiting and is the one thing a
+   solver cannot fix by waiting. A puzzle left open should still be there when the
+   signal is. */
+const BACKOFF_MS = [250, 750, 2000, 5000, 10_000, 15_000];
 
 export function useSession(id: string): LiveSession {
   const [status, setStatus] = useState<SessionStatus>("connecting");
@@ -40,18 +68,31 @@ export function useSession(id: string): LiveSession {
   const [peers, setPeers] = useState<PeerInfo[]>([]);
   const [refusal, setRefusal] = useState<string | null>(null);
   const [named, setNamed] = useState(false);
+  const [pending, setPending] = useState<PendingMap>({});
+
   const socketRef = useRef<WebSocket | null>(null);
+  const attemptRef = useRef(0);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const goneRef = useRef(false);
+  /* Read inside the socket handlers, which are created once per connection and
+     must not close over a stale copy of either. */
+  const pendingRef = useRef<PendingMap>({});
+  const nameRef = useRef<string | null>(null);
+  /* The document, mirrored so a write can read the current letters without
+     depending on it and without reading it inside another state updater. */
+  const docRef = useRef<SessionDoc | null>(null);
+  pendingRef.current = pending;
+  docRef.current = doc;
+
+  const me = playerId();
 
   useEffect(() => {
-    let closed = false;
+    goneRef.current = false;
+    nameRef.current = storedNickname(id);
 
     /* A refused upgrade surfaces only as "error" through the WebSocket API, with
        no status and no body, so an expired session would be indistinguishable
-       from being offline. Asking over HTTP first is what lets it say which.
-
-       The photo endpoint answers both cases distinctly: "no such session" means
-       gone, while "no photo yet" means a session that exists without one, which
-       is an ordinary draft rather than a problem. */
+       from being offline. Asking over HTTP first is what lets it say which. */
     async function probe(): Promise<"gone" | "here" | "unknown"> {
       try {
         const res = await fetch(`/session/${id}/photo`);
@@ -63,106 +104,211 @@ export function useSession(id: string): LiveSession {
       }
     }
 
+    /* The only place attempts are counted. Both a failed probe and a closed
+       socket lead here, and incrementing in each of them burned through the
+       backoff at twice the intended rate, which is how a few seconds offline
+       looked like a network that was never coming back. */
+    function scheduleRetry() {
+      if (goneRef.current) return;
+      if (timerRef.current) clearTimeout(timerRef.current);
+      const wait =
+        BACKOFF_MS[Math.min(attemptRef.current, BACKOFF_MS.length - 1)]!;
+      attemptRef.current += 1;
+      setStatus("reconnecting");
+      timerRef.current = setTimeout(() => void connect(), wait);
+    }
+
     async function connect() {
-      if ((await probe()) === "gone") {
-        if (!closed) setStatus("missing");
+      if (goneRef.current) return;
+      const found = await probe();
+      if (goneRef.current) return;
+      if (found === "gone") {
+        setStatus("missing");
         return;
       }
-      if (closed) return;
+      if (found === "unknown") {
+        /* Offline rather than absent. Keep trying rather than declaring the
+           puzzle gone, which would be a lie the user cannot correct. */
+        scheduleRetry();
+        return;
+      }
 
       const proto = location.protocol === "https:" ? "wss:" : "ws:";
       const ws = new WebSocket(`${proto}//${location.host}/session/${id}/ws`);
       socketRef.current = ws;
 
+      ws.addEventListener("open", () => {
+        attemptRef.current = 0;
+      });
+
       ws.addEventListener("message", (event) => {
         const msg = JSON.parse(event.data as string);
         switch (msg.type) {
-          case "state":
-            setDoc(msg.doc as SessionDoc);
+          case "state": {
+            const fresh = msg.doc as SessionDoc;
             setStatus("live");
+            setDoc(fresh);
+
+            /* Re-announce, because the server ties a nickname to a socket and
+               this is a new one. The player record survives; the attachment does
+               not. */
+            const name = nameRef.current;
+            if (name) {
+              ws.send(
+                JSON.stringify({ type: "hello", playerId: me, nickname: name }),
+              );
+              setNamed(true);
+            }
+
+            /* Then repair. `retriable` decides what is still safe to re-send
+               given what the server just told us, which is the whole reason a
+               reconnect does not quietly undo somebody else's work. */
+            const outstanding = retriable(
+              pendingRef.current,
+              fresh.letters,
+              me,
+            );
+            for (const write of outstanding) {
+              ws.send(
+                JSON.stringify(
+                  write.ch === null
+                    ? { type: "clear", row: write.row, col: write.col }
+                    : {
+                        type: "set",
+                        row: write.row,
+                        col: write.col,
+                        ch: write.ch,
+                      },
+                ),
+              );
+            }
+            /* Anything not retriable has been settled by the fresh state. */
+            const stillWaiting: PendingMap = {};
+            for (const write of outstanding) {
+              const k = `${write.row},${write.col}`;
+              const entry = pendingRef.current[k];
+              if (entry) stillWaiting[k] = entry;
+            }
+            setPending(stillWaiting);
             break;
+          }
           case "cell": {
             const { row, col, ch, at, by } = msg;
             setDoc((current) => {
               if (!current) return current;
-              const letters = { ...current.letters };
-              const key = `${row},${col}`;
-              if (ch === null) delete letters[key];
-              else letters[key] = { ch, at, by };
+              const letters: Letters = { ...current.letters };
+              const k = `${row},${col}`;
+              if (ch === null) delete letters[k];
+              else letters[k] = { ch, at, by };
               return { ...current, letters };
             });
+            setPending((p) => confirm(p, row, col));
             break;
           }
           case "peers":
             setPeers(msg.players as PeerInfo[]);
             break;
-          case "error":
-            /* The one refusal that is not about a write: the socket cap in
-               section 7. It arrives as a frame rather than a status because a
-               refused upgrade carries neither through the WebSocket API. */
-            if (msg.message === "session full") setStatus("full");
-            else setRefusal(msg.message as string);
+          case "error": {
+            if (msg.message === "session full") {
+              setStatus("full");
+              goneRef.current = true;
+              break;
+            }
+            setRefusal(msg.message as string);
+            /* Roll back exactly the cell the server named. Without row and col
+               this would be a guess, which is why they were added to the
+               protocol in this milestone. */
+            if (Number.isInteger(msg.row) && Number.isInteger(msg.col)) {
+              const current = docRef.current;
+              if (current) {
+                const out = revert(
+                  current.letters,
+                  pendingRef.current,
+                  msg.row,
+                  msg.col,
+                );
+                pendingRef.current = out.pending;
+                setPending(out.pending);
+                setDoc({ ...current, letters: out.letters });
+              }
+            }
             break;
+          }
         }
       });
 
       ws.addEventListener("close", () => {
-        /* "full" and "missing" are conclusions, not transitions: keep them. */
-        if (!closed) {
-          setStatus((s) => (s === "missing" || s === "full" ? s : "closed"));
-        }
-      });
-      ws.addEventListener("error", () => {
-        if (!closed) setStatus((s) => (s === "live" ? "closed" : "missing"));
+        if (goneRef.current) return;
+        scheduleRetry();
       });
     }
 
     void connect();
     return () => {
-      closed = true;
+      goneRef.current = true;
+      if (timerRef.current) clearTimeout(timerRef.current);
       socketRef.current?.close();
     };
-  }, [id]);
+  }, [id, me]);
 
   const send = useCallback((message: unknown) => {
     const ws = socketRef.current;
     if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify(message));
+    /* Not open: the write stays pending and goes out on the next `state`. */
   }, []);
 
-  /* Sent once the player has a name. A write before this is refused by the
-     server with "pick a nickname first", which is a state the UI prevents
-     reaching rather than merely reports. */
   const introduce = useCallback(
     (nickname: string) => {
-      send({ type: "hello", playerId: playerId(), nickname });
+      nameRef.current = nickname;
+      send({ type: "hello", playerId: me, nickname });
       setNamed(true);
       setRefusal(null);
     },
-    [send],
+    [send, me],
   );
 
-  /* Rejoin automatically when this browser already named itself here. */
-  useEffect(() => {
-    if (status !== "live" || named) return;
-    const existing = storedNickname(id);
-    if (existing) introduce(existing);
-  }, [status, named, id, introduce]);
+  const write = useCallback(
+    (row: number, col: number, ch: string | null) => {
+      const current = docRef.current;
+      if (!current) return;
+      setRefusal(null);
+
+      /* Computed outside any updater on purpose. Calling `setPending` from inside
+         a `setDoc` updater looked fine and quietly did not happen: a state setter
+         invoked during another setter's reducer is not reliably processed, so the
+         letter appeared on the grid while the count of what was waiting stayed at
+         zero. Both states are derived here and set plainly. */
+      const next = remember(
+        pendingRef.current,
+        current.letters,
+        row,
+        col,
+        ch,
+        Date.now(),
+      );
+      pendingRef.current = next;
+      setPending(next);
+      setDoc({ ...current, letters: echo(current.letters, next, me) });
+
+      send(
+        ch === null
+          ? { type: "clear", row, col }
+          : { type: "set", row, col, ch },
+      );
+    },
+    [send, me],
+  );
 
   const setLetter = useCallback(
-    (row: number, col: number, ch: string) => {
-      setRefusal(null);
-      send({ type: "set", row, col, ch });
-    },
-    [send],
+    (row: number, col: number, ch: string) => write(row, col, ch),
+    [write],
+  );
+  const clearLetter = useCallback(
+    (row: number, col: number) => write(row, col, null),
+    [write],
   );
 
-  const clearLetter = useCallback(
-    (row: number, col: number) => {
-      setRefusal(null);
-      send({ type: "clear", row, col });
-    },
-    [send],
-  );
+  const waiting = useMemo(() => Object.keys(pending).length, [pending]);
 
   return {
     status,
@@ -170,6 +316,7 @@ export function useSession(id: string): LiveSession {
     peers,
     refusal,
     named,
+    waiting,
     introduce,
     setLetter,
     clearLetter,

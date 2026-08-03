@@ -100,6 +100,16 @@ function rateLimit(env: Env, action: keyof typeof RATE_LIMIT_DEFAULTS): number {
    POST /session entirely. */
 const PUBLIC_SESSION_PATHS = new Set(["photo", "puzzle", "ws", "clone"]);
 
+/* The cell a client message is about, when it is about one and says so
+   plausibly. Used for refusals that happen before the coordinates have been
+   validated, so that a client can still revert the right optimistic write. */
+function cellAt(msg: unknown): { row: number; col: number } | undefined {
+  const m = msg as { row?: unknown; col?: unknown };
+  return Number.isInteger(m.row) && Number.isInteger(m.col)
+    ? { row: m.row as number, col: m.col as number }
+    : undefined;
+}
+
 const segmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
 
 function graphemes(value: string): string[] {
@@ -581,8 +591,20 @@ export class ArrowwordSession implements DurableObject {
     }
   }
 
-  private fail(ws: WebSocket, message: string): void {
-    ws.send(JSON.stringify({ type: "error", message } satisfies ServerMessage));
+  /* `at` names the cell when the refusal is about one, so a client can revert
+     exactly the optimistic write that was refused rather than the most recent. */
+  private fail(
+    ws: WebSocket,
+    message: string,
+    at?: { row: number; col: number },
+  ): void {
+    ws.send(
+      JSON.stringify({
+        type: "error",
+        message,
+        ...(at ?? {}),
+      } satisfies ServerMessage),
+    );
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -852,11 +874,11 @@ export class ArrowwordSession implements DurableObject {
     } | null;
     const by = attachment?.playerId;
     if (!by) {
-      this.fail(ws, "pick a nickname first");
+      this.fail(ws, "pick a nickname first", cellAt(msg));
       return;
     }
     if (doc.template) {
-      this.fail(ws, "this puzzle is read only");
+      this.fail(ws, "this puzzle is read only", cellAt(msg));
       return;
     }
 
@@ -867,7 +889,7 @@ export class ArrowwordSession implements DurableObject {
     /* Only answer cells are mutable. Prefilled letters live in the puzzle. */
     const cell = doc.cells[row]?.[col];
     if (!cell || cell.type !== "answer") {
-      this.fail(ws, "cell is not writable");
+      this.fail(ws, "cell is not writable", { row, col });
       return;
     }
 
@@ -879,7 +901,7 @@ export class ArrowwordSession implements DurableObject {
       /* Invariant 5 is one grapheme, not one code point: a Persian letter with
          a combining mark is several code points and one grapheme. */
       if (typeof msg.ch !== "string" || graphemes(msg.ch).length !== 1) {
-        this.fail(ws, "one character per cell");
+        this.fail(ws, "one character per cell", { row, col });
         return;
       }
       letters[key] = { ch: msg.ch, at, by };

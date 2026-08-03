@@ -172,10 +172,17 @@ export function Play({ id }: { id: string }) {
             )}
           </div>
 
-          {session.status === "closed" && (
-            <p class="notice error" role="alert">
-              The connection dropped. Reload to carry on. Reconnecting by itself
-              arrives with the next milestone.
+          {session.status === "reconnecting" && (
+            <p class="notice" role="status">
+              Reconnecting. Keep typing: letters are kept and sent when the
+              connection comes back.
+              {session.waiting > 0 && ` ${session.waiting} waiting to send.`}
+            </p>
+          )}
+
+          {session.status === "live" && session.waiting > 0 && (
+            <p class="muted" role="status" style="margin:0 0 0.5rem">
+              Sending {session.waiting}…
             </p>
           )}
 

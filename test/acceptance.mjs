@@ -627,6 +627,22 @@ check(
   ),
 );
 
+/* ---- A4: a refusal names its cell, so a client can revert the right one ---- */
+
+/* Without row and col, a client that echoes writes optimistically has to guess
+   which pending write was refused, and guessing wrong reverts a cell the player
+   never touched. */
+b.messages.length = 0;
+b.send(JSON.stringify({ type: "set", row: 0, col: 0, ch: "م" }));
+const namedRefusal = await eventually(() =>
+  b.messages.find((m) => m.type === "error" && m.row !== undefined),
+);
+check(
+  "a cell refusal names the cell",
+  namedRefusal?.row === 0 && namedRefusal?.col === 0,
+  `got ${JSON.stringify(namedRefusal)}`,
+);
+
 /* Reconnect: a fresh client must see the letters already set. */
 b.send(JSON.stringify({ type: "set", row: 1, col: 0, ch: "ک" }));
 await wait(300);
@@ -701,6 +717,70 @@ check(
 );
 check("the title round-trips", taggedDoc?.title === "Tagged");
 taggedWs.close();
+
+/* ---- A4's named check: a socket drop and reconnect ---- */
+
+/* Letters live in the Durable Object, not in the socket, so a drop must lose
+   nothing and a reconnect must arrive with everything. This is the server half
+   of the guarantee; the client half, deciding which unacknowledged writes are
+   still safe to re-send, is unit-tested in src/ui/lib/pending.test.ts because it
+   is pure logic and a mistake there is silent. */
+const dropId = await newSession();
+await req(
+  `${BASE}/session/${dropId}/puzzle`,
+  as(MAIN, {
+    method: "PUT",
+    body: JSON.stringify(puzzle),
+    headers: { "Content-Type": "application/json" },
+  }),
+);
+const dropUrl = `${BASE.replace("http", "ws")}/session/${dropId}/ws`;
+await wsReady(dropUrl);
+
+const first = await open(dropUrl);
+hello(first, "4".repeat(32), "Before");
+await eventually(() => first.messages.some((m) => m.type === "peers"));
+first.send(JSON.stringify({ type: "set", row: 0, col: 1, ch: "ز" }));
+await eventually(() => first.messages.some((m) => m.type === "cell"));
+
+/* Drop it without a goodbye, the way a tunnel or airplane mode does. */
+first.close();
+await wait(300);
+
+const second = await open(dropUrl);
+const afterDrop = await eventually(
+  () => second.messages.find((m) => m.type === "state")?.doc,
+);
+check(
+  "a reconnect arrives with the letters typed before the drop",
+  afterDrop?.letters?.["0,1"]?.ch === "ز",
+  `got ${afterDrop?.letters?.["0,1"]?.ch}`,
+);
+check(
+  "and with the player who typed them still recorded",
+  afterDrop?.players?.["4".repeat(32)]?.nickname === "Before",
+);
+
+/* A write on the new socket still needs a hello: the player record survived the
+   drop but the socket's identity did not. */
+second.messages.length = 0;
+second.send(JSON.stringify({ type: "set", row: 1, col: 0, ch: "س" }));
+const needsHello = await eventually(() =>
+  second.messages.find(
+    (m) => m.type === "error" && m.message === "pick a nickname first",
+  ),
+);
+check("a reconnected socket must say hello again", needsHello !== null);
+
+hello(second, "4".repeat(32), "Before");
+await eventually(() => second.messages.some((m) => m.type === "peers"));
+second.messages.length = 0;
+second.send(JSON.stringify({ type: "set", row: 1, col: 0, ch: "س" }));
+const afterHello = await eventually(() =>
+  second.messages.find((m) => m.type === "cell"),
+);
+check("and then writes again normally", afterHello?.ch === "س");
+second.close();
 
 console.log(`PASS ${ok.length}`);
 for (const t of ok) console.log("  ok   " + t);
