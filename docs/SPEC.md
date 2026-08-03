@@ -297,14 +297,22 @@ The upload now streams straight to R2 through a `FixedLengthStream` built from `
 
 Content-Length is therefore **required**, answered with 411 when missing, and it is a declaration rather than a claim taken on trust: `FixedLengthStream` enforces it byte for byte, so a client that declares 120 and sends 9 MB is cut off after 120 bytes and stores nothing. That inverts the old shape usefully. Before, a lie meant reading up to the cap before refusing; now a lie is bounded by the lie itself. Requiring the header is acceptable because every browser sets it for a Blob or a typed array, which is what the wizard sends.
 
-**Corrected 2026-08-03 (A2): drain the body, do not cancel it.** This paragraph used to say cancel, and cancelling turned out to be a cause of the very error it was meant to prevent. Tearing down a body the client is still uploading makes the runtime complain asynchronously, after the status has already gone out, so the failure appears as an uncaught error with no request to blame and it kills `wrangler dev` rather than failing a check. It reproduced about twice in six runs, always immediately after the write-once 409 on `PUT /puzzle`.
+**Corrected 2026-08-03 (A2): drain the body, never cancel it.** This paragraph used to say cancel, and cancelling turned out to be the cause of the very error it was meant to prevent, and worse than the error.
 
-`discardBody` now reads and throws away up to twice the photo cap, and only cancels past that, because a caller must never be made to read unbounded bytes in order to decline a request. The ceiling is deliberately above the photo cap rather than small: the bodies most often declined are photos a little over the limit, draining one costs ingress, which is free, and cancelling one costs an uncaught error. A 64 KB ceiling was tried first and left four such errors per oversize upload; raising it left none.
+Tearing down a body the client is still uploading makes the runtime complain asynchronously, after the status has gone out, so the failure appears as an uncaught error beside whichever request came _next_ and kills `wrangler dev` rather than failing a check. Three passes went into placing it: the first blamed the wrong request, the second blamed the body's size. Neither was right. Shrinking the body from 9 MB to 8 KB reproduced it exactly, which is what showed size was never the point. `discardBody` now reads to completion and never cancels.
 
-Two related things that were also wrong, and both cost time:
+The cost accepted is that declining a request means reading whatever the client chose to send. Ingress is not billed, a declared length over the cap is rejected before any of this, and the per-IP upload limit bounds how often anyone can force it. Against a way to stop the worker with a single request, reading the bytes is clearly the cheaper side.
 
-- **Cancelling inside the Durable Object does not drain the worker's request.** The worker forwards a second `Request` wrapping the same upload, so the object's copy and the incoming one are separate handles. The worker now drains its own after the object answers, which is harmless when the object already consumed it.
-- **The symptom is not local to the guilty request.** The error surfaces after the response, so the log shows it next to whichever request came after. Read the request _before_ it.
+Two related mistakes, both fixed:
+
+- **Cancelling inside the Durable Object does not drain the worker's request.** The worker forwards a second `Request` wrapping the same upload, so the object's copy and the incoming one are separate handles. The worker drains its own after the object answers, which is a no-op when the object already consumed it.
+- **The symptom is not local to the guilty request.** It surfaces after the response, so the log shows it next to the request that followed. Read the one before it.
+
+### Testing a limit costs less than reaching it
+
+The photo cap has its own run, `test/photo-limit.mjs`, on a worker started with `--var MAX_PHOTO_BYTES:2048`. Testing an 8 MB ceiling honestly means moving more than 8 MB, and `wrangler dev` does not survive a request body that size: it exits with an empty error and no JS exception, taking the suite with it. Six megabytes is fine, so it is the emulator's limit rather than the worker's.
+
+Setting the ceiling to 2 KB exercises the same code for a thousandth of the bytes, and it tests more than the big version did: a body exactly at the cap, one byte over, one that lies about its length, and four refusals in a row to prove the process survives them. `RETENTION_MS` already worked this way for expiry, and the pattern generalizes: when a limit is expensive to reach, make the limit configurable rather than the test enormous.
 
 ### Learned while building A0.5
 

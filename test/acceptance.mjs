@@ -327,49 +327,11 @@ check(
 
 /* ---- A0.5: the upload cap is enforced on the stream, not the header ---- */
 
-/* The defect this milestone exists to fix. Content-Length claims something
-   small, the body is 9 MB, and only counting the bytes catches it.
-
-   Two things are asserted, and the second is the one that matters. A client
-   whose upload is refused mid-body may see a clean 413 or a dropped
-   connection, since that is up to how the runtime tears down a request it
-   stopped reading. What must never vary is that nothing got stored. */
-const liarSession = await newSession(`${RUN}-liar`);
-/* Deliberately a plain fetch, not req: a refused connection is one of the two
-   accepted outcomes here, so retrying would push 9 MB eight times to reach the
-   same conclusion. */
-const liar = await fetch(
-  `${BASE}/session/${liarSession}/photo`,
-  as(`${RUN}-liar`, {
-    method: "PUT",
-    body: new Uint8Array(9 * 1024 * 1024),
-    headers: { "Content-Type": "image/jpeg", "Content-Length": "120" },
-  }),
-).catch((err) => ({ status: `refused the connection: ${err.message}` }));
-check(
-  "oversize upload does not succeed despite a lying Content-Length",
-  liar.status !== 200,
-  `got ${liar.status}`,
-);
-const liarPhoto = await req(`${BASE}/session/${liarSession}/photo`);
-check(
-  "oversize upload stored nothing",
-  liarPhoto.status === 404,
-  `got ${liarPhoto.status}`,
-);
-
-/* A photo at the ceiling is still accepted: the cap is a cap, not a smaller
-   one enforced by accident. */
-const atLimit = await newSession(`${RUN}-big`);
-const big = await req(
-  `${BASE}/session/${atLimit}/photo`,
-  as(`${RUN}-big`, {
-    method: "PUT",
-    body: new Uint8Array(6 * 1024 * 1024),
-    headers: { "Content-Type": "image/jpeg" },
-  }),
-);
-check("a 6 MB photo is accepted", big.ok, `got ${big.status}`);
+/* The photo cap has its own run, test/photo-limit.mjs, because testing an 8 MB
+   ceiling means moving more than 8 MB and `wrangler dev` does not survive that:
+   it dies with an empty error and takes the suite with it. That run starts a
+   worker with a 2 KB cap instead, which exercises the same code for a
+   thousandth of the bytes. */
 
 /* ---- A0.5: internal Durable Object paths are not publicly reachable ---- */
 

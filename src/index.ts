@@ -27,15 +27,26 @@ export interface Env {
      only so the expiry test can run in seconds instead of thirty days; unset
      everywhere else, which is what production runs on. */
   RETENTION_MS?: string;
+  /* The photo ceiling, overridable for the same reason: testing an 8 MB cap
+     means moving more than 8 MB, and `wrangler dev` does not survive that. Unset
+     in production. */
+  MAX_PHOTO_BYTES?: string;
 }
 
 const SESSION_ID = /^[0-9a-f]{32}$/;
-const MAX_PHOTO_BYTES = 8 * 1024 * 1024;
+const DEFAULT_MAX_PHOTO_BYTES = 8 * 1024 * 1024;
 const MAX_NICKNAME_GRAPHEMES = 24;
 const MAX_PLAYERS = 50;
 const MAX_SOCKETS = 10;
 const PALETTE_SIZE = 10;
 const DEFAULT_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+
+function maxPhotoBytes(env: Env): number {
+  const override = Number(env.MAX_PHOTO_BYTES);
+  return Number.isInteger(override) && override > 0
+    ? override
+    : DEFAULT_MAX_PHOTO_BYTES;
+}
 
 function retentionMs(env: Env): number {
   const override = Number(env.RETENTION_MS);
@@ -192,36 +203,30 @@ function corsHeaders(request: Request, env: Env): Record<string, string> {
    runtime throw "Can't read from request stream after response has been sent",
    which stalls the next request on the connection. Any early return from a
    request that carries a body must drop it first. */
-/* Comfortably above the photo cap. The bodies most often declined are photos
-   only a little over the ceiling, and draining one costs ingress, which is free,
-   while cancelling it costs an uncaught runtime error. Past this, cancelling is
-   the lesser evil: declining a request must not oblige the server to read
-   unbounded bytes, and the per-IP upload limit bounds how often anyone can try. */
-const DRAIN_LIMIT = 2 * MAX_PHOTO_BYTES;
+/* Returning a response while an unread request body is still open makes the
+   runtime throw "Can't read from request stream after response has been sent",
+   which stalls the next request on the connection. Any early return from a
+   request that carries a body must deal with that body first.
 
+   Read it and throw it away. Do not cancel it. Cancelling a body the client is
+   still uploading tears the stream down mid-flight, and that is not merely
+   noisy: it can take the whole process down. An oversized upload killed
+   `wrangler dev` within two attempts, and shrinking the body did not help, which
+   is what showed the size was never the point. Draining always worked.
+
+   The cost accepted is that declining a request means reading what the client
+   chose to send. Ingress is not billed, the declared length is already rejected
+   before any of this when it exceeds the cap, and the per-IP upload limit bounds
+   how often anyone can make us do it. Weighed against a way to stop the worker
+   with one request, reading the bytes is clearly the cheaper side. */
 async function discardBody(request: Request): Promise<void> {
   const body = request.body;
   if (!body) return;
   try {
-    /* Read and throw away rather than cancel. Cancelling a body the client is
-       still uploading is itself what raises the error this function exists to
-       prevent: the stream is torn down mid-flight and the runtime complains
-       asynchronously, after the status has already gone out. Draining lets the
-       upload finish and the response leave cleanly.
-
-       Bounded, because a caller must never be made to read unlimited bytes just
-       to decline a request. Past the ceiling, cancelling is the lesser evil and
-       the client may see a dropped connection instead of the status. */
     const reader = body.getReader();
-    let seen = 0;
     for (;;) {
-      const { done, value } = await reader.read();
+      const { done } = await reader.read();
       if (done) return;
-      seen += value.byteLength;
-      if (seen > DRAIN_LIMIT) {
-        await reader.cancel();
-        return;
-      }
     }
   } catch {
     /* Already consumed, already closed, or cancelled somewhere else. */
@@ -630,7 +635,7 @@ export class ArrowwordSession implements DurableObject {
         await discardBody(request);
         return new Response("photo needs a Content-Length", { status: 411 });
       }
-      if (declared > MAX_PHOTO_BYTES) {
+      if (declared > maxPhotoBytes(this.env)) {
         await discardBody(request);
         return new Response("photo too large", { status: 413 });
       }
