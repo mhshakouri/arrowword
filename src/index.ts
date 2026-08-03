@@ -31,6 +31,16 @@ export interface Env {
      means moving more than 8 MB, and `wrangler dev` does not survive that. Unset
      in production. */
   MAX_PHOTO_BYTES?: string;
+  /* Comma-separated session ids that are demo templates: never expire, never
+     writable, meant to be cloned. Configuration rather than data on purpose, so
+     that no request can mint an object exempt from expiry. See ADR-12. */
+  TEMPLATE_SESSIONS?: string;
+  /* Per-IP hourly ceilings, overridable so they can be tuned without a code
+     change and driven down in tests without waiting an hour. Section 7 has the
+     defaults and the reasoning. */
+  RATE_LIMIT_SESSION?: string;
+  RATE_LIMIT_PHOTO?: string;
+  RATE_LIMIT_CLONE?: string;
 }
 
 const SESSION_ID = /^[0-9a-f]{32}$/;
@@ -55,12 +65,33 @@ function retentionMs(env: Env): number {
     : DEFAULT_RETENTION_MS;
 }
 
-/* Section 7 limits. Per IP, fixed window. */
-const RATE_LIMITS = {
-  session: { limit: 10, windowMs: 3_600_000 },
-  photo: { limit: 5, windowMs: 3_600_000 },
-  clone: { limit: 30, windowMs: 3_600_000 },
+/* Section 7 limits. Per IP, one hour fixed window anchored to first use.
+
+   Raised 2026-08-03 from 10, 5 and 30 after the first real measurement: making
+   the demo template meant retaking photos, and each attempt spends one session
+   and one upload, so five uploads an hour is five attempts an hour for anyone
+   framing a photo properly. Section 7 always said these were a starting point
+   rather than a measurement, and this is the measurement. */
+const RATE_LIMIT_DEFAULTS = {
+  session: 30,
+  photo: 20,
+  clone: 60,
 } as const;
+
+const RATE_WINDOW_MS = 3_600_000;
+
+function rateLimit(env: Env, action: keyof typeof RATE_LIMIT_DEFAULTS): number {
+  const override = Number(
+    action === "session"
+      ? env.RATE_LIMIT_SESSION
+      : action === "photo"
+        ? env.RATE_LIMIT_PHOTO
+        : env.RATE_LIMIT_CLONE,
+  );
+  return Number.isInteger(override) && override > 0
+    ? override
+    : RATE_LIMIT_DEFAULTS[action];
+}
 
 /* Paths a client may reach on a session object. Anything else is internal and
    must not be forwarded, because the worker routes /session/:id/<rest> straight
@@ -253,9 +284,10 @@ function sessionStub(env: Env, id: string): DurableObjectStub {
 async function allow(
   env: Env,
   request: Request,
-  action: keyof typeof RATE_LIMITS,
+  action: keyof typeof RATE_LIMIT_DEFAULTS,
 ): Promise<boolean> {
-  const { limit, windowMs } = RATE_LIMITS[action];
+  const limit = rateLimit(env, action);
+  const windowMs = RATE_WINDOW_MS;
   const ip = clientIp(request);
   const stub = env.RATE_LIMITER.get(env.RATE_LIMITER.idFromName(`ip:${ip}`));
   const url = `https://do/take?bucket=${encodeURIComponent(action)}&limit=${limit}&window=${windowMs}`;
@@ -288,6 +320,31 @@ export default {
       if (!res.ok)
         return new Response("init failed", { status: 500, headers: cors });
       return json({ id }, { headers: cors });
+    }
+
+    /* What the UI needs to know that only the deploy knows. Kept to exactly
+       that: it is public, cached briefly, and must never grow into a place where
+       anything sensitive is convenient to put. */
+    if (
+      request.method === "GET" &&
+      parts.length === 1 &&
+      parts[0] === "config"
+    ) {
+      const demo = (env.TEMPLATE_SESSIONS ?? "")
+        .split(",")
+        .map((id) => id.trim())
+        .filter((id) => SESSION_ID.test(id))[0];
+      return json(
+        { demoSessionId: demo ?? null },
+        {
+          headers: {
+            ...cors,
+            /* Short, so naming a template takes effect without a purge, and
+               non-zero, so the landing page does not ask on every view. */
+            "Cache-Control": "public, max-age=60",
+          },
+        },
+      );
     }
 
     /* DELETE /session/:id has only two segments, so it needs its own branch. */
@@ -444,7 +501,11 @@ export class ArrowwordSession implements DurableObject {
   private async doc(): Promise<SessionDoc | null> {
     const stored = await this.ctx.storage.get<SessionDoc>("doc");
     /* Section 16: never assume a stored document matches the current type. */
-    return stored ? migrate(stored) : null;
+    if (!stored) return null;
+    /* `template` is always taken from configuration, never from storage. The
+       stored field exists because it is part of the document shape, and its
+       value is ignored so that nothing can write itself into being a template. */
+    return { ...migrate(stored), template: this.isTemplate() };
   }
 
   /* Persist, slide the expiry window, and keep lastActiveAt honest. Templates
@@ -456,6 +517,27 @@ export class ArrowwordSession implements DurableObject {
       await this.ctx.storage.setAlarm(Date.now() + retentionMs(this.env));
     }
     return next;
+  }
+
+  /* Whether this object is a configured demo template.
+
+     Derived rather than stored, and derived from the object's *own* identity
+     rather than from anything a request carries. `idFromName` is deterministic,
+     so comparing each configured session id's derived object id against this
+     one answers the question with nothing to forge: no header, no query
+     parameter, and no stored flag a write could flip. That is what makes
+     "templates are created by hand" true rather than aspirational, since there
+     is no code path that turns an ordinary session into one. */
+  private isTemplate(): boolean {
+    const configured = (this.env.TEMPLATE_SESSIONS ?? "")
+      .split(",")
+      .map((id) => id.trim())
+      .filter((id) => SESSION_ID.test(id));
+    if (configured.length === 0) return false;
+    const own = this.ctx.id.toString();
+    return configured.some(
+      (id) => this.env.ARROWWORD_SESSION.idFromName(id).toString() === own,
+    );
   }
 
   /* Invariant 6: a session owns exactly the object keyed by its own id, so a

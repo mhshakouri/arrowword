@@ -4,16 +4,46 @@
    playground will not go and photograph a printed puzzle, so the setup wizard
    is the specialist path and the demo is the front door. */
 
-import { useState } from "preact/hooks";
-import { forget, visited } from "../lib/local.ts";
+import { useEffect, useState } from "preact/hooks";
+import { ApiError, cloneSession, loadConfig } from "../lib/api.ts";
+import { forget, remember, visited } from "../lib/local.ts";
 import { navigate } from "../lib/router.ts";
-
-/* Set once A2.5 creates the template. Until then the demo card says so rather
-   than linking somewhere that 404s. */
-const DEMO_SESSION_ID: string | null = null;
 
 export function Landing() {
   const [sessions, setSessions] = useState(visited);
+  const [demoId, setDemoId] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    /* A missing demo is an ordinary state, not an error: no template is
+       configured until one has been made and named. */
+    void loadConfig()
+      .then((c) => setDemoId(c.demoSessionId))
+      .catch(() => setDemoId(null));
+  }, []);
+
+  async function openDemo() {
+    if (!demoId) return;
+    setError(null);
+    setBusy(true);
+    try {
+      /* Clone first, then go. Nobody is ever sent to the template itself: it is
+         read-only, so landing there would mean explaining why typing does
+         nothing. A copy is playable immediately and cannot spoil anyone else's. */
+      const mine = await cloneSession(demoId);
+      remember(mine, "Demo puzzle");
+      navigate(`/s/${mine}`);
+    } catch (err) {
+      setError(
+        err instanceof ApiError
+          ? err.failure.message
+          : "Could not open the demo just now.",
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
 
   return (
     <main>
@@ -25,7 +55,7 @@ export function Landing() {
       <div class="stack">
         <section class="card">
           <h2 style="margin-top:0;font-size:1.1rem">Play the demo</h2>
-          {DEMO_SESSION_ID ? (
+          {demoId ? (
             <>
               <p class="muted">
                 A ready-made puzzle. Opening it makes your own copy, so you
@@ -33,15 +63,21 @@ export function Landing() {
               </p>
               <button
                 class="primary"
-                onClick={() => navigate(`/s/${DEMO_SESSION_ID}`)}
+                disabled={busy}
+                onClick={() => void openDemo()}
               >
-                Open the demo
+                {busy ? "Making your copy…" : "Open the demo"}
               </button>
+              {error && (
+                <p class="notice error" role="alert" style="margin-top:0.75rem">
+                  {error}
+                </p>
+              )}
             </>
           ) : (
             <p class="muted">
-              Not ready yet. The demo puzzle arrives with milestone A2.5, which
-              needs the tagging step built first.
+              No demo puzzle is set up yet. Make one below, then name it in the
+              worker's configuration to publish it here.
             </p>
           )}
         </section>

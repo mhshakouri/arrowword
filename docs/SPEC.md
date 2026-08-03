@@ -8,7 +8,7 @@ Changed 2026-08-02 (v6): this is a public playground app, linked from mhshakouri
 
 Changed 2026-08-03 (v7): AI generated crossword-style puzzles are scheduled as the B series, so this revision fills in everything the generated path needs from generation through to play. The shaping decision throughout is **smallest playable**: small grids, few entries, no auto-advance, no correctness checking, no prefilled cells, and answers that are not treated as secret. See ADR-12 and ADR-13.
 
-**Build status: A2 code complete 2026-08-03, awaiting its human check. A2.5 is next.** A puzzle can be made end to end and shared: photo, alignment, tagging, save, link. Play rendering is A3. Deployed at `arrowword.mhshakouri.dev`. See section 12.
+**Build status: A2 and A2.5's plumbing done 2026-08-03. A3 is next, and it is what makes the demo playable.** A puzzle can be made end to end and shared: photo, alignment, tagging, save, link. Play rendering is A3. Deployed at `arrowword.mhshakouri.dev`. See section 12.
 
 ---
 
@@ -308,6 +308,16 @@ Two related mistakes, both fixed:
 - **Cancelling inside the Durable Object does not drain the worker's request.** The worker forwards a second `Request` wrapping the same upload, so the object's copy and the incoming one are separate handles. The worker drains its own after the object answers, which is a no-op when the object already consumed it.
 - **The symptom is not local to the guilty request.** It surfaces after the response, so the log shows it next to the request that followed. Read the one before it.
 
+### Some checks cannot live in CI
+
+`wrangler dev` in CI is entirely local: no Cloudflare credentials, no real Durable Objects, no real R2. That is the right shape for a test suite, and it has a consequence worth writing down, because a whole afternoon went into rediscovering it.
+
+Local Durable Object state does not reliably survive restarting `wrangler dev` on a GitHub runner. It does locally. So `test/template.mjs`, which must restart a worker because a template is created by naming an existing session and deploying, is a local check invoked by `npm run test:template` and excluded from `npm test`.
+
+The general rule: when a check needs the emulator to behave like the platform in a way the emulator does not promise, move the check rather than weaken it. The alternative, a suite that fails for reasons unrelated to the code, teaches everyone to ignore red, which costs more than the coverage is worth.
+
+A related consequence of the same fact: `TEMPLATE_SESSIONS` in `wrangler.jsonc` names a production session id, and in CI that id refers to nothing. It is inert there, which is why the acceptance run is unaffected by it.
+
 ### Testing a limit costs less than reaching it
 
 The photo cap has its own run, `test/photo-limit.mjs`, on a worker started with `--var MAX_PHOTO_BYTES:2048`. Testing an 8 MB ceiling honestly means moving more than 8 MB, and `wrangler dev` does not survive a request body that size: it exits with an empty error and no JS exception, taking the suite with it. Six megabytes is fine, so it is the emulator's limit rather than the worker's.
@@ -345,9 +355,9 @@ Values a coding agent would otherwise invent. All enforced server side.
 | Nickname length                | 24 graphemes     | Display only, and it is rendered to other people                 |
 | Concurrent sockets per session | 10               | Bounds broadcast fanout and DO memory                            |
 | Players recorded per session   | 50               | Stops `players` growing without bound on a popular clone         |
-| Session creations per IP       | 10 per hour      | `POST /session` is the cheapest way to make the worker do work   |
-| Photo uploads per IP           | 5 per hour       | The only endpoint that costs storage                             |
-| Clones per IP                  | 30 per hour      | Generous: this is the path visitors are meant to take            |
+| Session creations per IP       | 30 per hour      | `POST /session` is the cheapest way to make the worker do work   |
+| Photo uploads per IP           | 20 per hour      | The only endpoint that costs storage                             |
+| Clones per IP                  | 60 per hour      | Generous: this is the path visitors are meant to take            |
 | Session retention              | 30 days inactive | Sliding, see self-expiry below                                   |
 | Generated grid size            | 11 x 11 max      | Smallest playable, see generation architecture below             |
 | Entries per generated puzzle   | 12 max           | Keeps packing tractable and the clue list scannable              |
@@ -403,6 +413,12 @@ It must **fail closed**, and its failure needs a user-facing state saying the da
 **Attempts count, not successes.** A failed generation costs the same model calls as a successful one, so counting only what worked would let anyone burn the entire daily budget for free by causing failures. The counter increments when generation is attempted, including when repair fails and the deterministic packer takes over.
 
 The per-IP limits above are a starting point, not a measurement. IP is a weak key: it punishes shared NAT and is trivially rotated. It is chosen because it needs no identity, which is the whole premise of the app. Revisit with real traffic rather than in advance.
+
+**Raised 2026-08-03, from 10, 5 and 30, by the first real measurement.** Making the demo template meant retaking photos, and each attempt spends one session and one upload, because `/new` creates the session before the upload. So five uploads an hour was five attempts an hour for anyone framing a photo properly, and the person it stopped first was the author of the app.
+
+Storage exposure at the new numbers stays small: 20 uploads an hour at the 600 KB budget is 12 MB an hour per address, against a 10 GB free tier and free egress, and everything expires after 30 days idle. The unmoderated-content exposure in section 16 grows in proportion and its mitigations are unchanged.
+
+All three are overridable per deployment (`RATE_LIMIT_SESSION`, `RATE_LIMIT_PHOTO`, `RATE_LIMIT_CLONE`), so tuning them is a configuration change rather than a code change, and a test can drive them down instead of waiting an hour. The acceptance check asserts that a burst is refused rather than which attempt is refused, because pinning the number would break the test every time the limit is tuned, which is the opposite of its purpose.
 
 ### Self-expiry
 
@@ -569,12 +585,13 @@ A1 adds no endpoints, so the server's exposure is unchanged. What changed is on 
 
 **States owed by A1 and now delivered:** rate limited, and photo too large. Both render as sentences with what to do next, and a dropped connection was added alongside them, since that is the likeliest failure on a phone and is not a status code at all.
 
-### A2 Tagging and save, status: CODE COMPLETE 2026-08-03, awaiting the human check
+### A2 Tagging and save, status: DONE 2026-08-03
 
 Tap to cycle cell type, prefilled letter prompt, save, share link with copy button.
 
 - Automated: a tagged puzzle is posted and reloaded through the API with its cells and given letters intact, plus six rejection cases for the validation described below
-- Human, outstanding: tag a real puzzle end to end and open the share link in a second browser
+- Human, done 2026-08-03: tagged a real puzzle end to end on the deployed site, which produced the demo template in A2.5
+- Moved to A3: "open the share link in a second browser". A2 was written as though a share link could be checked when it was made, and it cannot: `/s/:id` renders nothing until play rendering exists, so there is no observable difference between a working link and a broken one. Verifying it here would have been theater
 
 **Security pass.** A2 adds no endpoints, and the one thing it does add is validation that was missing.
 
@@ -584,23 +601,29 @@ Given letters are held to exactly one grapheme by `Intl.Segmenter`, the same rul
 
 Worth stating for A3: a given letter is the first untrusted string this project renders. It is author-supplied rather than stranger-supplied, and it is capped at one grapheme, so it is a narrow surface. Invariant 8 still applies to it, and A3 widens that surface considerably.
 
-### A2.5 Demo puzzle and clone flow, status: NEXT once A2's human check passes
+### A2.5 Demo puzzle and clone flow, status: PLUMBING DONE 2026-08-03, playable once A3 lands
 
 The front door. Depends on A2, because building the template needs the tagging UI.
 
-- Hossein photographs and tags one good puzzle, which becomes the template
-- Mark it `template: true` by hand, not through an endpoint (section 5)
-- Template view: read-only grid, one primary action, "open a copy"
-- Landing page at `/` leads with the demo
+- Hossein photographs and tags one good puzzle, which becomes the template. **Done 2026-08-03**: 19 by 13, 247 cells, 48 clue and 189 answer and 10 dead, with a 547 KB photo, which is the first real evidence the 600 KB budget in section 16 is sized right
+- Name it in `TEMPLATE_SESSIONS` and deploy. Done as a mechanism, see the ADR-12 amendment
+- Landing page at `/` leads with the demo. **Done**: it reads the id from `GET /config` and cloning is the click
 - Link it from the playground page in the mhshakouri.dev repo, which is a change in that repository, not this one
+
+Changed 2026-08-03: **there is no template view.** The plan was a read-only grid with an "open a copy" action, and that needed a grid renderer, which is most of A3 built twice. Instead nobody is ever sent to the template: "open the demo" clones first and navigates to the visitor's own copy. That is one click to a playable grid, which is what section 1 actually asks for, and it removes the need to explain a screen where typing does nothing.
+
+Consequence to be honest about: **A2.5's payoff depends on A3.** A clone lands on `/s/:id`, which renders a placeholder until play rendering exists, so a visitor still cannot type. The plumbing is finished and verified; the experience is not, and will not be until A3.
 
 Checks:
 
-- First, decide how a template gets created: the two candidates are in A0.5's note. Nothing can create one today
-- Automated: a test that clones the template, confirms the clone has the same grid and empty letters, confirms the clone borrows rather than copies `photoKey`, and confirms writes to the template are refused. The first three already pass in A0.5 against an ordinary saved puzzle; the fourth is what waits on template creation existing
+- Decided: templates are configuration. See the ADR-12 amendment
+- Automated, done, **and local rather than in CI**: `npm run test:template`, 15 checks. It is excluded from `npm test` because it needs Durable Object state to survive a `wrangler dev` restart, and on a GitHub runner it does not: the session returns 404 afterwards, with or without an explicit `--persist-to`, and pausing for writes to settle did not change it. Six CI attempts established that. The restart is not incidental to the check, since a template is only ever made by naming an existing session and deploying, so the check kept its shape and changed where it runs. `npm run test:all` runs everything. A session is made ordinary, proven writable, then named in configuration and the worker restarted, after which the same session refuses writes with `this puzzle is read only`, refuses deletion with 403, outlives the retention window, and clones into an ordinary session that borrows the photo, starts empty, is not itself a template, records what it came from, and is writable. Deleting that clone leaves the template's photo intact, which is invariant 6 and the failure that would take the demo down for everyone
 - Human: open the published playground link on a phone, in a browser with no history for this site, and reach a typeable grid in one click
 
-### A3 Play rendering, status: TODO
+### A3 Play rendering, status: NEXT
+
+Inherited from A2: open a share link in a second browser and confirm the puzzle
+loads. It could not be checked when A2 made the link, because nothing rendered.
 
 Grid over photo, four cell types visually distinct, clue zoom, Persian letters in cells.
 
@@ -698,7 +721,7 @@ Amended 2026-08-03. A0.5 added six failure modes and could not satisfy rule 4 on
 | Session expired or deleted   | HTTP 404                      | A3      |
 | Session full                 | HTTP 503 `session full`       | A3      |
 | Write before choosing a name | WS `pick a nickname first`    | A3      |
-| Template is read only        | WS `this puzzle is read only` | A2.5    |
+| Template is read only        | WS `this puzzle is read only` | A3      |
 
 A milestone in that table cannot pass its own rule 4 while leaving its row unaddressed. 5. The status marker in section 12 is updated, in the same commit as the work. 6. Anything learned the hard way is written into this spec, in the same commit. 7. The repo check suite passes: `npm run typecheck`, `npm run format:check`, `npm test`. These are the three CI runs in `.github/workflows/ci.yml`; keep this list and that file in sync.
 

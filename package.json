@@ -16,7 +16,9 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "test:unit": "node --test src/ui/lib/*.test.ts",
-    "test:photo": "node test/photo-limit.mjs"
+    "test:photo": "node test/photo-limit.mjs",
+    "test:template": "node test/template.mjs",
+    "test:all": "npm test && npm run test:template"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260731.1",
