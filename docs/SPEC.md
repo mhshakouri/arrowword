@@ -308,6 +308,16 @@ Two related mistakes, both fixed:
 - **Cancelling inside the Durable Object does not drain the worker's request.** The worker forwards a second `Request` wrapping the same upload, so the object's copy and the incoming one are separate handles. The worker drains its own after the object answers, which is a no-op when the object already consumed it.
 - **The symptom is not local to the guilty request.** It surfaces after the response, so the log shows it next to the request that followed. Read the one before it.
 
+### Some checks cannot live in CI
+
+`wrangler dev` in CI is entirely local: no Cloudflare credentials, no real Durable Objects, no real R2. That is the right shape for a test suite, and it has a consequence worth writing down, because a whole afternoon went into rediscovering it.
+
+Local Durable Object state does not reliably survive restarting `wrangler dev` on a GitHub runner. It does locally. So `test/template.mjs`, which must restart a worker because a template is created by naming an existing session and deploying, is a local check invoked by `npm run test:template` and excluded from `npm test`.
+
+The general rule: when a check needs the emulator to behave like the platform in a way the emulator does not promise, move the check rather than weaken it. The alternative, a suite that fails for reasons unrelated to the code, teaches everyone to ignore red, which costs more than the coverage is worth.
+
+A related consequence of the same fact: `TEMPLATE_SESSIONS` in `wrangler.jsonc` names a production session id, and in CI that id refers to nothing. It is inert there, which is why the acceptance run is unaffected by it.
+
 ### Testing a limit costs less than reaching it
 
 The photo cap has its own run, `test/photo-limit.mjs`, on a worker started with `--var MAX_PHOTO_BYTES:2048`. Testing an 8 MB ceiling honestly means moving more than 8 MB, and `wrangler dev` does not survive a request body that size: it exits with an empty error and no JS exception, taking the suite with it. Six megabytes is fine, so it is the emulator's limit rather than the worker's.
@@ -607,7 +617,7 @@ Consequence to be honest about: **A2.5's payoff depends on A3.** A clone lands o
 Checks:
 
 - Decided: templates are configuration. See the ADR-12 amendment
-- Automated, done: `test/template.mjs`, 15 checks. A session is made ordinary, proven writable, then named in configuration and the worker restarted, after which the same session refuses writes with `this puzzle is read only`, refuses deletion with 403, outlives the retention window, and clones into an ordinary session that borrows the photo, starts empty, is not itself a template, records what it came from, and is writable. Deleting that clone leaves the template's photo intact, which is invariant 6 and the failure that would take the demo down for everyone
+- Automated, done, **and local rather than in CI**: `npm run test:template`, 15 checks. It is excluded from `npm test` because it needs Durable Object state to survive a `wrangler dev` restart, and on a GitHub runner it does not: the session returns 404 afterwards, with or without an explicit `--persist-to`, and pausing for writes to settle did not change it. Six CI attempts established that. The restart is not incidental to the check, since a template is only ever made by naming an existing session and deploying, so the check kept its shape and changed where it runs. `npm run test:all` runs everything. A session is made ordinary, proven writable, then named in configuration and the worker restarted, after which the same session refuses writes with `this puzzle is read only`, refuses deletion with 403, outlives the retention window, and clones into an ordinary session that borrows the photo, starts empty, is not itself a template, records what it came from, and is writable. Deleting that clone leaves the template's photo intact, which is invariant 6 and the failure that would take the demo down for everyone
 - Human: open the published playground link on a phone, in a browser with no history for this site, and reach a typeable grid in one click
 
 ### A3 Play rendering, status: NEXT

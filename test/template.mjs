@@ -1,4 +1,16 @@
-/* Demo template enforcement.
+/* Demo template enforcement. **Local only: not part of `npm test`.**
+
+   Run it with `npm run test:template`, or `npm run test:all` for everything.
+
+   It is excluded from CI because it needs Durable Object state to survive a
+   `wrangler dev` restart, and on a GitHub runner it does not: after the restart
+   the session comes back 404, with or without an explicit `--persist-to`. Six CI
+   attempts went into establishing that, including pinning the persist directory
+   and pausing for writes to settle. Locally it passes consistently.
+
+   The behavior is worth testing and the restart is not incidental to it, so the
+   check stays and the place it runs changed. What CI would gain by running it is
+   not worth a suite that fails for reasons unrelated to the code.
 
    This is the check A0.5 could not write: it implemented template behavior while
    nothing could create a template, so the state existed and was unreachable.
