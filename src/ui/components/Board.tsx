@@ -4,7 +4,7 @@
    never enters: CSS `direction` has no effect on absolutely positioned elements,
    and the app has no concept of words. See ADR-5. */
 
-import { useEffect, useRef } from "preact/hooks";
+import { useEffect, useRef, useState } from "preact/hooks";
 import type { Cell, GridAlignment, LetterValue, PeerInfo } from "../../types";
 import { cellQuad } from "../lib/alignment.ts";
 import { firstGrapheme } from "../lib/grapheme.ts";
@@ -50,6 +50,9 @@ export function Board({
   onClear,
 }: BoardProps) {
   const captureRef = useRef<HTMLInputElement>(null);
+  /* The photo is around 550 KB, so on a phone over 4G there is a real moment
+     where the grid would otherwise be drawn over nothing. */
+  const [photoReady, setPhotoReady] = useState(false);
 
   /* Focus follows selection, as a fallback for selection that did not come from
      a tap: keyboard navigation, or a later reconnect restoring a selection.
@@ -97,7 +100,21 @@ export function Board({
 
   return (
     <div class="board">
-      <img src={photoSrc} alt="The photographed puzzle you are solving." />
+      <img
+        src={photoSrc}
+        alt="The photographed puzzle you are solving."
+        onLoad={() => setPhotoReady(true)}
+      />
+
+      {!photoReady && (
+        <p
+          class="muted"
+          role="status"
+          style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;margin:0"
+        >
+          Loading the photo…
+        </p>
+      )}
 
       {/* One hidden input for the whole grid rather than one per cell: section 9
           calls for a hidden input to capture keystrokes, and 247 of them would

@@ -8,7 +8,7 @@ Changed 2026-08-02 (v6): this is a public playground app, linked from mhshakouri
 
 Changed 2026-08-03 (v7): AI generated crossword-style puzzles are scheduled as the B series, so this revision fills in everything the generated path needs from generation through to play. The shaping decision throughout is **smallest playable**: small grids, few entries, no auto-advance, no correctness checking, no prefilled cells, and answers that are not treated as secret. See ADR-12 and ADR-13.
 
-**Build status: A4 done 2026-08-03. A5, polish, is in progress and is the last of v1.** The demo is playable and survives a dropped connection: letters typed offline are kept and sent when it returns. A puzzle can be made end to end and shared: photo, alignment, tagging, save, link. Play rendering is A3. Deployed at `arrowword.mhshakouri.dev`. See section 12.
+**Build status: A5 code complete 2026-08-03, awaiting the full-puzzle check. That is the last of v1.** The demo is playable and survives a dropped connection: letters typed offline are kept and sent when it returns. A puzzle can be made end to end and shared: photo, alignment, tagging, save, link. Play rendering is A3. Deployed at `arrowword.mhshakouri.dev`. See section 12.
 
 ---
 
@@ -319,6 +319,14 @@ Two related mistakes, both fixed:
 **Giving up on reconnection is worse than waiting.** The first backoff stopped after five attempts and told the reader to reload the page. Two things made that show up immediately: attempts were counted in two places, a failed probe and a closed socket, so the list burned through at twice the intended rate, and a few seconds offline looked like a network that was never coming back. Counting moved to one place, and the last backoff value now repeats forever. A puzzle left open should still be there when the signal is.
 
 **A protocol change is not recorded until it is in section 7.** A3 changed the socket cap from an HTTP 503 to an error frame and its commit said the change was recorded here. It was not, and the table still promised a 503 for another milestone. Section 4 has a rule about keeping the spec and `src/types.ts` in sync and nothing enforces the same for section 7, so it is worth saying plainly: changing what the server sends means editing the table in the same commit, not intending to.
+
+### Learned while building A5
+
+**A fix can be the bug.** The page jumping while typing on a phone was partly caused by A4's own progress indicator: a line that appeared whenever a write was unacknowledged, which on a healthy connection is milliseconds. It mounted and unmounted on every keystroke and moved the page each time. An indicator for a state that lasts less than a frame is not information, it is motion.
+
+**A three-state value is not a two-state value with a default.** The landing page held the demo id as "an id or null" and started at null, so "we have not asked yet" and "there is no demo" were the same value and the page confidently said the wrong thing for a moment. Anything fetched needs the third state.
+
+**Some conditions do not exist on a desktop.** Reproducing the scroll jump needed a tall grid, a real on-screen keyboard covering half the viewport, and a page scrollable by more than the twenty-five pixels a desktop pane managed. Measurements taken there contradicted each other between runs. The fixes are standard and were shipped on their reasoning, with the confirmation left to the device, and that is the honest split rather than a gap.
 
 ### Some checks cannot live in CI
 
@@ -674,12 +682,25 @@ Typing syncs both ways, optimistic echo, reconnect with fresh state, retry of th
 1. **`row` and `col` on a refusal tell a client only about a write it just made**, so they leak nothing it did not already know. They exist because reverting the wrong cell is worse than not reverting.
 2. **A client can now hold writes and send them later**, which means the server sees writes with client-chosen timing but not client-chosen content: every one still goes through the same validation, still requires `hello`, and still counts against nothing the client controls. The 20-messages-per-second cap in section 7 is per socket and unchanged, so a long queue flushing on reconnect is bounded by it.
 
-### A5 Polish, status: IN PROGRESS
+### A5 Polish, status: CODE COMPLETE 2026-08-03, awaiting the full-puzzle check
 
 Persian keyboard hardening, loading and empty and error states, player list, copy-link UX, expired-session state.
 
-- Automated: full check suite
-- Human: solve one complete real puzzle together, start to finish, with at least three players
+What went in, and each of these came from using it rather than from the list:
+
+- **The page no longer jumps while typing on a phone.** Reported from real Android use, and one cause was a layout shift introduced by A4: a "Sending 1…" line rendered whenever a write was unacknowledged, which on a healthy connection is milliseconds, so it mounted and unmounted on every letter and changed the page height each time. The other cause was the capture field being pinned to the board's top corner, so focusing it scrolled to the top of the grid however far down the player was.
+- **A visitor is no longer told there is no demo before we have asked.** The landing page started with the demo id unknown and rendered "no demo puzzle is set up yet" until `/config` resolved, which is the opposite of the truth and the first thing anyone arriving from the playground read.
+- **The photo says it is loading.** At around 550 KB on a phone over 4G there is a real moment where the grid was drawn over nothing.
+- **A solver can invite somebody mid-puzzle.** The link was only offered at save time, so anyone wanting to bring a friend in had to go and find the URL.
+- **A letter that draws nothing is refused.** A zero-width non-joiner is a single grapheme and legitimate Persian text, and a cell holding one on its own looks empty while being full, so it reads as unanswered and cannot be told apart from a cell nobody touched. Rejected on the client and, because the client is not the authority, on the server too.
+- An empty state for a browser that has opened nothing yet.
+
+Checks:
+
+- Automated: the full suite, 99 checks. 23 unit, 51 acceptance, 7 photo, 3 expiry, plus 15 local template
+- Human, outstanding: solve one complete real puzzle together, start to finish, with at least three players
+
+**Security pass.** A5 adds no endpoints and one validation rule, which tightens rather than loosens: a grapheme that renders nothing is no longer storable, on the server as well as the client, which closes a way to leave a cell that looks unanswered and is not. Nothing else about the threat model moves. The invite button surfaces a link the player already holds, so it grants nothing they could not already copy from the address bar.
 
 ### B series: v2, AI puzzle generation
 

@@ -17,6 +17,7 @@ import { useSession } from "../lib/session.ts";
 import { firstGrapheme, graphemes } from "../lib/grapheme.ts";
 import { Board } from "../components/Board.tsx";
 import { ClueZoom } from "../components/ClueZoom.tsx";
+import { ShareLink } from "../components/ShareLink.tsx";
 
 const MAX_NICKNAME = 24;
 
@@ -27,6 +28,7 @@ export function Play({ id }: { id: string }) {
   );
   const [clue, setClue] = useState<{ row: number; col: number } | null>(null);
   const [draftName, setDraftName] = useState("");
+  const [sharing, setSharing] = useState(false);
 
   const doc = session.doc;
 
@@ -218,6 +220,14 @@ export function Play({ id }: { id: string }) {
             Tap an outlined cell to read its clue. Tap an empty cell and type
             one letter. Backspace clears it.
           </p>
+
+          {/* The link was only offered at save time, so a solver wanting to
+              bring somebody in mid-puzzle had to go and find the URL. */}
+          {sharing ? (
+            <ShareLink id={id} />
+          ) : (
+            <button onClick={() => setSharing(true)}>Invite someone</button>
+          )}
         </>
       )}
 
