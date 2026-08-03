@@ -336,6 +336,16 @@ Two related mistakes, both fixed:
 
 **A protocol change is not recorded until it is in section 7.** A3 changed the socket cap from an HTTP 503 to an error frame and its commit said the change was recorded here. It was not, and the table still promised a 503 for another milestone. Section 4 has a rule about keeping the spec and `src/types.ts` in sync and nothing enforces the same for section 7, so it is worth saying plainly: changing what the server sends means editing the table in the same commit, not intending to.
 
+### Learned while building C1
+
+**A documented limit with no implementation had been sitting in the table above since v6.** "WS messages per socket, 20 per second" was written down, cited in ADR-12's reasoning about what a flushing reconnect queue is bounded by, and enforced nowhere. `grep` for it in `src/index.ts` returned nothing. It is enforced now, because C1 needed the same per-socket counter for clips and building one mechanism while leaving an identical documented one unbuilt would have been indefensible.
+
+Worth stating plainly, because it is the same failure the A0 photo cap was: **a limit in this document is not a limit.** The photo cap was at least implemented and merely bypassable; this one was fiction. The check that would have caught either is the same, and it is cheap: when a row is added to the limits table, the commit that adds it either enforces it or says in the table that it is not enforced yet.
+
+**Per-socket state has to live in the attachment, not in a field.** The Durable Object hibernates, which is what makes idle sessions free, and hibernation discards everything in memory while the sockets stay open. A rate window kept in a `Map` on the object would reset every time the object slept, which on a quiet puzzle is most of the time, so the limit would have been unenforceable exactly when a flood is cheapest to start. `serializeAttachment` survives, is capped at 2 KB, and holds timestamps rather than messages for that reason.
+
+**Voice is deliberately allowed on a read-only template.** Invariant 7 says a template never accepts a letter write, and the voice branch sits above that check on purpose: people looking at the shared demo can still talk to each other, because talking is not writing to the puzzle. Recorded because the opposite reading is defensible and would have been chosen by accident if the checks had been ordered the other way round.
+
 ### Learned while building A5
 
 **A fix can be the bug.** The page jumping while typing on a phone was partly caused by A4's own progress indicator: a line that appeared whenever a write was unacknowledged, which on a healthy connection is milliseconds. It mounted and unmounted on every keystroke and moved the page each time. An indicator for a state that lasts less than a frame is not information, it is motion.
@@ -380,32 +390,32 @@ The fix is an allowlist: only `photo`, `puzzle`, `ws`, and `clone` are forwarded
 
 Values a coding agent would otherwise invent. All enforced server side.
 
-| Limit                          | Value             | Reason                                                           |
-| ------------------------------ | ----------------- | ---------------------------------------------------------------- |
-| Photo size                     | 8 MB              | Client downscales to 2000px first, so this is a generous ceiling |
-| Photo `Content-Length`         | required          | Enforced by `FixedLengthStream`, not trusted; 411 when missing   |
-| Grid rows                      | 30                | See storage note below                                           |
-| Grid columns                   | 30                | See storage note below                                           |
-| Title length                   | 200 chars         | Display only                                                     |
-| WS messages per socket         | 20 per second     | One human typing cannot exceed this                              |
-| Nickname length                | 24 graphemes      | Display only, and it is rendered to other people                 |
-| Concurrent sockets per session | 10                | Bounds broadcast fanout and DO memory                            |
-| Players recorded per session   | 50                | Stops `players` growing without bound on a popular clone         |
-| Session creations per IP       | 30 per hour       | `POST /session` is the cheapest way to make the worker do work   |
-| Photo uploads per IP           | 20 per hour       | The only endpoint that costs storage                             |
-| Clones per IP                  | 60 per hour       | Generous: this is the path visitors are meant to take            |
-| Session retention              | 30 days inactive  | Sliding, see self-expiry below                                   |
-| Generated grid size            | 11 x 11 max       | Smallest playable, see generation architecture below             |
-| Entries per generated puzzle   | 12 max            | Keeps packing tractable and the clue list scannable              |
-| Theme length                   | 60 chars          | User input, sent to a model and rendered back                    |
-| Clue length                    | 120 chars         | Model output, rendered to other people                           |
-| Generations per IP             | 2 per day         | Plus Turnstile, since IP alone is a weak key. See below          |
-| Generations per day, all users | **measure first** | Derived from the Workers AI neuron allocation, not chosen        |
-| Voice clip length              | 8 seconds         | Long enough for a clue, short enough to stay under the size cap  |
-| Voice clip size                | 256 KB            | 16 kHz mono 16-bit PCM for 8 seconds, with headroom              |
-| Voice clips per player         | 6 per minute      | Bounds a flood; the message cap counts messages, not bytes       |
-| Signaling payload size         | 16 KB             | An SDP blob fits; the server never parses or renders it          |
-| Players in voice per session   | 4                 | Sockets stay at 10. Voice is a smaller room than the puzzle      |
+| Limit                          | Value             | Reason                                                             |
+| ------------------------------ | ----------------- | ------------------------------------------------------------------ |
+| Photo size                     | 8 MB              | Client downscales to 2000px first, so this is a generous ceiling   |
+| Photo `Content-Length`         | required          | Enforced by `FixedLengthStream`, not trusted; 411 when missing     |
+| Grid rows                      | 30                | See storage note below                                             |
+| Grid columns                   | 30                | See storage note below                                             |
+| Title length                   | 200 chars         | Display only                                                       |
+| WS messages per socket         | 20 per second     | One human typing cannot exceed this. Enforced since C1, not before |
+| Nickname length                | 24 graphemes      | Display only, and it is rendered to other people                   |
+| Concurrent sockets per session | 10                | Bounds broadcast fanout and DO memory                              |
+| Players recorded per session   | 50                | Stops `players` growing without bound on a popular clone           |
+| Session creations per IP       | 30 per hour       | `POST /session` is the cheapest way to make the worker do work     |
+| Photo uploads per IP           | 20 per hour       | The only endpoint that costs storage                               |
+| Clones per IP                  | 60 per hour       | Generous: this is the path visitors are meant to take              |
+| Session retention              | 30 days inactive  | Sliding, see self-expiry below                                     |
+| Generated grid size            | 11 x 11 max       | Smallest playable, see generation architecture below               |
+| Entries per generated puzzle   | 12 max            | Keeps packing tractable and the clue list scannable                |
+| Theme length                   | 60 chars          | User input, sent to a model and rendered back                      |
+| Clue length                    | 120 chars         | Model output, rendered to other people                             |
+| Generations per IP             | 2 per day         | Plus Turnstile, since IP alone is a weak key. See below            |
+| Generations per day, all users | **measure first** | Derived from the Workers AI neuron allocation, not chosen          |
+| Voice clip length              | 8 seconds         | Long enough for a clue, short enough to stay under the size cap    |
+| Voice clip size                | 256 KB            | 16 kHz mono 16-bit PCM for 8 seconds, with headroom                |
+| Voice clips per player         | 6 per minute      | Bounds a flood; the message cap counts messages, not bytes         |
+| Signaling payload size         | 16 KB             | An SDP blob fits; the server never parses or renders it            |
+| Players in voice per session   | 4                 | Sockets stay at 10. Voice is a smaller room than the puzzle        |
 
 Added 2026-08-02: everything from nickname length down. Section 16 has required rate limiting since v5 and nothing implemented it, which was survivable while the app was private and is not now.
 
@@ -755,7 +765,7 @@ Scheduled 2026-08-03 (ADR-14), and it **runs before the B series** even though i
 
 Two milestones, and the first is complete on its own. If C2 is never built, nothing is missing.
 
-#### C1 Push to talk, status: TODO
+#### C1 Push to talk, status: CODE COMPLETE 2026-08-03, awaiting the human check
 
 Hold a button, speak, release. The clip goes over the WebSocket that already carries the puzzle and plays on every other device in the session. **This is the milestone that works for the people this feature exists for**, and it needs no new host, no new protocol, and nothing from Hossein.
 
@@ -767,8 +777,12 @@ Hold a button, speak, release. The clip goes over the WebSocket that already car
 
 Checks:
 
-- Automated: a clip reaches every other socket in voice and no one else; a spectating socket that never sent `hello` receives nothing and can send nothing; a client-supplied `from` is replaced by the server's; an oversize clip is refused; a seventh clip in a minute is refused; the voice room caps at 4 while sockets stay at 10
-- Human: one clip from a phone in Iran arrives and is audible. That is the whole point of the milestone and no local test substitutes for it
+- Automated: `npm test`, now 98 checks, of which 14 are voice. A clip reaches every other socket in voice and no one else; a spectating socket that never sent `hello` can neither join nor hear; a client-supplied `from` is replaced by the server's; an oversize clip is refused; a seventh clip in a minute is refused; the voice room caps at 4 while sockets stay at 10, and the fifth person refused voice can still solve
+- Human, outstanding: one clip from a phone in Iran arrives and is audible. That is the whole point of the milestone and no local test substitutes for it
+
+**Security pass.** C1 adds no HTTP endpoint. It adds three WebSocket messages, all of which require `hello` first, and the question is what a stranger holding the link gains. Relaying audio is the one thing here that moves bytes on someone else's behalf, so it is bounded three ways: 350 KB per clip, six clips per minute per socket, and four people in the room. A stranger who joins can be heard, which is true of the grid as well and is what a capability link means; the mitigation is the same one the puzzle has, which is that the link is the credential and can be abandoned. Two things tighten rather than loosen: `from` is stamped by the server, so a joined stranger cannot attribute speech to somebody else, and a clip reaches only sockets that opted in, so a spectator cannot listen silently. Nothing is stored, so nothing accumulates and the expiry window does not slide on a clip: talking cannot keep a session alive past its 30 days.
+
+The one genuinely new exposure is that a person's voice, rather than their typing, now reaches strangers who hold the link. That is a property of the feature and not a defect in it, which is why joining is a deliberate act and the room shows who is in it before anyone speaks.
 
 #### C2 Live voice over WebRTC, status: TODO
 

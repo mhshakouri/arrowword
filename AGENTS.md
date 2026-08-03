@@ -10,8 +10,9 @@ Parent project: the personal website, `github.com/mhshakouri/mhshakouri.dev`,
 local path `../mhshakouri`. It links to this project and describes it; it never
 hosts it. Design tokens are copied from there, never imported.
 
-**State: v1 complete 2026-08-03. Next is the C series, voice, which is C1 then
-C2. The B series, AI generated puzzles, is postponed behind it (ADR-14).** There
+**State: v1 complete 2026-08-03. C1, push to talk, is code complete and awaiting
+its human check; C2 is live WebRTC voice. The B series, AI generated puzzles, is
+postponed behind both (ADR-14).** There
 are two ways in and both work end to end: clone the demo from the landing page
 and type into the grid, or make a puzzle from a photo through alignment,
 tagging, save, and share link. See spec section 12.
@@ -49,8 +50,8 @@ limits are load-bearing rather than nice to have.
 - `npm run dev:ui` - Vite with hot reload, proxying the API to :8787. Run both
 - `npm run build` - the UI into `dist/`, which the worker serves as assets
 - `npm run typecheck` - two configs: the worker has no DOM, the UI has no Workers
-- `npm test` - the CI suite: unit, acceptance, photo cap, expiry. 84 checks
-- `npm run test:all` - the above plus the template run. 99 checks
+- `npm test` - the CI suite: unit, acceptance, photo cap, expiry. 98 checks
+- `npm run test:all` - the above plus the template run. 113 checks
 - `npm run deploy` - deploy by hand. Normally a merge to `main` does it
 - `npm run format` / `format:check` - Prettier
 

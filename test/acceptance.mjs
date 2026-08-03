@@ -823,6 +823,192 @@ const afterHello = await eventually(() =>
 check("and then writes again normally", afterHello?.ch === "س");
 second.close();
 
+/* ---- C1: push to talk ----
+
+   Everything the server is responsible for, which is relaying and refusing.
+   Whether a clip is audible is a human check by definition: no assertion here
+   can hear anything. See section 12. */
+
+const voiceId = await newSession();
+await req(
+  `${BASE}/session/${voiceId}/puzzle`,
+  as(MAIN, {
+    method: "PUT",
+    body: JSON.stringify(puzzle),
+    headers: { "Content-Type": "application/json" },
+  }),
+);
+const voiceWs = `${BASE.replace("http", "ws")}/session/${voiceId}/ws`;
+await wsReady(voiceWs);
+
+/* Small enough to be obviously not audio. The server never decodes it, which is
+   the point: it relays bytes and enforces a size, and inspecting the contents
+   would be work it has no reason to do. */
+const CLIP = "QUJDRA==";
+
+const talker = await open(voiceWs);
+const listener = await open(voiceWs);
+/* Named, but never joins voice. Invariant 17 says this socket hears nothing. */
+const bystander = await open(voiceWs);
+/* Never says hello at all. */
+const spectator = await open(voiceWs);
+
+hello(talker, "a".repeat(32), "Talker");
+hello(listener, "b".repeat(32), "Listener");
+hello(bystander, "c".repeat(32), "Bystander");
+await wait(250);
+
+spectator.messages.length = 0;
+spectator.send(JSON.stringify({ type: "voice-join" }));
+const spectatorRefused = await eventually(() =>
+  spectator.messages.find(
+    (m) => m.type === "error" && m.message === "pick a nickname first",
+  ),
+);
+check(
+  "a socket that never said hello cannot join voice",
+  spectatorRefused !== null,
+);
+
+talker.send(JSON.stringify({ type: "voice-join" }));
+listener.send(JSON.stringify({ type: "voice-join" }));
+await wait(250);
+
+const room = await eventually(() =>
+  listener.messages.filter((m) => m.type === "voice-peers").at(-1),
+);
+check(
+  "the voice room lists both people who joined",
+  room?.players?.length === 2,
+  `got ${JSON.stringify(room?.players)}`,
+);
+
+listener.messages.length = 0;
+bystander.messages.length = 0;
+spectator.messages.length = 0;
+talker.messages.length = 0;
+/* A client-supplied `from` naming somebody else. Invariant 16 says the server
+   replaces it with the sending socket's own identity rather than trusting it,
+   which is the difference between attribution and impersonation. */
+talker.send(
+  JSON.stringify({
+    type: "clip",
+    seq: 1,
+    audio: CLIP,
+    from: "b".repeat(32),
+  }),
+);
+
+const heard = await eventually(() =>
+  listener.messages.find((m) => m.type === "clip"),
+);
+check("a clip reaches another player in voice", heard?.audio === CLIP);
+check(
+  "a client-supplied from is replaced by the sender's own id",
+  heard?.from === "a".repeat(32),
+  `got ${heard?.from}`,
+);
+check("the clip carries the sender's seq", heard?.seq === 1);
+await wait(300);
+check(
+  "a player who did not join voice hears nothing",
+  !bystander.messages.some((m) => m.type === "clip"),
+);
+check(
+  "a socket with no identity hears nothing",
+  !spectator.messages.some((m) => m.type === "clip"),
+);
+check(
+  "the sender does not receive its own clip back",
+  !talker.messages.some((m) => m.type === "clip"),
+);
+
+/* Section 7 caps the encoded clip at 350 KB, which is 8 seconds of 16 kHz mono
+   with base64 overhead. One byte past it is refused. */
+talker.messages.length = 0;
+talker.send(
+  JSON.stringify({ type: "clip", seq: 2, audio: "A".repeat(350 * 1024 + 1) }),
+);
+const tooBig = await eventually(() =>
+  talker.messages.find(
+    (m) => m.type === "error" && m.message === "clip is too long",
+  ),
+);
+check("an oversize clip is refused", tooBig !== null);
+
+/* Six a minute. The first clip above already spent one, so five more land and
+   the seventh is refused. */
+talker.messages.length = 0;
+for (let i = 0; i < 5; i++) {
+  talker.send(JSON.stringify({ type: "clip", seq: 10 + i, audio: CLIP }));
+  await wait(30);
+}
+await wait(200);
+check(
+  "clips up to the limit are accepted",
+  !talker.messages.some((m) => m.type === "error"),
+  `got ${JSON.stringify(talker.messages.filter((m) => m.type === "error"))}`,
+);
+talker.send(JSON.stringify({ type: "clip", seq: 99, audio: CLIP }));
+const flooded = await eventually(() =>
+  talker.messages.find(
+    (m) => m.type === "error" && m.message === "too many clips, wait a moment",
+  ),
+);
+check("a seventh clip in one minute is refused", flooded !== null);
+
+/* The voice room is four while the session stays at ten. A fifth person is
+   refused voice and keeps their socket, which is what makes it a smaller room
+   rather than a smaller session. */
+const extras = [];
+for (let i = 0; i < 3; i++) {
+  const ws = await open(voiceWs);
+  hello(ws, String(i).repeat(32), `Extra${i}`);
+  extras.push(ws);
+}
+await wait(300);
+/* Two are already in voice, so two of these three fill it and the third is the
+   fifth person. */
+extras[0].send(JSON.stringify({ type: "voice-join" }));
+extras[1].send(JSON.stringify({ type: "voice-join" }));
+await wait(300);
+extras[2].messages.length = 0;
+extras[2].send(JSON.stringify({ type: "voice-join" }));
+const full = await eventually(() =>
+  extras[2].messages.find(
+    (m) => m.type === "error" && m.message === "voice is full",
+  ),
+);
+check("a fifth person is refused the voice room", full !== null);
+
+/* Still a live socket in the session: refused voice is not refused entry.
+   (0,1) rather than (0,0), because (0,0) is a clue cell in this fixture and
+   would be refused for a reason that has nothing to do with voice. */
+extras[2].messages.length = 0;
+extras[2].send(JSON.stringify({ type: "set", row: 0, col: 1, ch: "ک" }));
+const stillPlaying = await eventually(() =>
+  extras[2].messages.find((m) => m.type === "cell"),
+);
+check(
+  "and can still solve the puzzle",
+  stillPlaying?.ch === "ک",
+  `got ${stillPlaying?.ch}`,
+);
+
+/* Leaving empties the room for everyone else. */
+listener.messages.length = 0;
+talker.send(JSON.stringify({ type: "voice-leave" }));
+const afterLeave = await eventually(() => {
+  const last = listener.messages.filter((m) => m.type === "voice-peers").at(-1);
+  return last && !last.players.some((p) => p.id === "a".repeat(32))
+    ? last
+    : null;
+});
+check("leaving voice removes you from everyone's room", afterLeave !== null);
+
+for (const ws of [talker, listener, bystander, spectator, ...extras])
+  ws.close();
+
 console.log(`PASS ${ok.length}`);
 for (const t of ok) console.log("  ok   " + t);
 if (bad.length) {

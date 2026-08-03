@@ -64,13 +64,26 @@ export interface SessionDoc {
 export type ClientMessage =
   | { type: "hello"; playerId: string; nickname: string }
   | { type: "set"; row: number; col: number; ch: string }
-  | { type: "clear"; row: number; col: number };
+  | { type: "clear"; row: number; col: number }
+  | { type: "voice-join" }
+  | { type: "voice-leave" }
+  /* `audio` is base64 WAV. `seq` is the sender's own counter, echoed back so a
+     client can tell its own clip from someone else's without comparing bytes. */
+  | { type: "clip"; seq: number; audio: string };
 
 /* The shape sent in "peers". Deliberately not the whole Player record. */
 export interface PeerInfo {
   id: string;
   nickname: string;
   color: number;
+}
+
+/* Who is in the voice room, which is a subset of who is in the session. `mode`
+   is "ptt" for every C1 client and exists so C2 can add "live" without changing
+   the message shape. */
+export interface VoicePeer {
+  id: string;
+  mode: "ptt" | "live";
 }
 
 /* Server to client */
@@ -85,6 +98,11 @@ export type ServerMessage =
       by: string;
     }
   | { type: "peers"; players: PeerInfo[] }
+  | { type: "voice-peers"; players: VoicePeer[] }
+  /* Relayed audio. `from` is stamped by the server from the sending socket's
+     own identity and a client-supplied `from` is discarded (invariant 16). The
+     server never stores this and never inspects `audio` beyond its size. */
+  | { type: "clip"; seq: number; audio: string; from: string; at: number }
   /* `row` and `col` are present whenever the refusal is about a particular cell.
      Without them a client that echoes a write optimistically has to guess which
      pending write was refused, and guessing wrong reverts the wrong cell. */
