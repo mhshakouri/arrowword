@@ -276,6 +276,29 @@ check(
 
 /* ---- A0.5: delete ---- */
 
+/* Invariant 6, and the one whose failure loses data for everybody: deleting a
+   clone must not delete the photo it borrowed. Without this, a visitor tidying
+   up their own throwaway copy would take the shared demo photo down with it,
+   and every other clone would render over a hole. The earlier delete check uses
+   a session with no photo, so it only ever exercised the ownership test in the
+   direction that says yes. */
+const borrower = await fetch(
+  `${BASE}/session/${id}/clone`,
+  as(MAIN, { method: "POST" }),
+);
+const borrowerId = borrower.ok ? (await borrower.json()).id : null;
+const borrowerDeleted = await fetch(
+  `${BASE}/session/${borrowerId}`,
+  as(MAIN, { method: "DELETE" }),
+);
+check("delete a clone", borrowerDeleted.ok, `got ${borrowerDeleted.status}`);
+const sourcePhoto = await fetch(`${BASE}/session/${id}/photo`);
+check(
+  "deleting a clone leaves the borrowed photo intact",
+  sourcePhoto.status === 200,
+  `source photo got ${sourcePhoto.status}`,
+);
+
 const doomed = await newSession();
 const del = await fetch(
   `${BASE}/session/${doomed}`,
