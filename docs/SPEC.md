@@ -8,7 +8,7 @@ Changed 2026-08-02 (v6): this is a public playground app, linked from mhshakouri
 
 Changed 2026-08-03 (v7): AI generated crossword-style puzzles are scheduled as the B series, so this revision fills in everything the generated path needs from generation through to play. The shaping decision throughout is **smallest playable**: small grids, few entries, no auto-advance, no correctness checking, no prefilled cells, and answers that are not treated as secret. See ADR-12 and ADR-13.
 
-**Build status: A4 code complete 2026-08-03, awaiting the two-device check. A5, polish, is next.** The demo is playable and survives a dropped connection: letters typed offline are kept and sent when it returns. A puzzle can be made end to end and shared: photo, alignment, tagging, save, link. Play rendering is A3. Deployed at `arrowword.mhshakouri.dev`. See section 12.
+**Build status: A4 done 2026-08-03. A5, polish, is in progress and is the last of v1.** The demo is playable and survives a dropped connection: letters typed offline are kept and sent when it returns. A puzzle can be made end to end and shared: photo, alignment, tagging, save, link. Play rendering is A3. Deployed at `arrowword.mhshakouri.dev`. See section 12.
 
 ---
 
@@ -661,12 +661,12 @@ Grid over photo, four cell types visually distinct, clue zoom, Persian letters i
 2. **Nicknames come from strangers holding the link**, and are rendered next to other people's names. They are capped and stripped on the server, they carry no markup to the page, and impersonation remains possible by design, which ADR-7 already accepted. What A3 adds is that the consequence is now visible rather than hypothetical.
 3. **The photo is rendered twice**, in the grid and again scaled inside the clue zoom. That adds no exposure the photo endpoint did not already have, and it is worth stating so that the zoom is not mistaken for a second way in.
 
-### A4 Sync, status: CODE COMPLETE 2026-08-03, awaiting the two-device check
+### A4 Sync, status: DONE 2026-08-03
 
 Typing syncs both ways, optimistic echo, reconnect with fresh state, retry of the last unacknowledged write.
 
 - Automated: `test/acceptance.mjs` gains a socket drop and reconnect case, and 15 unit tests in `src/ui/lib/pending.test.ts` cover the part where a mistake is silent: optimistic echo, reverting to what was there before several edits, and deciding which unacknowledged writes are still safe to re-send
-- Human, outstanding: the two-device test, including putting one device in airplane mode mid-solve. Verified by hand in a browser against a worker stopped and restarted underneath it, which is the same shape and not the same thing as a phone losing signal
+- Human, done 2026-08-03: the two-device test including airplane mode mid-solve. Sync behaved correctly. The same test also surfaced two mobile defects that A5 fixes, which is the argument for a human check that is a real phone rather than a stopped worker: nothing about the sync logic was wrong, and the screen was still unusable while typing
 - Verified while building: two letters typed with the server down arrived on it after the worker came back, with their original timestamps and the right author
 
 **Security pass.** A4 adds no endpoints and one protocol field. Two things worth stating:
@@ -674,7 +674,7 @@ Typing syncs both ways, optimistic echo, reconnect with fresh state, retry of th
 1. **`row` and `col` on a refusal tell a client only about a write it just made**, so they leak nothing it did not already know. They exist because reverting the wrong cell is worse than not reverting.
 2. **A client can now hold writes and send them later**, which means the server sees writes with client-chosen timing but not client-chosen content: every one still goes through the same validation, still requires `hello`, and still counts against nothing the client controls. The 20-messages-per-second cap in section 7 is per socket and unchanged, so a long queue flushing on reconnect is bounded by it.
 
-### A5 Polish, status: NEXT
+### A5 Polish, status: IN PROGRESS
 
 Persian keyboard hardening, loading and empty and error states, player list, copy-link UX, expired-session state.
 

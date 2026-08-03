@@ -114,6 +114,10 @@ button:disabled {
 
 .notice {
   border: 1px solid var(--border);
+  /* Anything above the grid that comes and goes moves the grid, and on a phone
+     that competes with the keyboard. Notices are rare, but when one does appear
+     it should push the layout once rather than repeatedly. */
+  contain: layout;
   border-left: 3px solid var(--accent);
   border-radius: var(--radius);
   padding: 0.75rem 1rem;
@@ -184,6 +188,15 @@ input[type="text"] {
   position: relative;
   width: 100%;
   touch-action: manipulation;
+  /* Reserve the board's height from the photo's aspect ratio so the grid does not
+     jump when the image finishes loading. */
+  contain: layout;
+}
+
+/* Keep the selected cell clear of the on-screen keyboard when a browser does
+   scroll it into view, rather than flush against the viewport edge. */
+.board :focus-visible {
+  scroll-margin: 6rem 0;
 }
 
 .board img {
@@ -200,8 +213,8 @@ input[type="text"] {
    a hair of opacity and a single pixel rather than none of either. */
 .capture {
   position: absolute;
-  top: 0;
-  left: 0;
+  /* Placed over the selected cell from the component, so a browser that scrolls
+     a focused field into view scrolls to where the player already is. */
   opacity: 0.01;
   width: 1px;
   height: 1px;

@@ -10,8 +10,8 @@ Parent project: the personal website, `github.com/mhshakouri/mhshakouri.dev`,
 local path `../mhshakouri`. It links to this project and describes it; it never
 hosts it. Design tokens are copied from there, never imported.
 
-**State: A4 code complete 2026-08-03, awaiting the two-device check. A5,
-polish, is next.** The demo is playable end to end: clone it from the landing
+**State: A4 done 2026-08-03, sync verified on two devices including airplane
+mode. A5, polish, is in progress and is the last of v1.** The demo is playable end to end: clone it from the landing
 page and type into the grid. What remains is optimistic echo, reconnection, and
 retry of an unacknowledged write. A puzzle can
 now be made end to end: photo, alignment, tagging, save, share link. What

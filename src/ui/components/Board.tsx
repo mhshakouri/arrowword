@@ -52,9 +52,17 @@ export function Board({
   const captureRef = useRef<HTMLInputElement>(null);
 
   /* Focus follows selection, as a fallback for selection that did not come from
-     a tap: keyboard navigation, or a later reconnect restoring a selection. */
+     a tap: keyboard navigation, or a later reconnect restoring a selection.
+
+     `preventScroll` is not optional here. Reported from a real Android device:
+     focusing a cell threw the page back to the top, and so did every keystroke,
+     which fights the on-screen keyboard and makes a tall grid unusable. The
+     browser was scrolling the focused field into view, and the field was pinned
+     to the top corner of the board. */
   useEffect(() => {
-    if (selected && !readOnly) captureRef.current?.focus();
+    if (selected && !readOnly) {
+      captureRef.current?.focus({ preventScroll: true });
+    }
   }, [selected, readOnly]);
 
   /* iOS opens the on-screen keyboard only for a `focus()` that happens inside
@@ -64,8 +72,23 @@ export function Board({
      synchronously, before any state update. Section 12's human check for this
      milestone exists to confirm it on a real device. */
   function focusCapture() {
-    if (!readOnly) captureRef.current?.focus();
+    if (!readOnly) captureRef.current?.focus({ preventScroll: true });
   }
+
+  /* Where the capture field sits. Moving it onto the selected cell means that a
+     browser which insists on scrolling the focused element into view scrolls to
+     the cell the player is already looking at, so the scroll is a no-op rather
+     than a jump. `preventScroll` above handles the common case; this handles the
+     browsers that ignore it, which is why both are here. */
+  const capturePosition = selected
+    ? (() => {
+        const q = cellQuad(alignment, rows, cols, selected.row, selected.col);
+        return {
+          left: `${((q.topLeft.x + q.bottomRight.x) / 2) * 100}%`,
+          top: `${((q.topLeft.y + q.bottomRight.y) / 2) * 100}%`,
+        };
+      })()
+    : { left: "0%", top: "0%" };
 
   function colorFor(playerId: string): string {
     const peer = peers.find((p) => p.id === playerId);
@@ -82,6 +105,7 @@ export function Board({
       <input
         ref={captureRef}
         class="capture"
+        style={`left:${capturePosition.left};top:${capturePosition.top}`}
         type="text"
         inputMode="text"
         autocomplete="off"

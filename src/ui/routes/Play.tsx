@@ -180,11 +180,14 @@ export function Play({ id }: { id: string }) {
             </p>
           )}
 
-          {session.status === "live" && session.waiting > 0 && (
-            <p class="muted" role="status" style="margin:0 0 0.5rem">
-              Sending {session.waiting}…
-            </p>
-          )}
+          {/* No per-keystroke indicator. When the connection is healthy a write
+              is acknowledged in milliseconds, so this line mounted and unmounted
+              on every letter, changing the page height each time. On a phone,
+              where the grid is tall and the keyboard already covers half the
+              viewport, a height change while scrolled near the limit makes the
+              browser clamp the scroll position, which reads as the page jumping
+              while you type. The count is worth showing when it means something,
+              which is while reconnecting, and that notice is already there. */}
 
           {session.refusal && (
             <p class="notice error" role="alert">
