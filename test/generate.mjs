@@ -11,8 +11,17 @@
 
 import { spawn } from "node:child_process";
 
-const PORT = 8790;
-const BASE = `http://localhost:${PORT}`;
+/* A port per scenario rather than one reused across restarts.
+
+   Reusing one failed on CI twice, for two different reasons: the OS had not
+   released the socket yet, and then `npx` forks wrangler so SIGTERM to the
+   process this test holds does not necessarily reach the server. Both are
+   properties of the machine rather than of the thing under test, and both stop
+   mattering if the next worker simply listens somewhere else. A lingering
+   worker costs a few megabytes for the length of the run and is reaped when the
+   process exits. */
+let PORT = 8790;
+let BASE = `http://localhost:${PORT}`;
 const ok = [];
 const bad = [];
 const check = (name, pass, detail = "") =>
@@ -77,19 +86,32 @@ async function isUp() {
 let worker = null;
 let shuttingDown = false;
 const workerLog = [];
+/* Every child ever started, so the exit handler can reap all of them rather
+   than only the current one. */
+const children = [];
 
 function start(vars) {
   const args = ["wrangler", "dev", "--local", "--port", String(PORT)];
   for (const [k, v] of Object.entries(vars)) args.push("--var", `${k}:${v}`);
-  const child = spawn("npx", args, { stdio: ["ignore", "pipe", "pipe"] });
+  /* `detached` puts wrangler in its own process group, so killing the negative
+     pid reaches the server rather than only the `npx` wrapper that forked it. */
+  const child = spawn("npx", args, {
+    stdio: ["ignore", "pipe", "pipe"],
+    detached: true,
+  });
+  children.push(child);
   const keep = (c) => {
     workerLog.push(c.toString());
     if (workerLog.length > 60) workerLog.shift();
   };
   child.stdout.on("data", keep);
   child.stderr.on("data", keep);
+  /* Marked on the child rather than tracked in a shared flag. `exit` arrives
+     asynchronously, so a flag set around the kill and cleared straight after is
+     already false by the time the event lands, and every deliberate restart
+     read as a crash. */
   child.on("exit", (code) => {
-    if (shuttingDown) return;
+    if (child.stopping || shuttingDown) return;
     console.error(`\nwrangler dev exited early (${code}).`);
     console.error(workerLog.join(""));
     process.exit(1);
@@ -104,27 +126,13 @@ function start(vars) {
    kind of thing that ships by accident. */
 async function restart(vars) {
   if (worker) {
-    shuttingDown = true;
-    /* Wait for the child to actually die, then for the port to actually be
-       free. A fixed sleep passed locally and failed on a CI runner with
-       "Address already in use": the process exits before the OS releases the
-       socket, and how long that takes is a property of the machine rather than
-       of anything this test controls. */
-    const dead = new Promise((resolve) => worker.once("exit", resolve));
-    worker.kill("SIGTERM");
-    await Promise.race([dead, sleep(10_000)]);
-    const deadline = Date.now() + 20_000;
-    while (await isUp()) {
-      if (Date.now() > deadline) {
-        console.error(`port ${PORT} never freed`);
-        process.exit(1);
-      }
-      await sleep(250);
-    }
+    kill(worker);
     worker = null;
-    shuttingDown = false;
+    /* No wait for the port: the next worker takes a different one. */
+    PORT += 1;
+    BASE = `http://localhost:${PORT}`;
   }
-  console.log(`starting worker: ${JSON.stringify(vars)}`);
+  console.log(`starting worker on :${PORT}: ${JSON.stringify(vars)}`);
   worker = start(vars);
   const deadline = Date.now() + 60_000;
   let streak = 0;
@@ -140,9 +148,25 @@ async function restart(vars) {
   }
 }
 
+/* Kills the whole process group, because `npx` forks wrangler and a signal sent
+   to the wrapper does not reliably reach the server underneath it. */
+function kill(child) {
+  if (!child || child.killed) return;
+  child.stopping = true;
+  try {
+    process.kill(-child.pid, "SIGTERM");
+  } catch {
+    try {
+      child.kill("SIGTERM");
+    } catch {
+      /* Already gone. */
+    }
+  }
+}
+
 const stop = () => {
   shuttingDown = true;
-  if (worker && !worker.killed) worker.kill("SIGTERM");
+  for (const child of children) kill(child);
 };
 process.on("exit", stop);
 process.on("SIGINT", () => {
