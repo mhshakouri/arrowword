@@ -858,8 +858,9 @@ Checks:
 - `provider.ts`, the interface, with a recorded provider and a Workers AI one. CI holds no credential
 - `fixtures.ts`, recorded model output carrying the mistakes models actually make rather than pre-cleaned input
 - `loop.ts`, the pipeline from the layout ADR: propose, validate, repair with the specific violations, then fall back to packing, then fail
+- `pack.ts`, the deterministic packer, which is the floor under generation. Greedy with restarts rather than full backtracking, bounded by a **step budget rather than a timer**, because a step count behaves identically on a fast laptop and a slow phone whereas a timeout silently produces worse puzzles on worse hardware. It validates its own output and returns nothing rather than shipping a grid the server would refuse
 
-**What remains:** the browser packer, `POST /generate` with its async progress messages, wiring Turnstile, the two rate limits, the crossword renderer, and the neuron measurement that sets the daily ceiling. Only the last is blocked, and it is blocked on spending neurons rather than on a handoff.
+**What remains:** `POST /generate` with its async progress messages, wiring Turnstile, the two rate limits, the crossword renderer, and the neuron measurement that sets the daily ceiling. Only the last is blocked, and it is blocked on spending neurons rather than on a handoff.
 
 **Learned here, and it is a process point rather than a technical one.** The provider was first built asking the model for words only, which contradicts the layout ADR without anyone noticing, because the ADR lives in section 17 and the milestone bullets in section 12 do not repeat it. It was caught one commit later while building the loop, which is early enough to be cheap and late enough to be worth recording: **the milestone list is a summary and the ADR is the decision.** Read the record before implementing the bullet.
 
