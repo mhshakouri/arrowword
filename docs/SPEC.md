@@ -850,7 +850,7 @@ Checks:
 
 **What B1 deliberately did not do.** Arrow rendering stays deferred, since generated puzzles are crossword-style. **Auto-advance stays out entirely (ADR-5, upheld),** and this is the milestone where upholding it took an actual decision rather than none: before run detection the app could not have advanced a cursor to the next cell of a word if it wanted to, and now it could. Knowing where a word ends is not permission to move the cursor there. The runs module says so at the top so that the next person to read it is told before they are tempted.
 
-#### B3 AI puzzle generation, status: IN PROGRESS, validator landed 2026-08-03
+#### B3 AI puzzle generation, status: CODE COMPLETE 2026-08-04, working against the real model
 
 **What exists**, all of it pure and none of it needing a key, a neuron, or a handoff:
 
@@ -901,7 +901,17 @@ Generalized: **a broadcast is not delivery.** Anything a session needs a client 
 Checks:
 
 - Automated, all against fixtures rather than a live model: the validator rejects a disagreeing crossing, an entry running off-grid, and an unintended adjacency; a recorded invalid proposal is repaired; a proposal that never validates ends as `status: "failed"`; a client-submitted packed grid that fails validation is refused with 422; and a third generation in one day is refused
-- Human: generate three puzzles from three themes and solve one end to end
+- Human, partly done 2026-08-04: **one puzzle generated against the real model and solved end to end.** Theme "movie names", 11 by 10, eight entries, `DIRECTOR` crossing `CASTING`, `EDITING` and `SOUNDTRACK`. It validated server side, which means every crossing agreed and no run went unclued, so the whole path from prompt to stored grid works on the real model and not only on fixtures
+- Human, still outstanding: two more themes, to see the failure rate rather than one success
+
+**Three observations from the first real generation, recorded because one success is the only data B3 has.**
+
+**The model reinterpreted the theme.** The request was "top movie names from IMDB" and what came back was film _terminology_: reel, casting, romance, editing, soundtrack, gross, director. That is a better puzzle than a list of titles would have been, since titles are proper nouns the prompt already forbids, but it is not what was asked for. Either the prompt should say it will interpret a theme as a subject rather than a list, or the screen should. Not a defect; a mismatch between what a person types and what the thing does.
+
+**Nothing checks answers, and it showed immediately.** The solved grid has `ACTORR` where `ACTORS` was intended, one square typed wrong, and the app said nothing. That is ADR-1 working exactly as written rather than a bug, and it is worth having seen once: the first instinct on looking at it is to want a checker, and the reason there is none is in that record.
+
+**The per-IP limit was bypassed with a VPN on the first day.** Section 7 already says an IP is "rotatable" and that the limit "is not trying to stop a determined attacker, it stops accidents and casual repetition". Confirmed rather than contradicted, and worth noting that the first person to route around it was the author testing his own app, which is the case the limit should not have been blocking anyway.
+
 - Published with the milestone, from a script run by hand against the real model: the measured rate at which first proposals validate, repair rescues them, and the fallback runs. ADR-12 treats that measurement as the deliverable, not a footnote
 
 Out of v1: OCR, auto grid detection, perspective correction, correctness checking, accounts of any kind. Voice is the C series and AI puzzle generation is the B series, both above, both v2.
