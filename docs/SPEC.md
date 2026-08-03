@@ -971,7 +971,11 @@ Stated rather than left silent, because every other v2 milestone needs something
 
 The one thing worth doing before C1 rather than after: confirm the app itself loads for the person in Iran this feature exists for. Audio rides the same WebSocket as the puzzle, so if letters sync, clips will too, and if the page never loads there is nothing to build.
 
-### Blocking B3: a Turnstile widget
+### Done 2026-08-03: the Turnstile widget
+
+**Completed the same day it was written.** The widget exists, `TURNSTILE_SECRET` is set, and the site key `0x4AAAAAAEFf0D8w4Nnv-fZm` is in `wrangler.jsonc` under `vars` where it belongs, because it is public by design and ships in the client bundle.
+
+**Verified rather than assumed**, which is worth recording because the failure mode is quiet: the widget was rendered against `localhost` from a throwaway page before any code depended on it, and it passed and issued a token. That proves two things at once, the key is real and the hostname list includes `localhost`, and the second is the one that would otherwise have surfaced as a mysterious challenge failure the first time anyone ran `npm run dev`.
 
 **Added 2026-08-03, and it should have been here from the start.** Turnstile is required by section 7, listed in B3's bullets, named in the error contract, and load-bearing in ADR-12, and section 14 never told anyone to create one. Found while starting B3. The lesson generalizes: a mechanism the spec depends on needs a handoff the moment it is decided, not the moment it is needed, or it is discovered as a blocker rather than planned as a step.
 
