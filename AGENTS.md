@@ -10,10 +10,17 @@ Parent project: the personal website, `github.com/mhshakouri/mhshakouri.dev`,
 local path `../mhshakouri`. It links to this project and describes it; it never
 hosts it. Design tokens are copied from there, never imported.
 
-**State: v1 complete 2026-08-03. Next is the B series, AI generated puzzles,
-which is B1 then B3.** There are two ways in and both work end to end: clone the
-demo from the landing page and type into the grid, or make a puzzle from a photo
-through alignment, tagging, save, and share link. See spec section 12.
+**State: v1 complete 2026-08-03. Next is the C series, voice, which is C1 then
+C2. The B series, AI generated puzzles, is postponed behind it (ADR-14).** There
+are two ways in and both work end to end: clone the demo from the landing page
+and type into the grid, or make a puzzle from a photo through alignment,
+tagging, save, and share link. See spec section 12.
+
+Voice ships push to talk first and live WebRTC second, which is the opposite of
+the obvious order. The reason is in ADR-14 and it is worth reading before
+touching it: on the network this feature exists for, WhatsApp and Telegram are
+unreachable, so a clip over the session WebSocket is the only transport that
+works. Do not reorder these two milestones without re-reading that record.
 
 **This is a public app** as of 2026-08-02 (spec v6): open to visitors with no
 credentials, linked from the playground series on mhshakouri.dev. There is no
