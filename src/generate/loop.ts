@@ -85,6 +85,12 @@ export async function generate(
 
   let proposal: LayoutProposal | null = null;
   let lastProblems: string[] = [];
+  /* Counted so the terminal state can tell "the model said nothing usable"
+     from "the model could not be reached at all". They look identical from
+     here and mean opposite things to whoever reads the message: one is a
+     theme worth changing, the other is an outage worth reporting. */
+  let attempts = 0;
+  let threw = 0;
 
   for (let attempt = 0; attempt <= maxRepairs; attempt += 1) {
     report({ step: attempt === 0 ? "words" : "clues", attempt });
@@ -92,11 +98,14 @@ export async function generate(
       proposal = proposal
         ? await provider.repair(proposal, lastProblems)
         : await provider.proposeLayout(theme, rows, cols);
+      attempts += 1;
     } catch {
       /* A provider that throws is a failed attempt, not a failed generation.
          The next iteration asks again, and running out of iterations is what
          produces a terminal state, so one flaky call cannot end a request that
          a retry would have satisfied. */
+      attempts += 1;
+      threw += 1;
       proposal = null;
       lastProblems = [];
       continue;
@@ -135,9 +144,11 @@ export async function generate(
      to filter. */
   report({ step: "packing", attempt: maxRepairs + 1 });
   let candidates: Candidate[] = [];
+  attempts += 1;
   try {
     candidates = (await provider.propose(theme, limits.maxEntries)).candidates;
   } catch {
+    threw += 1;
     candidates = [];
   }
 
@@ -148,6 +159,17 @@ export async function generate(
   /* Two words cannot cross each other into a puzzle, and one certainly cannot.
      Failing here rather than handing an unpackable list outward keeps the
      terminal state on this side, where the reason is known. */
+  /* Every single call failing is not a theme problem, and saying it was sent
+     the first real user of this feature away believing they had picked a bad
+     word when the model id was wrong. A message that blames the wrong party is
+     worse than a vague one. */
+  if (threw === attempts) {
+    return {
+      status: "failed",
+      reason: "unreachable: every call to the model failed",
+    };
+  }
+
   return {
     status: "failed",
     reason: lastProblems.length

@@ -175,8 +175,15 @@ export interface AiBinding {
 
 /* Chosen for being small and instruction-following rather than for being the
    best writer. The daily ceiling in section 7 is a function of this choice, so
-   changing the model means re-running the measurement. */
-export const GENERATION_MODEL = "@cf/meta/llama-3.1-8b-instruct";
+   changing the model means re-running the measurement.
+
+   Corrected 2026-08-04. This said `@cf/meta/llama-3.1-8b-instruct`, which is
+   not a model Workers AI serves; the real id carries an `-fp8` suffix. Every
+   call threw, the loop counted each throw as a failed attempt exactly as it
+   was designed to, and the session ended in `failed` with a message blaming
+   the theme. Written from memory instead of from `wrangler ai models list`,
+   which takes ten seconds. */
+export const GENERATION_MODEL = "@cf/meta/llama-3.1-8b-instruct-fp8";
 
 function prompt(theme: string, count: number): string {
   return [
@@ -249,12 +256,30 @@ function readEntries(raw: unknown): Entry[] {
   return out;
 }
 
-export function workersAiProvider(ai: AiBinding): Provider {
+export function workersAiProvider(ai: AiBinding, debug = false): Provider {
   const ask = async (content: string): Promise<unknown> => {
     const result = await ai.run(GENERATION_MODEL, {
       messages: [{ role: "user", content }],
     });
-    return extractJson(result?.response ?? "");
+    const raw = result?.response ?? "";
+    const parsed = extractJson(raw);
+    /* Off by default: model output is large and this is the one place that
+       would put a whole puzzle in the logs, which section 16 forbids for
+       puzzle content. On when diagnosing, because the alternative is guessing
+       what the model said. */
+    if (debug) {
+      console.log(
+        JSON.stringify({
+          at: "model",
+          chars: raw.length,
+          parsed: parsed ? "yes" : "no",
+          /* Truncated hard: enough to see the shape and whether it is JSON at
+             all, not enough to be a transcript. */
+          head: raw.slice(0, 400),
+        }),
+      );
+    }
+    return parsed;
   };
 
   return {
