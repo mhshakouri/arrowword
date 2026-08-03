@@ -85,7 +85,10 @@ export type ServerMessage =
       by: string;
     }
   | { type: "peers"; players: PeerInfo[] }
-  | { type: "error"; message: string };
+  /* `row` and `col` are present whenever the refusal is about a particular cell.
+     Without them a client that echoes a write optimistically has to guess which
+     pending write was refused, and guessing wrong reverts the wrong cell. */
+  | { type: "error"; message: string; row?: number; col?: number };
 
 export function emptyDoc(now: number): SessionDoc {
   return {

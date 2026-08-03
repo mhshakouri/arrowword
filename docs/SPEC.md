@@ -8,7 +8,7 @@ Changed 2026-08-02 (v6): this is a public playground app, linked from mhshakouri
 
 Changed 2026-08-03 (v7): AI generated crossword-style puzzles are scheduled as the B series, so this revision fills in everything the generated path needs from generation through to play. The shaping decision throughout is **smallest playable**: small grids, few entries, no auto-advance, no correctness checking, no prefilled cells, and answers that are not treated as secret. See ADR-12 and ADR-13.
 
-**Build status: A3 code complete 2026-08-03, awaiting a check on a real phone. A4, sync, is next.** The demo is playable: a visitor clones it in one click and types into the grid. A puzzle can be made end to end and shared: photo, alignment, tagging, save, link. Play rendering is A3. Deployed at `arrowword.mhshakouri.dev`. See section 12.
+**Build status: A4 code complete 2026-08-03, awaiting the two-device check. A5, polish, is next.** The demo is playable and survives a dropped connection: letters typed offline are kept and sent when it returns. A puzzle can be made end to end and shared: photo, alignment, tagging, save, link. Play rendering is A3. Deployed at `arrowword.mhshakouri.dev`. See section 12.
 
 ---
 
@@ -254,7 +254,7 @@ Added 2026-08-02: `clone`, which is the demo front door in section 5, and `DELET
 - client to server: `{ type: "set", row, col, ch }` or `{ type: "clear", row, col }`
 - server to all: `{ type: "cell", row, col, ch | null, at, by }`
 - server to all on join and leave: `{ type: "peers", players: [{ id, nickname, color }] }`
-- server to one, on a rejected write: `{ type: "error", message }`
+- server to one, on a rejected write: `{ type: "error", message, row?, col? }`
 
 Changed 2026-08-02: `peers` carries the player list instead of a bare count, and `cell` carries `by`. A socket that has not sent `hello` may read but not write, which keeps anonymous spectating possible without letting an unnamed writer produce unattributed letters.
 
@@ -273,7 +273,7 @@ The client must not have to guess. Every rejection is one of these.
 | Clone of a session with no puzzle    | HTTP 409 `puzzle not saved`            |
 | Delete of a template                 | HTTP 403 `template is protected`       |
 | Rate limit exceeded                  | HTTP 429 `slow down`                   |
-| Socket cap reached for a session     | HTTP 503 `session full`                |
+| Socket cap reached for a session     | WS `error`, `session full`, then close |
 | WS path without an Upgrade header    | HTTP 426                               |
 | Write to a non-answer cell           | WS `error`, `cell is not writable`     |
 | Write that is not one grapheme       | WS `error`, `one character per cell`   |
@@ -286,6 +286,10 @@ The client must not have to guess. Every rejection is one of these.
 | Generation gave up                   | session `status` becomes `failed`      |
 | Packed grid fails validation         | HTTP 422 naming the failing crossing   |
 | Out of range or malformed WS message | ignored silently                       |
+
+Corrected 2026-08-03 (A4): the socket cap answers with an error frame and a close, not the HTTP 503 this table used to claim. A3 changed the behavior and said the change was recorded here, and it was not, which is exactly the drift the "keep the two in sync" rule in section 4 exists to prevent and which nothing enforces for section 7.
+
+The reason for the behavior: a refused upgrade reaches a browser as an `error` event carrying no status and no body, so a full session was indistinguishable from being offline and rule 4 wants a state that says which. The object accepts the socket without tracking it, sends the frame, and closes, so refusing does not itself consume one of the ten slots.
 
 An expired session is indistinguishable from one that never existed, and deliberately so: distinguishing them would confirm that a given id was once real, which turns a 404 into an oracle.
 
@@ -307,6 +311,14 @@ Two related mistakes, both fixed:
 
 - **Cancelling inside the Durable Object does not drain the worker's request.** The worker forwards a second `Request` wrapping the same upload, so the object's copy and the incoming one are separate handles. The worker drains its own after the object answers, which is a no-op when the object already consumed it.
 - **The symptom is not local to the guilty request.** It surfaces after the response, so the log shows it next to the request that followed. Read the one before it.
+
+### Learned while building A4
+
+**A state setter called from inside another setter's updater does not reliably run.** `setPending` was called inside a `setDoc` updater, which looked correct and quietly did nothing: the letter appeared on the grid while the count of writes waiting to send stayed at zero. Both values are now derived outside any updater and set plainly, with the current document read from a ref. The symptom was a number that was always right when it did not matter and always zero when it did.
+
+**Giving up on reconnection is worse than waiting.** The first backoff stopped after five attempts and told the reader to reload the page. Two things made that show up immediately: attempts were counted in two places, a failed probe and a closed socket, so the list burned through at twice the intended rate, and a few seconds offline looked like a network that was never coming back. Counting moved to one place, and the last backoff value now repeats forever. A puzzle left open should still be there when the signal is.
+
+**A protocol change is not recorded until it is in section 7.** A3 changed the socket cap from an HTTP 503 to an error frame and its commit said the change was recorded here. It was not, and the table still promised a 503 for another milestone. Section 4 has a rule about keeping the spec and `src/types.ts` in sync and nothing enforces the same for section 7, so it is worth saying plainly: changing what the server sends means editing the table in the same commit, not intending to.
 
 ### Some checks cannot live in CI
 
@@ -446,7 +458,17 @@ The DO is single threaded, so writes serialize naturally. Last write wins per ce
 
 ### Client resilience
 
-Optimistic local echo on type, reconnect with a fresh `state` on socket drop, retry the last unacknowledged write. Acceptance for this lives in A4, not earlier.
+Optimistic local echo on type, reconnect with a fresh `state` on socket drop, retry the last unacknowledged write.
+
+Implemented in A4, with three refinements that came out of building it:
+
+**Pending writes are kept per cell, not as a queue.** Typing three letters into one cell while offline should send the third, not all three. Per cell is the useful reading of "the last unacknowledged write" when several cells are waiting.
+
+**A retry is conditional on the cell not having moved on.** An unacknowledged write is usually one that never arrived, and re-sending it is a repair. But if the cell now holds something newer from somebody else, re-sending would silently undo their work, and last-write-wins would hand it to the stale side purely because it arrived later. Last-write-wins is fine for two people typing at once; it is not a way to resolve a reconnect. The comparison uses the `at` timestamps that ADR-3 said existed for display rather than merging, which is the first time they carry weight.
+
+**Reconnection never gives up.** The backoff repeats its last value forever rather than exhausting a list. The first version stopped after five attempts and told the reader to reload, which is worse than waiting and is the one thing they cannot fix by waiting. A puzzle left open should still be there when the signal is.
+
+A write typed while disconnected survives a reconnect but not a page reload: pending writes live in memory only. Persisting them would mean writing partial state to `localStorage`, which is not asked for and is a poor trade for the case it covers.
 
 ## 8. Grid to image alignment (photo puzzles only)
 
@@ -623,13 +645,13 @@ Checks:
 - Automated, done, **and local rather than in CI**: `npm run test:template`, 15 checks. It is excluded from `npm test` because it needs Durable Object state to survive a `wrangler dev` restart, and on a GitHub runner it does not: the session returns 404 afterwards, with or without an explicit `--persist-to`, and pausing for writes to settle did not change it. Six CI attempts established that. The restart is not incidental to the check, since a template is only ever made by naming an existing session and deploying, so the check kept its shape and changed where it runs. `npm run test:all` runs everything. A session is made ordinary, proven writable, then named in configuration and the worker restarted, after which the same session refuses writes with `this puzzle is read only`, refuses deletion with 403, outlives the retention window, and clones into an ordinary session that borrows the photo, starts empty, is not itself a template, records what it came from, and is writable. Deleting that clone leaves the template's photo intact, which is invariant 6 and the failure that would take the demo down for everyone
 - Human: open the published playground link on a phone, in a browser with no history for this site, and reach a typeable grid in one click
 
-### A3 Play rendering, status: CODE COMPLETE 2026-08-03, awaiting the device check
+### A3 Play rendering, status: DONE 2026-08-03
 
 Grid over photo, four cell types visually distinct, clue zoom, Persian letters in cells.
 
 - Automated: `npm run typecheck`, `npm run format:check`, `npm run build`, and `npm test`, which is 60 checks in CI and 75 with the local template run
-- Human, outstanding and the only thing left: on a real phone, read a clue, confirm Persian letters render with the system fallback, and confirm one keypress yields one cell **on both Android and iOS**
-- Inherited from A2: open a share link in a second browser and confirm the puzzle loads. It could not be checked when A2 made the link, because nothing rendered then
+- Human, done 2026-08-03: checked on real phones, both Android and iOS. Clues readable, Persian letters render with the system fallback, and one keypress yields one cell. This is the check that mattered most, because the synchronous focus that makes the keyboard appear on iOS cannot be verified from a desktop at all
+- Inherited from A2 and done in the same pass: a share link opened in a second browser loads the puzzle
 
 **No rendering smoke test, deliberately.** A meaningful one needs a DOM, which means a new dependency, and it would be weaker than what was actually done: the grid, clue zoom, focus trap, Escape, letter entry including a two-code-point grapheme, and backspace were each driven in a real browser and their effects read back. A jsdom approximation of that is more code, one more dependency, and less evidence. The alignment math that positions every cell is unit-tested, which is the part where a regression would be silent.
 
@@ -639,14 +661,20 @@ Grid over photo, four cell types visually distinct, clue zoom, Persian letters i
 2. **Nicknames come from strangers holding the link**, and are rendered next to other people's names. They are capped and stripped on the server, they carry no markup to the page, and impersonation remains possible by design, which ADR-7 already accepted. What A3 adds is that the consequence is now visible rather than hypothetical.
 3. **The photo is rendered twice**, in the grid and again scaled inside the clue zoom. That adds no exposure the photo endpoint did not already have, and it is worth stating so that the zoom is not mistaken for a second way in.
 
-### A4 Sync, status: NEXT
+### A4 Sync, status: CODE COMPLETE 2026-08-03, awaiting the two-device check
 
 Typing syncs both ways, optimistic echo, reconnect with fresh state, retry of the last unacknowledged write.
 
-- Automated: extend the acceptance test with a socket drop and reconnect case
-- Human: the two-device test, including putting one device in airplane mode mid-solve
+- Automated: `test/acceptance.mjs` gains a socket drop and reconnect case, and 15 unit tests in `src/ui/lib/pending.test.ts` cover the part where a mistake is silent: optimistic echo, reverting to what was there before several edits, and deciding which unacknowledged writes are still safe to re-send
+- Human, outstanding: the two-device test, including putting one device in airplane mode mid-solve. Verified by hand in a browser against a worker stopped and restarted underneath it, which is the same shape and not the same thing as a phone losing signal
+- Verified while building: two letters typed with the server down arrived on it after the worker came back, with their original timestamps and the right author
 
-### A5 Polish, status: TODO
+**Security pass.** A4 adds no endpoints and one protocol field. Two things worth stating:
+
+1. **`row` and `col` on a refusal tell a client only about a write it just made**, so they leak nothing it did not already know. They exist because reverting the wrong cell is worse than not reverting.
+2. **A client can now hold writes and send them later**, which means the server sees writes with client-chosen timing but not client-chosen content: every one still goes through the same validation, still requires `hello`, and still counts against nothing the client controls. The 20-messages-per-second cap in section 7 is per socket and unchanged, so a long queue flushing on reconnect is bounded by it.
+
+### A5 Polish, status: NEXT
 
 Persian keyboard hardening, loading and empty and error states, player list, copy-link UX, expired-session state.
 
