@@ -260,6 +260,16 @@ function sanitizeTheme(raw: unknown): string {
     .join("");
 }
 
+/* A generated puzzle's title. Capitalized because it is a heading and a theme
+   arrives lowercase more often than not, and falling back to whatever the
+   document already had rather than to a constant, so this can never make a
+   title worse than it found it. */
+function titleFor(theme: string, existing: string): string {
+  const cleaned = sanitizeTheme(theme);
+  if (!cleaned) return existing;
+  return cleaned.charAt(0).toUpperCase() + cleaned.slice(1);
+}
+
 function sanitizeClue(raw: unknown): string {
   if (typeof raw !== "string") return "";
   return graphemes(raw.replace(NICKNAME_STRIP, "").replace(/\s+/g, " ").trim())
@@ -541,6 +551,20 @@ export default {
       if (!res.ok)
         return new Response("init failed", { status: 500, headers: cors });
       return json({ id }, { headers: cors });
+    }
+
+    /* `/generate` is in `run_worker_first`, so every method reaches here,
+       including the browser asking for the page. The asset handler never sees
+       it, so this hands back the shell deliberately, which is what the ASSETS
+       binding was declared for. */
+    if (
+      request.method === "GET" &&
+      parts.length === 1 &&
+      parts[0] === "generate"
+    ) {
+      return env.ASSETS.fetch(
+        new Request(new URL("/", request.url), { headers: request.headers }),
+      );
     }
 
     /* Generation. Returns at once with a session id; the work happens inside
@@ -1170,6 +1194,9 @@ export class ArrowwordSession implements DurableObject {
 
       const next = await this.save({
         ...doc,
+        /* Same reasoning as the layout path: the theme is the only name a
+           generated puzzle ever gets. */
+        title: titleFor(doc.theme ?? "", doc.title),
         rows,
         cols,
         cells,
@@ -1460,6 +1487,10 @@ export class ArrowwordSession implements DurableObject {
         const cells = cellsFrom(outcome.entries, outcome.rows, outcome.cols);
         const next = await this.save({
           ...doc,
+          /* Named for its theme. A generated puzzle has no photo to recognize
+             it by and no person to type a title, so "Untitled" would be every
+             one of them in the visitor's own list. */
+          title: titleFor(theme, doc.title),
           rows: outcome.rows,
           cols: outcome.cols,
           cells,

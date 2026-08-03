@@ -19,6 +19,9 @@ import { Board } from "../components/Board.tsx";
 import { ClueZoom } from "../components/ClueZoom.tsx";
 import { ShareLink } from "../components/ShareLink.tsx";
 import { PushToTalk } from "../components/PushToTalk.tsx";
+import { CrosswordBoard } from "../components/CrosswordBoard.tsx";
+import { ClueList } from "../components/ClueList.tsx";
+import type { Entry } from "../../types";
 
 const MAX_NICKNAME = 24;
 
@@ -30,6 +33,8 @@ export function Play({ id }: { id: string }) {
   const [clue, setClue] = useState<{ row: number; col: number } | null>(null);
   const [draftName, setDraftName] = useState("");
   const [sharing, setSharing] = useState(false);
+  /* Which clue is lit. Generated puzzles only; a photo puzzle has no entries. */
+  const [activeEntry, setActiveEntry] = useState<Entry | null>(null);
 
   const doc = session.doc;
 
@@ -78,6 +83,51 @@ export function Play({ id }: { id: string }) {
         <p class="lede">
           Fetching the photo and the letters people have typed.
         </p>
+      </main>
+    );
+  }
+
+  /* Generation is asynchronous, so a session is addressable before it has a
+     grid. Section 11 wants labeled steps rather than a spinner, because two or
+     three model calls take 10 to 30 seconds and a spinner for that long reads
+     as broken. */
+  if (doc.status === "generating") {
+    const label: Record<string, string> = {
+      words: "Thinking of words…",
+      clues: "Fixing the layout…",
+      validating: "Checking the grid…",
+      packing: "Laying it out on this device…",
+    };
+    return (
+      <main>
+        <h1>Building your puzzle</h1>
+        <p class="lede">
+          {session.progress
+            ? label[session.progress.step] || "Working…"
+            : "Getting started…"}
+        </p>
+        <p class="muted">
+          {doc.theme ? `Theme: ${doc.theme}. ` : ""}This usually takes under
+          half a minute. You can leave this page open.
+        </p>
+      </main>
+    );
+  }
+
+  /* A terminal state offering a fresh attempt, never a raw error. A retry
+     creates a new session rather than reusing this one, because `puzzleSaved`
+     is write-once and this session may already be part way through. */
+  if (doc.status === "failed" || session.failure) {
+    return (
+      <main>
+        <h1>That theme did not work out</h1>
+        <p class="lede">
+          {session.failure ??
+            "The puzzle could not be built. Some themes give the model too little to work with."}
+        </p>
+        <a class="button primary" href="/generate">
+          Try another theme
+        </a>
       </main>
     );
   }
@@ -198,29 +248,75 @@ export function Play({ id }: { id: string }) {
             </p>
           )}
 
-          <Board
-            photoSrc={photoUrl(id)}
-            alignment={doc.alignment!}
-            rows={doc.rows}
-            cols={doc.cols}
-            cells={doc.cells}
-            letters={doc.letters}
-            peers={session.peers}
-            selected={selected}
-            readOnly={false}
-            onSelect={(row, col) => setSelected({ row, col })}
-            onClue={(row, col) => setClue({ row, col })}
-            onType={(row, col, ch) => {
-              const letter = firstGrapheme(ch);
-              if (letter) session.setLetter(row, col, letter);
-            }}
-            onClear={(row, col) => session.clearLetter(row, col)}
-          />
+          {/* Invariant 11 keeps the two puzzle kinds apart, so the renderer
+              branches on `source` rather than sniffing for an alignment. */}
+          {doc.source === "generated" ? (
+            <>
+              <CrosswordBoard
+                rows={doc.rows}
+                cols={doc.cols}
+                cells={doc.cells}
+                entries={doc.entries}
+                letters={doc.letters}
+                peers={session.peers}
+                selected={selected}
+                highlighted={activeEntry}
+                onSelect={(row, col) => {
+                  setSelected({ row, col });
+                  /* Tapping a square lights whichever entry starts there, if
+                     one does, so the clue list follows the grid as well as the
+                     grid following the clue list. */
+                  const starting = doc.entries.find(
+                    (e) => e.row === row && e.col === col,
+                  );
+                  if (starting) setActiveEntry(starting);
+                }}
+                onType={(row, col, ch) => {
+                  const letter = firstGrapheme(ch);
+                  if (letter) session.setLetter(row, col, letter);
+                }}
+                onClear={(row, col) => session.clearLetter(row, col)}
+              />
+              <ClueList
+                entries={doc.entries}
+                selected={activeEntry}
+                onPick={(entry) => {
+                  setActiveEntry(entry);
+                  setSelected({ row: entry.row, col: entry.col });
+                }}
+              />
+              <p class="muted" style="margin-top:0.75rem">
+                Tap a clue to jump to its first square. Tap a square and type
+                one letter. Backspace clears it. Nothing checks your answers.
+              </p>
+            </>
+          ) : (
+            <>
+              <Board
+                photoSrc={photoUrl(id)}
+                alignment={doc.alignment!}
+                rows={doc.rows}
+                cols={doc.cols}
+                cells={doc.cells}
+                letters={doc.letters}
+                peers={session.peers}
+                selected={selected}
+                readOnly={false}
+                onSelect={(row, col) => setSelected({ row, col })}
+                onClue={(row, col) => setClue({ row, col })}
+                onType={(row, col, ch) => {
+                  const letter = firstGrapheme(ch);
+                  if (letter) session.setLetter(row, col, letter);
+                }}
+                onClear={(row, col) => session.clearLetter(row, col)}
+              />
 
-          <p class="muted" style="margin-top:0.75rem">
-            Tap an outlined cell to read its clue. Tap an empty cell and type
-            one letter. Backspace clears it.
-          </p>
+              <p class="muted" style="margin-top:0.75rem">
+                Tap an outlined cell to read its clue. Tap an empty cell and
+                type one letter. Backspace clears it.
+              </p>
+            </>
+          )}
 
           {/* The link was only offered at save time, so a solver wanting to
               bring somebody in mid-puzzle had to go and find the URL. */}
