@@ -105,8 +105,23 @@ function start(vars) {
 async function restart(vars) {
   if (worker) {
     shuttingDown = true;
+    /* Wait for the child to actually die, then for the port to actually be
+       free. A fixed sleep passed locally and failed on a CI runner with
+       "Address already in use": the process exits before the OS releases the
+       socket, and how long that takes is a property of the machine rather than
+       of anything this test controls. */
+    const dead = new Promise((resolve) => worker.once("exit", resolve));
     worker.kill("SIGTERM");
-    await sleep(1200);
+    await Promise.race([dead, sleep(10_000)]);
+    const deadline = Date.now() + 20_000;
+    while (await isUp()) {
+      if (Date.now() > deadline) {
+        console.error(`port ${PORT} never freed`);
+        process.exit(1);
+      }
+      await sleep(250);
+    }
+    worker = null;
     shuttingDown = false;
   }
   console.log(`starting worker: ${JSON.stringify(vars)}`);
