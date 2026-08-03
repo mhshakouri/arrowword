@@ -273,7 +273,7 @@ Values a coding agent would otherwise invent. All enforced server side.
 | Clones per IP                  | 30 per hour      | Generous: this is the path visitors are meant to take            |
 | Session retention              | 30 days inactive | Sliding, see self-expiry below                                   |
 | Generations per signed-in user | 2 per day        | The only endpoint that costs money per call, see below           |
-| Generations per day, all users | a fixed ceiling  | Per-user limits do not bound total spend, see below              |
+| Generations per day, all users | 30               | Per-user limits do not bound total spend, see below              |
 
 Added 2026-08-02: everything from nickname length down. Section 16 has required rate limiting since v5 and nothing implemented it, which was survivable while the app was private and is not now.
 
@@ -289,7 +289,11 @@ No new mechanism is needed. The existing `RateLimiter` Durable Object already ta
 
 **A global daily ceiling, and it is not optional.** A per-user limit bounds what one account can spend and says nothing about total spend, because signing up is free and unlimited: anyone with a Google account gets two. Total exposure is therefore two generations times however many people arrive, which is unbounded in exactly the dimension a public showcase hopes to grow. The ceiling is what makes the bill knowable.
 
-It must **fail closed**, and its failure needs a user-facing state saying the day's budget is spent rather than a generic error, per rule 4 of the Done gate. Pick the number from what a wasted day is worth, not from expected traffic.
+Set at **30 per day** on 2026-08-03, counted across everyone. That is 15 users at their full personal allowance, so the per-user limit of 2 is the binding constraint only until roughly the sixteenth person of the day; past that the global ceiling is what people meet. That is the intended shape: a quiet day costs almost nothing and a busy day costs a known maximum.
+
+It must **fail closed**, and its failure needs a user-facing state saying the day's budget is spent, with when it resets, rather than a generic error. That is rule 4 of the Done gate.
+
+**Attempts count, not successes.** A failed generation costs the same model calls as a successful one, so counting only what worked would let anyone burn the entire daily budget for free by causing failures. The counter increments when generation is attempted, including when repair fails and the deterministic packer takes over.
 
 The per-IP limits above are a starting point, not a measurement. IP is a weak key: it punishes shared NAT and is trivially rotated. It is chosen because it needs no identity, which is the whole premise of the app. Revisit with real traffic rather than in advance.
 
