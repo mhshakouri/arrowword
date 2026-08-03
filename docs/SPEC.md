@@ -852,9 +852,16 @@ Checks:
 
 #### B3 AI puzzle generation, status: IN PROGRESS, validator landed 2026-08-03
 
-**What exists:** the validator, `src/generate/validate.ts`, with 25 unit tests. That is the trust boundary and it was built first deliberately, because it is the one part of B3 that needs no key, no neurons, and no handoff, and because everything else in this milestone produces input for it.
+**What exists**, all of it pure and none of it needing a key, a neuron, or a handoff:
 
-**What remains:** the provider interface and fixtures, the browser packer, `POST /generate` with its async progress messages, Turnstile, the two rate limits, the crossword renderer, and the neuron measurement that sets the daily ceiling. Two of those are blocked on section 14 handoffs.
+- `validate.ts`, the trust boundary. Invariant 10 plus unintended adjacency, and `cellsFrom`, which derives the grid from the entries so a model never gets to propose black squares that contradict its own word placements
+- `provider.ts`, the interface, with a recorded provider and a Workers AI one. CI holds no credential
+- `fixtures.ts`, recorded model output carrying the mistakes models actually make rather than pre-cleaned input
+- `loop.ts`, the pipeline from the layout ADR: propose, validate, repair with the specific violations, then fall back to packing, then fail
+
+**What remains:** the browser packer, `POST /generate` with its async progress messages, wiring Turnstile, the two rate limits, the crossword renderer, and the neuron measurement that sets the daily ceiling. Only the last is blocked, and it is blocked on spending neurons rather than on a handoff.
+
+**Learned here, and it is a process point rather than a technical one.** The provider was first built asking the model for words only, which contradicts the layout ADR without anyone noticing, because the ADR lives in section 17 and the milestone bullets in section 12 do not repeat it. It was caught one commit later while building the loop, which is early enough to be cheap and late enough to be worth recording: **the milestone list is a summary and the ADR is the decision.** Read the record before implementing the bullet.
 
 - **First, measure.** Generate one puzzle and read its neuron cost, then set the daily ceiling from what 10,000 neurons a day actually buys. The number in section 7 is deliberately blank until then
 - Turnstile on the generate endpoint, and two generations per IP per day. No sign-in (ADR-12, amended)

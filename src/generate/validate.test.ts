@@ -9,7 +9,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { Cell, Entry } from "../types.ts";
-import { solution, validate, type Rejection } from "./validate.ts";
+import { cellsFrom, solution, validate, type Rejection } from "./validate.ts";
 
 /* `#` is an answer cell, anything else is dead. Same convention as runs.test. */
 function grid(...rows: string[]): Cell[][] {
@@ -276,6 +276,49 @@ test("solution maps every covered square to its letter", () => {
     "1,0": "O",
     "2,0": "T",
   });
+});
+
+/* ---- cellsFrom: the grid is derived, never proposed ---- */
+
+test("cellsFrom marks every cell an entry covers as an answer", () => {
+  const cells = cellsFrom(okEntries, 3, 3);
+  assert.equal(cells[0]?.[0]?.type, "answer");
+  assert.equal(cells[0]?.[2]?.type, "answer");
+  assert.equal(cells[2]?.[0]?.type, "answer");
+});
+
+test("cellsFrom marks everything else dead", () => {
+  const cells = cellsFrom(okEntries, 3, 3);
+  assert.equal(cells[1]?.[1]?.type, "dead");
+  assert.equal(cells[2]?.[2]?.type, "dead");
+});
+
+test("a derived grid validates against the entries that produced it", () => {
+  const cells = cellsFrom(okEntries, 3, 3);
+  assert.equal(validate(cells, okEntries).ok, true);
+});
+
+/* The grid must not quietly grow to fit a bad entry. If it did, an off-grid
+   proposal would become a valid puzzle of unexpected size, which is exactly the
+   fudging the ADR rejects. */
+test("cellsFrom does not grow the grid to fit an entry that overflows", () => {
+  const cells = cellsFrom([entry(1, "across", 0, 0, "CATS")], 1, 3);
+  assert.equal(cells[0]?.length, 3);
+  assert.equal(
+    validate(cells, [entry(1, "across", 0, 0, "CATS")]).ok,
+    false,
+    "an overflowing entry must still be caught",
+  );
+});
+
+test("cellsFrom ignores negative coordinates rather than throwing", () => {
+  const cells = cellsFrom([entry(1, "across", -1, -1, "CAT")], 2, 2);
+  assert.equal(cells.length, 2);
+  assert.equal(cells[0]?.[0]?.type, "dead");
+});
+
+test("a zero-sized grid is empty rather than an error", () => {
+  assert.deepEqual(cellsFrom(okEntries, 0, 0), []);
 });
 
 test("solution agrees with itself at a crossing", () => {

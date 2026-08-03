@@ -11,7 +11,83 @@
    an empty clue. If the fixtures were pre-cleaned, `clean()` would be tested
    against nothing and the first real model call would find the bugs. */
 
-import type { Proposal } from "./provider.ts";
+import type { LayoutProposal, Proposal } from "./provider.ts";
+
+/* ---- Layouts, as the model proposes them: words with coordinates ---- */
+
+const e = (
+  number: number,
+  dir: "across" | "down",
+  row: number,
+  col: number,
+  answer: string,
+  clue: string,
+) => ({ number, dir, row, col, len: answer.length, clue, answer });
+
+/* Valid. CAT/COT/TOP/TAP around a 3x3 ring, every crossing agreeing.
+
+     C A T
+     O . O
+     T A P
+*/
+export const LAYOUT_VALID: LayoutProposal = {
+  theme: "short words",
+  rows: 3,
+  cols: 3,
+  entries: [
+    e(1, "across", 0, 0, "CAT", "It ignores you deliberately"),
+    e(1, "down", 0, 0, "COT", "A small bed"),
+    e(2, "down", 0, 2, "TOP", "The highest point"),
+    e(3, "across", 2, 0, "TAP", "Water comes out of it"),
+  ],
+};
+
+/* Named in section 12: a disagreeing crossing. The down entry starts with D
+   where the across entry says C, which is the single most common way a model
+   layout fails. */
+export const LAYOUT_DISAGREES: LayoutProposal = {
+  theme: "short words",
+  rows: 3,
+  cols: 3,
+  entries: [
+    e(1, "across", 0, 0, "CAT", "It ignores you deliberately"),
+    e(1, "down", 0, 0, "DOT", "A small round mark"),
+  ],
+};
+
+/* Named in section 12: an entry running off-grid. FOUR needs four columns and
+   the model declared three. */
+export const LAYOUT_OFF_GRID: LayoutProposal = {
+  theme: "numbers",
+  rows: 3,
+  cols: 3,
+  entries: [
+    e(1, "across", 0, 0, "FOUR", "One more than three"),
+    e(1, "down", 0, 0, "FIN", "A swimmer's blade"),
+  ],
+};
+
+/* Two parallel entries with no crossing, which creates unclued runs in the
+   perpendicular direction. Reads as a grid until you try to solve it. */
+export const LAYOUT_ADJACENT: LayoutProposal = {
+  theme: "short words",
+  rows: 2,
+  cols: 3,
+  entries: [
+    e(1, "across", 0, 0, "CAT", "It ignores you deliberately"),
+    e(2, "across", 1, 0, "OAR", "You row with it"),
+  ],
+};
+
+/* One broken layout then a valid one, for the repair path. */
+export const LAYOUT_REPAIRS: LayoutProposal[] = [
+  LAYOUT_DISAGREES,
+  LAYOUT_VALID,
+];
+
+/* A model that never fixes it. `recordedProvider` repeats its last layout
+   forever, so this exercises exhausting the repairs. */
+export const LAYOUT_NEVER_VALID: LayoutProposal[] = [LAYOUT_DISAGREES];
 
 /* Clean, usable, and enough words to pack a small grid. */
 export const RIVERS: Proposal = {

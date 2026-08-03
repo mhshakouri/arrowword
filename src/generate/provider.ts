@@ -6,11 +6,15 @@
    one calls Workers AI. Both satisfy the same shape, so the generation loop
    above them never learns which it is talking to.
 
-   The model is asked for words and clues, **not for a layout.** ADR-12 decided
-   that the model proposes and a validator decides, and packing runs in the
-   browser against the word list this returns. A model asked to place words on a
-   grid produces confident nonsense that then has to be repaired; a model asked
-   for twelve words about rivers produces twelve words about rivers. */
+   The model is asked for **the whole puzzle**: words, coordinates, directions
+   and clues. ADR "The model proposes the layout, a validator decides" is
+   explicit that the layout is the interesting part, and that generating clues
+   against a deterministic grid would be reliable and unambitious. Nothing it
+   proposes is trusted, which is what makes asking for the ambitious thing safe.
+
+   `propose`, which asks for words alone, is the **fallback's** input rather than
+   the main path: step 4 of that pipeline packs the model's word list when a
+   layout cannot be repaired, so the button always works. */
 
 import type { Entry } from "../types.ts";
 
@@ -27,11 +31,38 @@ export interface Proposal {
   candidates: Candidate[];
 }
 
+/* A whole puzzle as the model proposes it: words, coordinates, directions and
+   clues. Cells are not included and are derived from the entries, which removes
+   a class of disagreement rather than validating it: a model cannot propose a
+   grid whose black squares contradict its own word placements if it never gets
+   to propose black squares.
+
+   Why coordinates rather than a rendered grid, from the ADR: a schema can
+   guarantee output is well formed and cannot guarantee it is well formed *as a
+   puzzle*. No schema expresses "the letter at 3,4 must agree between the entry
+   crossing it across and the one crossing it down". Words with coordinates are
+   mechanically checkable; a picture of a grid invites fudging. */
+export interface LayoutProposal {
+  theme: string;
+  rows: number;
+  cols: number;
+  entries: Entry[];
+}
+
 export interface Provider {
-  /* Ask for roughly `count` candidates on a theme. Returning fewer is allowed
-     and normal: the packer works with what it gets, and a theme that yields six
-     usable words makes a real puzzle. Returning more is also allowed, since
-     trimming is cheaper than a second call. */
+  /* Step 1 of the ADR pipeline: the whole puzzle at once. */
+  proposeLayout(
+    theme: string,
+    rows: number,
+    cols: number,
+  ): Promise<LayoutProposal>;
+  /* Step 3: the specific violations go back, naming cells and the letters in
+     conflict, rather than "try again". A model told what is wrong fixes it; a
+     model told it failed produces a different failure. */
+  repair(previous: LayoutProposal, problems: string[]): Promise<LayoutProposal>;
+  /* Step 4's input. Ask for roughly `count` candidates on a theme. Returning
+     fewer is allowed and normal: the packer works with what it gets, and a
+     theme that yields six usable words makes a real puzzle. */
   propose(theme: string, count: number): Promise<Proposal>;
   /* Rewrite clues for entries whose answers survived packing. Separate from
      `propose` because packing drops candidates, and a clue written for a word
@@ -94,17 +125,39 @@ export function clean(raw: Proposal): Proposal {
    and a fixture list that runs out should exercise "the model kept saying the
    same unusable thing", which is exactly the give-up path section 12 asks to be
    tested. Throwing would test a crash instead. */
-export function recordedProvider(proposals: Proposal[]): Provider & {
-  calls: number;
-} {
+export function recordedProvider(
+  proposals: Proposal[],
+  layouts: LayoutProposal[] = [],
+): Provider & { calls: number; layoutCalls: number } {
   if (!proposals.length) throw new Error("a recorded provider needs proposals");
   const provider = {
     calls: 0,
+    layoutCalls: 0,
     async propose(theme: string): Promise<Proposal> {
       const index = Math.min(provider.calls, proposals.length - 1);
       provider.calls += 1;
-      const recorded = proposals[index]!;
-      return clean({ ...recorded, theme });
+      return clean({ ...proposals[index]!, theme });
+    },
+    async proposeLayout(
+      theme: string,
+      rows: number,
+      cols: number,
+    ): Promise<LayoutProposal> {
+      if (!layouts.length) return { theme, rows, cols, entries: [] };
+      const index = Math.min(provider.layoutCalls, layouts.length - 1);
+      provider.layoutCalls += 1;
+      return { ...layouts[index]!, theme };
+    },
+    /* Repair advances the same recorded list, so a fixture list reads as "what
+       the model said on attempt one, two, three". A list that runs out repeats
+       its last entry, which is what makes "the model never fixed it" testable
+       rather than "the fixtures ran out". */
+    async repair(previous: LayoutProposal): Promise<LayoutProposal> {
+      return provider.proposeLayout(
+        previous.theme,
+        previous.rows,
+        previous.cols,
+      );
     },
   };
   return provider;

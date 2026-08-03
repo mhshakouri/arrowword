@@ -203,6 +203,43 @@ export function validate(
   return rejections.length ? { ok: false, rejections } : { ok: true };
 }
 
+/* Build the grid an entry list implies: `answer` where some entry lies, `dead`
+   everywhere else.
+
+   Derived rather than proposed, which deletes a whole class of disagreement
+   instead of validating it. A model that got to propose black squares could
+   contradict its own word placements, and then the validator would be arbitrating
+   between two things the same model said. Entries are the source of truth and
+   the grid follows.
+
+   Cells outside the declared size are silently not created, so an entry that
+   runs off-grid produces a grid too small to hold it and `validate` reports
+   `off-grid` rather than this function quietly growing the puzzle to fit. */
+export function cellsFrom(
+  entries: Entry[],
+  rows: number,
+  cols: number,
+): Cell[][] {
+  const grid: Cell[][] = Array.from({ length: Math.max(0, rows) }, () =>
+    Array.from({ length: Math.max(0, cols) }, (): Cell => ({ type: "dead" })),
+  );
+  for (const entry of entries) {
+    for (const cell of runCells({
+      dir: entry.dir,
+      row: entry.row,
+      col: entry.col,
+      len: entry.len,
+      number: entry.number,
+    })) {
+      const row = grid[cell.row];
+      if (row && cell.col >= 0 && cell.col < row.length) {
+        row[cell.col] = { type: "answer" };
+      }
+    }
+  }
+  return grid;
+}
+
 /* The letters a valid grid implies, keyed "row,col". Used by the renderer for
    nothing and by tests for everything: it is the cheapest way to assert that a
    proposal means what it claims. Answers are not secret (ADR-13), so exposing
