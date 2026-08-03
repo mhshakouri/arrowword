@@ -416,6 +416,29 @@ New WebSocket messages, server to client, for a session in `generating`:
 
 **Testing without a model.** The provider sits behind an interface, and the acceptance suite runs against recorded proposals: valid ones, ones with a disagreeing crossing, one that runs off-grid, and one that never becomes valid so the give-up path is exercised. CI holds no API key and must not. The measurement ADR-12 asks for, how often a first proposal validates and how often repair rescues it, comes from a separate script run by hand against the real model.
 
+### Configuration
+
+Every value the worker reads from its environment, in one place, because they
+accumulated one milestone at a time and a reader should not have to grep for them.
+
+| Var                  | Default     | Set where        | Why it exists                              |
+| -------------------- | ----------- | ---------------- | ------------------------------------------ |
+| `ALLOWED_ORIGINS`    | empty       | `wrangler.jsonc` | Same-origin, so it stays empty (section 2) |
+| `TEMPLATE_SESSIONS`  | empty       | `wrangler.jsonc` | Which sessions are demo templates (ADR-12) |
+| `RATE_LIMIT_SESSION` | 30 per hour | `wrangler.jsonc` | Tune without a code change                 |
+| `RATE_LIMIT_PHOTO`   | 20 per hour | `wrangler.jsonc` | Tune without a code change                 |
+| `RATE_LIMIT_CLONE`   | 60 per hour | `wrangler.jsonc` | Tune without a code change                 |
+| `RETENTION_MS`       | 30 days     | **tests only**   | Verify a 30 day rule in seconds            |
+| `MAX_PHOTO_BYTES`    | 8 MB        | **tests only**   | Verify an 8 MB cap without moving 8 MB     |
+
+The last two are deliberately absent from `wrangler.jsonc`: they exist so a test
+can drive a limit down, and a production deployment should run on the defaults. If
+one ever needs setting for real, add it to the config so the value is visible
+rather than passed on a command line.
+
+Nothing here is a secret. Secrets arrive with B2 and B3, and section 14 has their
+handoffs.
+
 ### Generation limits (ADR-12, milestones B2 and B3)
 
 Two limits, and the second exists because the first does not do what it looks like it does.
@@ -1087,9 +1110,12 @@ Consequences: `state` keeps its current shape, `{ type: "state", doc }`, which i
 
 ## 18. Open questions (non-blocking)
 
-- Crop and cache clue images versus transform on the fly: start with transform, revisit only if zoom feels slow on phones.
-- The player color palette: ten distinguishable colors that pass contrast over a photograph, taken from the site tokens where possible. Cheap to change, decide in A3.
+- Crop and cache clue images versus transform on the fly. Transform shipped in A3 and is what runs. Still open in the sense that nobody has measured it on a slow phone; revisit only if zoom feels slow.
 - Whether the demo is one puzzle or a small set. Start with one, since one good puzzle beats three rushed ones, and the clone flow does not care how many templates exist.
+
+Closed in A3:
+
+- ~~The player color palette~~: ten colors, each with a dark-mode value, in `src/ui/styles.css`. Only the accent came from the site tokens, because nine more distinguishable hues do not exist there to copy.
 
 Closed in v6:
 

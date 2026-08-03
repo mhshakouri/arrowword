@@ -8,6 +8,11 @@
     "noEmit": true,
     "skipLibCheck": true,
     "isolatedModules": true,
+    // An unused import once slipped through: a ShareLink import landed while the
+    // JSX using it did not, because a prettier rewrap made the edit miss. Nothing
+    // caught it, because nothing was looking.
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
     // Node 24 runs the unit tests with native type stripping, which needs the
     // explicit .ts extension on relative imports.
     "allowImportingTsExtensions": true
