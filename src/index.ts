@@ -96,6 +96,81 @@ function clientIp(request: Request): string {
   return forwarded?.split(",")[0]?.trim() || edge || "local";
 }
 
+const CELL_TYPES = new Set(["dead", "clue", "answer", "prefilled"]);
+const MAX_TITLE = 200;
+
+/* Cells are stored once and never change (invariant 4), so anything wrong here
+   is wrong forever. Until A2 nothing produced cells except a test, and none of
+   this was checked: an unknown type, or a whole sentence as a prefilled letter,
+   would have been accepted and then rendered to players. */
+type CellCheck = { ok: true; cells: Cell[][] } | { ok: false; problem: string };
+
+function checkCells(cells: unknown, rows: number, cols: number): CellCheck {
+  if (!Array.isArray(cells) || cells.length !== rows) {
+    return { ok: false, problem: "cells must be rows x cols" };
+  }
+  for (let row = 0; row < rows; row++) {
+    const line = cells[row];
+    if (!Array.isArray(line) || line.length !== cols) {
+      return { ok: false, problem: "cells must be rows x cols" };
+    }
+    for (let col = 0; col < cols; col++) {
+      const cell = line[col] as { type?: unknown; letter?: unknown };
+      if (!cell || typeof cell !== "object") {
+        return { ok: false, problem: `cell ${row},${col} is not an object` };
+      }
+      if (typeof cell.type !== "string" || !CELL_TYPES.has(cell.type)) {
+        return {
+          ok: false,
+          problem: `cell ${row},${col} has an unknown type`,
+        };
+      }
+      if (cell.type === "prefilled") {
+        /* One grapheme, not one code point: section 9. Same rule the WebSocket
+           write path applies to player letters. */
+        if (
+          typeof cell.letter !== "string" ||
+          graphemes(cell.letter).length !== 1
+        ) {
+          return {
+            ok: false,
+            problem: `cell ${row},${col} must have exactly one letter`,
+          };
+        }
+      } else if (cell.letter !== undefined) {
+        /* Invariant 1 in spirit: a letter on a non-prefilled cell is either a
+           mistake or an attempt to smuggle content into a cell nobody can edit. */
+        return {
+          ok: false,
+          problem: `cell ${row},${col} must not carry a letter`,
+        };
+      }
+    }
+  }
+  /* Sound because every element was just checked, field by field. The cast is
+     the narrowing TypeScript cannot derive from a loop. */
+  return { ok: true, cells: cells as Cell[][] };
+}
+
+function invalidAlignment(alignment: unknown): string | null {
+  if (!alignment || typeof alignment !== "object") return "alignment required";
+  const corners = ["topLeft", "topRight", "bottomRight", "bottomLeft"] as const;
+  const a = alignment as Record<string, { x?: unknown; y?: unknown }>;
+  for (const corner of corners) {
+    const p = a[corner];
+    if (!p || typeof p !== "object") return `alignment.${corner} is missing`;
+    for (const axis of ["x", "y"] as const) {
+      const v = p[axis];
+      /* Normalized to the image, so anything outside 0..1 is meaningless and
+         would place cells off the photo. */
+      if (typeof v !== "number" || !Number.isFinite(v) || v < 0 || v > 1) {
+        return `alignment.${corner}.${axis} must be a number from 0 to 1`;
+      }
+    }
+  }
+  return null;
+}
+
 function corsHeaders(request: Request, env: Env): Record<string, string> {
   const origin = request.headers.get("Origin") ?? "";
   const allowed = (env.ALLOWED_ORIGINS ?? "")
@@ -479,15 +554,18 @@ export class ArrowwordSession implements DurableObject {
           status: 400,
         });
       }
-      if (
-        !Array.isArray(cells) ||
-        cells.length !== rows ||
-        cells.some((r) => r.length !== cols)
-      ) {
-        return new Response("cells must be rows x cols", { status: 400 });
+      const checked = checkCells(cells, rows, cols);
+      if (!checked.ok) return new Response(checked.problem, { status: 400 });
+
+      const alignmentProblem = invalidAlignment(body.alignment);
+      if (alignmentProblem)
+        return new Response(alignmentProblem, { status: 400 });
+
+      if (typeof body.title === "string" && body.title.length > MAX_TITLE) {
+        return new Response(`title must be ${MAX_TITLE} characters or fewer`, {
+          status: 400,
+        });
       }
-      if (!body.alignment)
-        return new Response("alignment required", { status: 400 });
 
       const next = await this.save({
         ...doc,
@@ -495,7 +573,7 @@ export class ArrowwordSession implements DurableObject {
         rows,
         cols,
         alignment: body.alignment as GridAlignment,
-        cells,
+        cells: checked.cells,
         puzzleSaved: true,
       });
       this.broadcast({ type: "state", doc: next });

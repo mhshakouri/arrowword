@@ -8,7 +8,7 @@ Changed 2026-08-02 (v6): this is a public playground app, linked from mhshakouri
 
 Changed 2026-08-03 (v7): AI generated crossword-style puzzles are scheduled as the B series, so this revision fills in everything the generated path needs from generation through to play. The shaping decision throughout is **smallest playable**: small grids, few entries, no auto-advance, no correctness checking, no prefilled cells, and answers that are not treated as secret. See ADR-12 and ADR-13.
 
-**Build status: A1 complete 2026-08-03. A2 is next.** The backend is finished and deployed at `arrowword.mhshakouri.dev`. The UI has a landing page, the photo step, and the alignment editor. See section 12.
+**Build status: A2 complete 2026-08-03. A2.5 is next.** A puzzle can be made end to end and shared: photo, alignment, tagging, save, link. Play rendering is A3. Deployed at `arrowword.mhshakouri.dev`. See section 12.
 
 ---
 
@@ -452,8 +452,12 @@ This is the specialist path, not the front door. Most visitors should never reac
 1. Photo: pick or take, downscale, `POST /session` then `PUT photo`.
 2. Grid size: rows and cols, within the limits in section 7.
 3. Align: drag four corners, live overlay of computed cell lines.
-4. Tag: tap cells to cycle type; prompt for prefilled letters. Legend visible.
+4. Tag: pick a type from the legend, then tap or drag cells to apply it. Given letters are tap-only and ask for the letter.
 5. Save: `PUT puzzle`, show the share link prominently (copy button), go to play.
+
+Changed 2026-08-03 (A2): step 4 was "tap cells to cycle type". Cycling costs one tap per step and punishes overshooting, and on an 11 by 11 grid that is 121 chances to tap once too many with no way back except cycling all the way round. Picking a type and painting is the same number of taps in the common case, forgiving when you miss, and lets a run of dead cells be dragged in one gesture. Cells start as `answer`, because a Persian arrowword is mostly answer cells and defaulting the other way means tagging the entire grid by hand.
+
+Given letters are deliberately excluded from drag painting: being asked for a letter mid-gesture, once per cell, would be hostile.
 
 ## 11. Play flow
 
@@ -541,14 +545,22 @@ A1 adds no endpoints, so the server's exposure is unchanged. What changed is on 
 
 **States owed by A1 and now delivered:** rate limited, and photo too large. Both render as sentences with what to do next, and a dropped connection was added alongside them, since that is the likeliest failure on a phone and is not a status code at all.
 
-### A2 Tagging and save, status: NEXT
+### A2 Tagging and save, status: DONE 2026-08-03
 
 Tap to cycle cell type, prefilled letter prompt, save, share link with copy button.
 
-- Automated: a test that posts a tagged puzzle and reloads it through the API
-- Human: tag a real puzzle end to end, open the share link in a second browser
+- Automated: a tagged puzzle is posted and reloaded through the API with its cells and given letters intact, plus six rejection cases for the validation described below
+- Human, outstanding: tag a real puzzle end to end and open the share link in a second browser
 
-### A2.5 Demo puzzle and clone flow, status: TODO
+**Security pass.** A2 adds no endpoints, and the one thing it does add is validation that was missing.
+
+Before A2 nothing produced cells except a test, and the save path checked only the shape of the grid. It did not check cell types, so `{ "type": "banana" }` was storable; it did not check given letters, so an entire sentence could be smuggled into a cell that no player can edit; it did not check alignment values, so points outside 0 to 1 could place cells off the photo; and it ignored the 200 character title cap in section 7. Invariant 4 makes a saved puzzle permanent, so each of those would have been wrong forever. All four are now rejected with 400 and a reason naming the cell.
+
+Given letters are held to exactly one grapheme by `Intl.Segmenter`, the same rule the WebSocket write path applies to player letters, and the client applies it too so the two agree rather than merely coexisting.
+
+Worth stating for A3: a given letter is the first untrusted string this project renders. It is author-supplied rather than stranger-supplied, and it is capped at one grapheme, so it is a narrow surface. Invariant 8 still applies to it, and A3 widens that surface considerably.
+
+### A2.5 Demo puzzle and clone flow, status: NEXT
 
 The front door. Depends on A2, because building the template needs the tagging UI.
 
