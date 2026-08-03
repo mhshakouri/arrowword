@@ -771,7 +771,24 @@ export class ArrowwordSession implements DurableObject {
         return new Response("expected websocket", { status: 426 });
       }
       if (this.ctx.getWebSockets().length >= MAX_SOCKETS) {
-        return new Response("session full", { status: 503 });
+        /* Accepted and then refused, rather than declining the upgrade with a
+           503. A refused upgrade reaches the browser as an "error" event with no
+           status and no body, so the client cannot tell a full session from
+           being offline, and section 13 rule 4 wants a state that says which.
+           An error frame carries the reason.
+
+           Deliberately `server.accept()` rather than `ctx.acceptWebSocket`: this
+           socket is never tracked, so refusing does not itself consume a slot. */
+        const pair = new WebSocketPair();
+        pair[1].accept();
+        pair[1].send(
+          JSON.stringify({
+            type: "error",
+            message: "session full",
+          } satisfies ServerMessage),
+        );
+        pair[1].close(1013, "session full");
+        return new Response(null, { status: 101, webSocket: pair[0] });
       }
       const pair = new WebSocketPair();
       const client = pair[0];

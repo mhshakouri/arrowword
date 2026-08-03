@@ -145,3 +145,114 @@ input[type="text"] {
   color: var(--foreground);
   width: 100%;
 }
+
+/* Ten player colors, settled 2026-08-03 (spec section 18). They sit over a
+   photograph, so they are saturated enough to read against paper and against
+   each other, and each has a light-mode and a dark-mode value so neither
+   disappears into the background. Only the accent is taken from the site
+   tokens; nine more distinguishable hues do not exist there to copy. */
+:root {
+  --player-0: #047857;
+  --player-1: #1d4ed8;
+  --player-2: #b91c1c;
+  --player-3: #a16207;
+  --player-4: #7e22ce;
+  --player-5: #0e7490;
+  --player-6: #be185d;
+  --player-7: #4d7c0f;
+  --player-8: #c2410c;
+  --player-9: #4338ca;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --player-0: #34d399;
+    --player-1: #60a5fa;
+    --player-2: #f87171;
+    --player-3: #fbbf24;
+    --player-4: #c084fc;
+    --player-5: #22d3ee;
+    --player-6: #f472b6;
+    --player-7: #a3e635;
+    --player-8: #fb923c;
+    --player-9: #a5b4fc;
+  }
+}
+
+/* The play surface. The photo sets the height and the grid sits over it. */
+.board {
+  position: relative;
+  width: 100%;
+  touch-action: manipulation;
+}
+
+.board img {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: var(--radius);
+}
+
+/* Keystrokes are captured by one input for the whole grid. It has to be
+   effectively invisible and still a real, focusable, non-zero-sized field:
+   display:none, visibility:hidden and zero dimensions all stop a mobile keyboard
+   from appearing, and so, on some versions of iOS, does opacity exactly 0. Hence
+   a hair of opacity and a single pixel rather than none of either. */
+.capture {
+  position: absolute;
+  top: 0;
+  left: 0;
+  opacity: 0.01;
+  width: 1px;
+  height: 1px;
+  border: 0;
+  padding: 0;
+  font-size: 16px; /* Under 16px, iOS zooms the page when the field focuses. */
+  background: transparent;
+  color: transparent;
+  caret-color: transparent;
+}
+
+.peer {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.9rem;
+}
+
+.peer::before {
+  content: "";
+  width: 0.6rem;
+  height: 0.6rem;
+  border-radius: 999px;
+  background: var(--peer-color, var(--accent));
+}
+
+/* Clue zoom. A fixed viewport with the whole photo scaled inside it, clipped by
+   overflow hidden, per spec section 8. No canvas. */
+.zoom-backdrop {
+  position: fixed;
+  inset: 0;
+  background: color-mix(in srgb, var(--foreground) 70%, transparent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+  z-index: 10;
+}
+
+.zoom-frame {
+  position: relative;
+  width: min(90vw, 34rem);
+  aspect-ratio: 3 / 2;
+  overflow: hidden;
+  border-radius: var(--radius);
+  background: var(--muted);
+  border: 1px solid var(--border);
+}
+
+.zoom-frame img {
+  position: absolute;
+  transform-origin: top left;
+  max-width: none;
+}

@@ -8,7 +8,7 @@ Changed 2026-08-02 (v6): this is a public playground app, linked from mhshakouri
 
 Changed 2026-08-03 (v7): AI generated crossword-style puzzles are scheduled as the B series, so this revision fills in everything the generated path needs from generation through to play. The shaping decision throughout is **smallest playable**: small grids, few entries, no auto-advance, no correctness checking, no prefilled cells, and answers that are not treated as secret. See ADR-12 and ADR-13.
 
-**Build status: A2 and A2.5's plumbing done 2026-08-03. A3 is next, and it is what makes the demo playable.** A puzzle can be made end to end and shared: photo, alignment, tagging, save, link. Play rendering is A3. Deployed at `arrowword.mhshakouri.dev`. See section 12.
+**Build status: A3 code complete 2026-08-03, awaiting a check on a real phone. A4, sync, is next.** The demo is playable: a visitor clones it in one click and types into the grid. A puzzle can be made end to end and shared: photo, alignment, tagging, save, link. Play rendering is A3. Deployed at `arrowword.mhshakouri.dev`. See section 12.
 
 ---
 
@@ -601,11 +601,14 @@ Given letters are held to exactly one grapheme by `Intl.Segmenter`, the same rul
 
 Worth stating for A3: a given letter is the first untrusted string this project renders. It is author-supplied rather than stranger-supplied, and it is capped at one grapheme, so it is a narrow surface. Invariant 8 still applies to it, and A3 widens that surface considerably.
 
-### A2.5 Demo puzzle and clone flow, status: PLUMBING DONE 2026-08-03, playable once A3 lands
+### A2.5 Demo puzzle and clone flow, status: DONE 2026-08-03, playable since A3
 
 The front door. Depends on A2, because building the template needs the tagging UI.
 
-- Hossein photographs and tags one good puzzle, which becomes the template. **Done 2026-08-03**: 19 by 13, 247 cells, 48 clue and 189 answer and 10 dead, with a 547 KB photo, which is the first real evidence the 600 KB budget in section 16 is sized right
+- Hossein photographs and tags one good puzzle, which becomes the template. **Done 2026-08-03**: "Persian Arrowword Puzzle", 19 by 13, 247 cells, 48 clue and 189 answer and 10 dead, with a 547 KB photo, which is the first real evidence the 600 KB budget in section 16 is sized right.
+
+Remade once, because a saved puzzle is immutable and that includes its title (invariant 4). The first attempt was called "Puzzle Template #1", which is a fine working name and a poor public one, and there is no way to rename it. Worth knowing before making a template: the title is the one decision that cannot be revised afterwards. The abandoned session is no longer configured, so it is an ordinary session again and expires on the usual 30 day clock
+
 - Name it in `TEMPLATE_SESSIONS` and deploy. Done as a mechanism, see the ADR-12 amendment
 - Landing page at `/` leads with the demo. **Done**: it reads the id from `GET /config` and cloning is the click
 - Link it from the playground page in the mhshakouri.dev repo, which is a change in that repository, not this one
@@ -620,17 +623,23 @@ Checks:
 - Automated, done, **and local rather than in CI**: `npm run test:template`, 15 checks. It is excluded from `npm test` because it needs Durable Object state to survive a `wrangler dev` restart, and on a GitHub runner it does not: the session returns 404 afterwards, with or without an explicit `--persist-to`, and pausing for writes to settle did not change it. Six CI attempts established that. The restart is not incidental to the check, since a template is only ever made by naming an existing session and deploying, so the check kept its shape and changed where it runs. `npm run test:all` runs everything. A session is made ordinary, proven writable, then named in configuration and the worker restarted, after which the same session refuses writes with `this puzzle is read only`, refuses deletion with 403, outlives the retention window, and clones into an ordinary session that borrows the photo, starts empty, is not itself a template, records what it came from, and is writable. Deleting that clone leaves the template's photo intact, which is invariant 6 and the failure that would take the demo down for everyone
 - Human: open the published playground link on a phone, in a browser with no history for this site, and reach a typeable grid in one click
 
-### A3 Play rendering, status: NEXT
-
-Inherited from A2: open a share link in a second browser and confirm the puzzle
-loads. It could not be checked when A2 made the link, because nothing rendered.
+### A3 Play rendering, status: CODE COMPLETE 2026-08-03, awaiting the device check
 
 Grid over photo, four cell types visually distinct, clue zoom, Persian letters in cells.
 
-- Automated: build, lint, typecheck; a rendering smoke test
-- Human: read clues on a phone, confirm Persian letters render with the fallback font, confirm one keypress yields one cell on real Android and real iOS
+- Automated: `npm run typecheck`, `npm run format:check`, `npm run build`, and `npm test`, which is 60 checks in CI and 75 with the local template run
+- Human, outstanding and the only thing left: on a real phone, read a clue, confirm Persian letters render with the system fallback, and confirm one keypress yields one cell **on both Android and iOS**
+- Inherited from A2: open a share link in a second browser and confirm the puzzle loads. It could not be checked when A2 made the link, because nothing rendered then
 
-### A4 Sync, status: TODO
+**No rendering smoke test, deliberately.** A meaningful one needs a DOM, which means a new dependency, and it would be weaker than what was actually done: the grid, clue zoom, focus trap, Escape, letter entry including a two-code-point grapheme, and backspace were each driven in a real browser and their effects read back. A jsdom approximation of that is more code, one more dependency, and less evidence. The alignment math that positions every cell is unit-tested, which is the part where a regression would be silent.
+
+**Security pass.** A3 is the first milestone to render text this app did not write, so invariant 8 stops being theoretical. Three things came out of writing it down:
+
+1. **Every untrusted string reaches the page as a text node**, verified by grepping the source and the built bundle rather than by inspection. There is no `innerHTML`, no `dangerouslySetInnerHTML`, and no `insertAdjacentHTML` anywhere in `src/ui`. The one `innerHTML` in the bundle is Preact's internal branch for a prop this project never passes.
+2. **Nicknames come from strangers holding the link**, and are rendered next to other people's names. They are capped and stripped on the server, they carry no markup to the page, and impersonation remains possible by design, which ADR-7 already accepted. What A3 adds is that the consequence is now visible rather than hypothetical.
+3. **The photo is rendered twice**, in the grid and again scaled inside the clue zoom. That adds no exposure the photo endpoint did not already have, and it is worth stating so that the zoom is not mistaken for a second way in.
+
+### A4 Sync, status: NEXT
 
 Typing syncs both ways, optimistic echo, reconnect with fresh state, retry of the last unacknowledged write.
 
@@ -714,16 +723,13 @@ Amended 2026-08-03. Rule 2 without that exception said: deploy A0, whose photo s
 3. **Security pass written down:** what can a stranger holding the session link do to anything added in this milestone? See section 16.
 4. Every new failure mode has a user-facing state, not only an API status code. **Exception for a server-only milestone:** when no surface exists yet to show a state in, list each new failure mode against the milestone that owes it a screen. The exception is the list. Without one this becomes a way to never write error states at all, which is exactly the outcome the rule exists to prevent.
 
-Amended 2026-08-03. A0.5 added six failure modes and could not satisfy rule 4 on any of them, because it shipped no UI at all. Two were paid off by A1, leaving four. The rule was right and its literal application was impossible, the same shape of problem as Ready rule 2. States currently owed:
+Amended 2026-08-03. A0.5 added six failure modes and could not satisfy rule 4 on any of them, because it shipped no UI at all. The rule was right and its literal application impossible, the same shape of problem as Ready rule 2.
 
-| Failure mode                 | API today                     | Owed by |
-| ---------------------------- | ----------------------------- | ------- |
-| Session expired or deleted   | HTTP 404                      | A3      |
-| Session full                 | HTTP 503 `session full`       | A3      |
-| Write before choosing a name | WS `pick a nickname first`    | A3      |
-| Template is read only        | WS `this puzzle is read only` | A3      |
+**Cleared 2026-08-03.** All six are paid off: rate limited and photo too large by A1, and by A3 a session that is gone, a session that is full, a write before choosing a name, and a template that is read only. The list is kept rather than deleted, because the exception is the list and an empty one is the evidence that it worked.
 
-A milestone in that table cannot pass its own rule 4 while leaving its row unaddressed. 5. The status marker in section 12 is updated, in the same commit as the work. 6. Anything learned the hard way is written into this spec, in the same commit. 7. The repo check suite passes: `npm run typecheck`, `npm run format:check`, `npm test`. These are the three CI runs in `.github/workflows/ci.yml`; keep this list and that file in sync.
+Two of the six are worth noting for how they were delivered. "Write before choosing a name" is _prevented_ rather than reported: the play screen asks for a name before it will show a grid, so the server's refusal is a backstop for a client that skipped the question rather than something a person ever sees. And "session full" needed a change on the server before it could be shown at all, recorded in section 7, because a refused upgrade carries neither a status nor a body to the browser.
+
+A milestone adding a failure mode still owes it a state, and still lists it here until it has one. 5. The status marker in section 12 is updated, in the same commit as the work. 6. Anything learned the hard way is written into this spec, in the same commit. 7. The repo check suite passes: `npm run typecheck`, `npm run format:check`, `npm test`. These are the three CI runs in `.github/workflows/ci.yml`; keep this list and that file in sync.
 
 Corrected 2026-08-02: this list previously named `lint`, `arrowword:typecheck`, and `build`, none of which exist as scripts in this repository. They were inherited from the monorepo layout and survived the 2026-07-31 split unnoticed, which meant the gate had been citing commands that would have failed if anyone ran them. A gate nobody can execute is not a gate.
 

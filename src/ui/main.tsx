@@ -6,6 +6,7 @@ import "./styles.css";
 import { useRoute } from "./lib/router.ts";
 import { Landing } from "./routes/Landing.tsx";
 import { New } from "./routes/New.tsx";
+import { Play } from "./routes/Play.tsx";
 
 function App() {
   const route = useRoute();
@@ -15,19 +16,7 @@ function App() {
     case "new":
       return <New />;
     case "play":
-      /* A3 builds this. Until then the route resolves rather than 404s, so a
-         share link is not broken while the play screen is unbuilt. */
-      return (
-        <main>
-          <h1>Not built yet</h1>
-          <p class="lede">
-            The play screen arrives with milestone A3. This link will work then.
-          </p>
-          <a class="button" href="/">
-            Back
-          </a>
-        </main>
-      );
+      return <Play id={route.id} />;
     default:
       return (
         <main>
