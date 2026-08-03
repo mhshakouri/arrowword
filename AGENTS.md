@@ -51,8 +51,8 @@ limits are load-bearing rather than nice to have.
 - `npm run dev:ui` - Vite with hot reload, proxying the API to :8787. Run both
 - `npm run build` - the UI into `dist/`, which the worker serves as assets
 - `npm run typecheck` - two configs: the worker has no DOM, the UI has no Workers
-- `npm test` - the CI suite: unit, acceptance, photo cap, expiry. 167 checks
-- `npm run test:all` - the above plus the template run. 182 checks
+- `npm test` - the CI suite: unit, acceptance, photo cap, expiry, generation. 288 checks
+- `npm run test:all` - the above plus the template run. 303 checks
 - `npm run deploy` - deploy by hand. Normally a merge to `main` does it
 - `npm run format` / `format:check` - Prettier
 
@@ -63,6 +63,8 @@ worker configured differently:
 - `test:acceptance` - the main suite, default configuration
 - `test:photo` - a 2 KB photo cap, so the limit is testable without moving 8 MB
 - `test:expiry` - a 3 second retention window, so expiry is observable
+- `test:generate` - a Turnstile test secret and recorded fixtures, so generation
+  runs with no key and spends no neurons. Restarts its worker per scenario
 - `test:template` - **local only, excluded from `npm test`.** Needs Durable Object
   state to survive a worker restart, which a GitHub runner does not manage. See
   spec section 7

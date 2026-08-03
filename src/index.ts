@@ -1,10 +1,19 @@
 /// <reference types="@cloudflare/workers-types" />
 
+import { generate } from "./generate/loop";
+import {
+  recordedProvider,
+  workersAiProvider,
+  type Provider,
+} from "./generate/provider";
+import * as fixtures from "./generate/fixtures";
+import { cellsFrom, validate } from "./generate/validate";
 import {
   emptyDoc,
   migrate,
   type Cell,
   type ClientMessage,
+  type Entry,
   type GridAlignment,
   type LetterValue,
   type PeerInfo,
@@ -42,6 +51,24 @@ export interface Env {
   RATE_LIMIT_SESSION?: string;
   RATE_LIMIT_PHOTO?: string;
   RATE_LIMIT_CLONE?: string;
+  /* Turnstile, B3. The site key is public and lives in `vars`; this is its
+     partner and is set with `wrangler secret put`. Absent means generation
+     refuses rather than runs unguarded: failing closed is the only safe
+     direction for a check whose whole job is to stop scripts. */
+  TURNSTILE_SECRET?: string;
+  TURNSTILE_SITE_KEY?: string;
+  /* Workers AI. Absent in tests, which use recorded fixtures instead. */
+  AI?: import("./generate/provider").AiBinding;
+  /* Generations per day across all callers. Section 7 calls this a measurement
+     rather than a decision and leaves it deliberately provisional until one
+     puzzle has been generated and its neuron cost read. */
+  GENERATION_DAILY_LIMIT?: string;
+  RATE_LIMIT_GENERATE?: string;
+  /* Test only, and absent from wrangler.jsonc on purpose, exactly like
+     RETENTION_MS and MAX_PHOTO_BYTES. Names a recorded fixture set so the
+     acceptance suite can drive generation without an API key and without
+     spending a neuron. */
+  GENERATION_FIXTURES?: string;
 }
 
 const SESSION_ID = /^[0-9a-f]{32}$/;
@@ -107,6 +134,27 @@ const RATE_LIMIT_DEFAULTS = {
 } as const;
 
 const RATE_WINDOW_MS = 3_600_000;
+const DAY_MS = 86_400_000;
+
+/* Section 7. Two generations per IP per day, plus Turnstile, because IP alone
+   is a weak key: shared NAT punishes the innocent and rotation defeats it. It
+   is not trying to stop a determined attacker, it stops accidents and casual
+   repetition, which is most of what happens. */
+const GENERATE_PER_IP_PER_DAY = 2;
+
+/* **Provisional, not measured.** Section 7 says the real ceiling comes from
+   reading one generation's neuron cost against the 10,000 a day Workers AI
+   allows, and that it might be five a day or five hundred. This number is the
+   old invented one, kept only so the mechanism is exercised and the failure
+   mode is real; the measurement replaces it. Attempts count rather than
+   successes, since a failed generation spends the same neurons. */
+const GENERATE_PER_DAY = 30;
+
+/* Theme is user input travelling into a prompt, so it is length-capped and
+   treated as data. Prompt injection here buys a strange puzzle rather than
+   access to anything, which is why a cap is proportionate and nothing heavier
+   is needed. Sanitized on the way back out like any displayed string. */
+const MAX_THEME = 60;
 
 function rateLimit(env: Env, action: keyof typeof RATE_LIMIT_DEFAULTS): number {
   const override = Number(
@@ -121,12 +169,53 @@ function rateLimit(env: Env, action: keyof typeof RATE_LIMIT_DEFAULTS): number {
     : RATE_LIMIT_DEFAULTS[action];
 }
 
+/* Turnstile, server side. The token the widget produced is exchanged with
+   Cloudflare for a yes or no; the token is single use, so a replayed one is
+   refused by Cloudflare rather than by us.
+
+   Fails closed in every direction that is not an explicit success: no secret
+   configured, no token supplied, a network error, a malformed answer. A bot
+   check that opens on failure is decoration. */
+async function passedTurnstile(
+  env: Env,
+  token: unknown,
+  ip: string,
+): Promise<boolean> {
+  if (!env.TURNSTILE_SECRET) return false;
+  if (typeof token !== "string" || !token) return false;
+  try {
+    const body = new FormData();
+    body.append("secret", env.TURNSTILE_SECRET);
+    body.append("response", token);
+    /* Cloudflare uses this to spot a token minted for one visitor and replayed
+       by another. Loopback under `wrangler dev` is not a real address, so it is
+       omitted rather than sent as 127.0.0.1. */
+    if (ip && !isLoopback(ip)) body.append("remoteip", ip);
+    const res = await fetch(
+      "https://challenges.cloudflare.com/turnstile/v0/siteverify",
+      { method: "POST", body },
+    );
+    const out = (await res.json()) as { success?: boolean };
+    return out.success === true;
+  } catch {
+    return false;
+  }
+}
+
 /* Paths a client may reach on a session object. Anything else is internal and
    must not be forwarded, because the worker routes /session/:id/<rest> straight
    through: without this allowlist, `POST /session/:id/init` would let a caller
    create a session at an id of their choosing and skip the rate limit on
    POST /session entirely. */
-const PUBLIC_SESSION_PATHS = new Set(["photo", "puzzle", "ws", "clone"]);
+const PUBLIC_SESSION_PATHS = new Set([
+  "photo",
+  "puzzle",
+  "ws",
+  "clone",
+  /* B3. The client packs and the server validates, so this carries untrusted
+     input exactly like a photo does. */
+  "packed",
+]);
 
 /* The cell a client message is about, when it is about one and says so
    plausibly. Used for refusals that happen before the coordinates have been
@@ -159,6 +248,42 @@ function isVisibleGrapheme(value: string): boolean {
    deliberately kept: both are format characters, and ZWNJ is load-bearing in
    Persian, so a blanket \p{Cf} strip would mangle real names. */
 const NICKNAME_STRIP = /[\p{Cc}\u202A-\u202E\u2066-\u2069]/gu;
+
+/* Theme and clue are the second and third untrusted strings this app renders to
+   people, after nicknames, and one of them is model output rather than human
+   input. Invariant 8 is deliberately broad about text for exactly this reason:
+   anything displayed is sanitized on write and rendered as text. */
+function sanitizeTheme(raw: unknown): string {
+  if (typeof raw !== "string") return "";
+  return graphemes(raw.replace(NICKNAME_STRIP, "").trim())
+    .slice(0, MAX_THEME)
+    .join("");
+}
+
+function sanitizeClue(raw: unknown): string {
+  if (typeof raw !== "string") return "";
+  return graphemes(raw.replace(NICKNAME_STRIP, "").replace(/\s+/g, " ").trim())
+    .slice(0, 120)
+    .join("");
+}
+
+/* Which model the object talks to. A fixture set named in the environment wins,
+   which is how the acceptance suite drives generation with no API key and no
+   neurons; section 7 lists this alongside RETENTION_MS and MAX_PHOTO_BYTES as
+   test-only and absent from wrangler.jsonc on purpose. */
+function providerFor(env: Env): Provider {
+  const named = env.GENERATION_FIXTURES;
+  if (named) {
+    const set = (fixtures as Record<string, unknown>)[named];
+    const layouts = (fixtures as Record<string, unknown>)[`${named}_LAYOUTS`];
+    return recordedProvider(
+      (Array.isArray(set) ? set : [set]) as never,
+      (Array.isArray(layouts) ? layouts : layouts ? [layouts] : []) as never,
+    );
+  }
+  if (!env.AI) throw new Error("no generation provider configured");
+  return workersAiProvider(env.AI);
+}
 
 function sanitizeNickname(raw: unknown): string {
   if (typeof raw !== "string") return "";
@@ -345,6 +470,52 @@ async function allow(
   return res.ok;
 }
 
+function take(
+  env: Env,
+  key: string,
+  bucket: string,
+  limit: number,
+  windowMs: number,
+): Promise<Response> {
+  const stub = env.RATE_LIMITER.get(env.RATE_LIMITER.idFromName(key));
+  return stub.fetch(
+    `https://do/take?bucket=${encodeURIComponent(bucket)}&limit=${limit}&window=${windowMs}`,
+    { method: "POST" },
+  );
+}
+
+/* Two generations per address per day. A day rather than an hour because the
+   thing being rationed refills daily, so an hourly window would let one address
+   take twenty-four times its share of a pool that does not refill that fast. */
+async function allowGenerate(env: Env, request: Request): Promise<boolean> {
+  const override = Number(env.RATE_LIMIT_GENERATE);
+  const limit =
+    Number.isInteger(override) && override > 0
+      ? override
+      : GENERATE_PER_IP_PER_DAY;
+  const res = await take(
+    env,
+    `ip:${clientIp(request)}`,
+    "generate",
+    limit,
+    DAY_MS,
+  );
+  return res.ok;
+}
+
+/* The global pool. One shared counter, keyed by nothing, because the resource
+   it protects is shared by everyone: 10,000 neurons a day is a single
+   allocation and the failure it prevents is one caller draining the day for
+   every visitor after them. Section 7 calls that a denial of service against
+   the showcase and worse than a bill, because it cannot be refunded. */
+async function allowGlobal(env: Env): Promise<boolean> {
+  const override = Number(env.GENERATION_DAILY_LIMIT);
+  const limit =
+    Number.isInteger(override) && override > 0 ? override : GENERATE_PER_DAY;
+  const res = await take(env, "global", "generate-all", limit, DAY_MS);
+  return res.ok;
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const cors = corsHeaders(request, env);
@@ -372,6 +543,77 @@ export default {
       return json({ id }, { headers: cors });
     }
 
+    /* Generation. Returns at once with a session id; the work happens inside
+       the object and reports over the socket that session already has. Section
+       7: a request held open for the 10 to 30 seconds two or three model calls
+       take is fragile on a phone and gives the client nothing to render. */
+    if (
+      request.method === "POST" &&
+      parts.length === 1 &&
+      parts[0] === "generate"
+    ) {
+      const body = (await request.json().catch(() => ({}))) as {
+        theme?: unknown;
+        token?: unknown;
+      };
+
+      /* Turnstile before the rate limit, deliberately. The limit is the scarce
+         resource here: letting a script spend one of an address's two daily
+         attempts just by failing a challenge would turn the bot check into a
+         way to lock people out. */
+      const ip = clientIp(request);
+      if (!(await passedTurnstile(env, body.token, ip))) {
+        return new Response("are you a person?", {
+          status: 403,
+          headers: cors,
+        });
+      }
+      if (!(await allowGenerate(env, request))) {
+        return new Response("daily limit reached", {
+          status: 429,
+          headers: cors,
+        });
+      }
+      /* The global pool, which is the one that fails closed. Attempts count
+         rather than successes: a failed generation spends the same neurons. */
+      if (!(await allowGlobal(env))) {
+        return new Response("out of budget for today", {
+          status: 429,
+          headers: cors,
+        });
+      }
+
+      const theme = String(body.theme ?? "")
+        .replace(NICKNAME_STRIP, "")
+        .trim()
+        .slice(0, MAX_THEME);
+      if (!theme) {
+        return new Response("a theme is required", {
+          status: 400,
+          headers: cors,
+        });
+      }
+
+      const id = newSessionId();
+      const stub = sessionStub(env, id);
+      const started = await stub.fetch("https://do/init", { method: "POST" });
+      if (!started.ok) {
+        return new Response("init failed", { status: 500, headers: cors });
+      }
+      /* The object answers as soon as it has marked itself generating, and
+         keeps working after. The id is what the client needs to open a socket
+         and start watching. */
+      const go = await stub.fetch("https://do/generate", {
+        method: "POST",
+        body: JSON.stringify({ theme }),
+        headers: { "Content-Type": "application/json" },
+      });
+      if (!go.ok) {
+        return new Response("could not start", { status: 500, headers: cors });
+      }
+      return json({ id, theme }, { headers: cors });
+    }
+
     /* What the UI needs to know that only the deploy knows. Kept to exactly
        that: it is public, cached briefly, and must never grow into a place where
        anything sensitive is convenient to put. */
@@ -385,7 +627,12 @@ export default {
         .map((id) => id.trim())
         .filter((id) => SESSION_ID.test(id))[0];
       return json(
-        { demoSessionId: demo ?? null },
+        {
+          demoSessionId: demo ?? null,
+          /* Public by design: the widget cannot render without it. Its partner
+             is a secret and never leaves the worker. */
+          turnstileSiteKey: env.TURNSTILE_SITE_KEY ?? null,
+        },
         {
           headers: {
             ...cors,
@@ -862,6 +1109,81 @@ export class ArrowwordSession implements DurableObject {
       return json({ ok: true, photoKey: key });
     }
 
+    /* Generation. Marks the session and answers immediately, then keeps
+       working: `waitUntil` is what stops the object being collected between the
+       response and the model coming back. */
+    if (path === "generate" && request.method === "POST") {
+      if (doc.puzzleSaved) {
+        return new Response("puzzle already saved", { status: 409 });
+      }
+      const body = (await request.json().catch(() => ({}))) as {
+        theme?: unknown;
+      };
+      const theme = sanitizeTheme(body.theme);
+      if (!theme) return new Response("a theme is required", { status: 400 });
+
+      await this.save(
+        {
+          ...doc,
+          source: "generated",
+          lang: "en",
+          status: "generating",
+          theme,
+        },
+        false,
+      );
+      this.ctx.waitUntil(this.runGeneration(theme));
+      return json({ ok: true });
+    }
+
+    /* The client packed a grid. Untrusted input exactly like a photo: the whole
+       point of moving the search outward was to move the CPU, not the trust. */
+    if (path === "packed" && request.method === "PUT") {
+      if (doc.puzzleSaved) {
+        return new Response("puzzle already saved", { status: 409 });
+      }
+      const body = (await request.json().catch(() => ({}))) as {
+        rows?: unknown;
+        cols?: unknown;
+        entries?: unknown;
+      };
+      const rows = Number(body.rows);
+      const cols = Number(body.cols);
+      const entries = Array.isArray(body.entries)
+        ? (body.entries as Entry[])
+        : [];
+      if (!Number.isInteger(rows) || !Number.isInteger(cols)) {
+        return new Response("rows and cols are required", { status: 400 });
+      }
+
+      const cells = cellsFrom(entries, rows, cols);
+      const checked = validate(cells, entries);
+      if (!checked.ok) {
+        /* 422 naming the failing rule, per the error contract. The validator's
+           own detail strings, because they name cells and letters and a client
+           that gets "invalid" learns nothing it can act on. */
+        return json(
+          { error: "grid did not validate", problems: checked.rejections },
+          { status: 422 },
+        );
+      }
+
+      const next = await this.save({
+        ...doc,
+        rows,
+        cols,
+        cells,
+        entries: entries.map((e) => ({ ...e, clue: sanitizeClue(e.clue) })),
+        puzzleSaved: true,
+        status: "playable",
+      });
+      /* The request is answered, so it must not be replayed to the next socket
+         that connects. */
+      await this.ctx.storage.delete("pendingPack");
+      this.broadcast({ type: "generated", doc: next });
+      return json({ ok: true });
+    }
+
     if (path === "photo" && request.method === "GET") {
       if (!doc.photoKey) return new Response("no photo yet", { status: 404 });
       const object = await this.env.PHOTOS.get(doc.photoKey);
@@ -907,6 +1229,25 @@ export class ArrowwordSession implements DurableObject {
       server.send(
         JSON.stringify({ type: "state", doc } satisfies ServerMessage),
       );
+      /* A generation that finished before anyone was listening left its request
+         in storage rather than only on the wire. Replayed here so a client that
+         arrives late is asked to pack exactly as one that was already
+         connected would have been. */
+      if (doc.status === "generating") {
+        const pending = await this.ctx.storage.get<{
+          candidates: Array<{ answer: string; clue: string }>;
+          rows: number;
+          cols: number;
+        }>("pendingPack");
+        if (pending) {
+          server.send(
+            JSON.stringify({
+              type: "pack",
+              ...pending,
+            } satisfies ServerMessage),
+          );
+        }
+      }
       /* No peers broadcast yet: this socket has no identity until it says
          hello, and an unnamed socket has nothing to announce. */
       return new Response(null, { status: 101, webSocket: client });
@@ -1091,6 +1432,80 @@ export class ArrowwordSession implements DurableObject {
       at,
       by,
     });
+  }
+
+  /* The generation run, detached from the request that started it. Everything
+     it reports goes over the session's existing socket, so a client that
+     connects late still gets the terminal state from the document.
+
+     Never throws. A generation that fails is a session in `failed`, which is a
+     user-facing state offering a fresh attempt, not an unhandled rejection in a
+     detached promise where nobody would ever see it. */
+  private async runGeneration(theme: string): Promise<void> {
+    try {
+      const provider = providerFor(this.env);
+      const outcome = await generate(provider, theme, {
+        onProgress: (p) =>
+          this.broadcast({
+            type: "progress",
+            step: p.step,
+            attempt: p.attempt,
+          }),
+      });
+
+      const doc = await this.doc();
+      if (!doc) return;
+
+      if (outcome.status === "playable") {
+        const cells = cellsFrom(outcome.entries, outcome.rows, outcome.cols);
+        const next = await this.save({
+          ...doc,
+          rows: outcome.rows,
+          cols: outcome.cols,
+          cells,
+          entries: outcome.entries.map((e) => ({
+            ...e,
+            clue: sanitizeClue(e.clue),
+          })),
+          puzzleSaved: true,
+          status: "playable",
+        });
+        this.broadcast({ type: "generated", doc: next });
+        return;
+      }
+
+      if (outcome.status === "pack") {
+        /* Handed outward rather than done here: Workers Free allows 10 ms of
+           CPU per request and search does not fit.
+
+           Stored before it is broadcast, and that ordering is the whole point.
+           Generation finishes whenever it finishes, and the client that asked
+           for it is still navigating to the session when it does. A broadcast
+           alone reaches whoever happens to be connected, which on a fast
+           generation is nobody, and the session would then sit in `generating`
+           holding a word list no one was ever told about until it expired.
+           Storing it means any socket that connects afterwards is handed the
+           same request. */
+        const pending = {
+          candidates: outcome.candidates,
+          rows: outcome.rows,
+          cols: outcome.cols,
+        };
+        await this.ctx.storage.put("pendingPack", pending);
+        this.broadcast({ type: "pack", ...pending });
+        return;
+      }
+
+      await this.save({ ...doc, status: "failed" }, false);
+      this.broadcast({ type: "failed", reason: outcome.reason });
+    } catch {
+      const doc = await this.doc();
+      if (doc) await this.save({ ...doc, status: "failed" }, false);
+      this.broadcast({
+        type: "failed",
+        reason: "generation stopped unexpectedly",
+      });
+    }
   }
 
   async webSocketClose(ws: WebSocket): Promise<void> {

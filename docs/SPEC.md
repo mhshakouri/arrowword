@@ -860,7 +860,17 @@ Checks:
 - `loop.ts`, the pipeline from the layout ADR: propose, validate, repair with the specific violations, then fall back to packing, then fail
 - `pack.ts`, the deterministic packer, which is the floor under generation. Greedy with restarts rather than full backtracking, bounded by a **step budget rather than a timer**, because a step count behaves identically on a fast laptop and a slow phone whereas a timeout silently produces worse puzzles on worse hardware. It validates its own output and returns nothing rather than shipping a grid the server would refuse
 
-**What remains:** `POST /generate` with its async progress messages, wiring Turnstile, the two rate limits, the crossword renderer, and the neuron measurement that sets the daily ceiling. Only the last is blocked, and it is blocked on spending neurons rather than on a handoff.
+- `POST /generate` and `PUT /session/:id/packed` in the worker, with Turnstile, both rate limits, and the async progress messages. Its own acceptance run, `npm run test:generate`, 28 checks, which needs a worker configured with a Turnstile test secret and a fixture set and so cannot share the default one
+
+**What remains:** the crossword renderer, and the neuron measurement that sets the daily ceiling. Only the second is blocked, and on spending neurons rather than on a handoff.
+
+**Learned wiring the endpoint, and it is the kind of bug that only appears in production.** Generation finishes whenever it finishes, and the client that asked for it is still navigating to the session when it does. Broadcasting the fallback's word list reached whoever happened to be connected, which on a fast generation is nobody, and the session then sat in `generating` holding a request no one was ever told about until it expired thirty days later. The fix is to store the request before broadcasting it and replay it to any socket that connects while the session is still generating. Found by an acceptance test that connected too late, which is exactly what a real browser does.
+
+**Adding the Workers AI binding broke every test run, and the fix is a flag.** Workers AI has no local emulation, so declaring `ai` in `wrangler.jsonc` makes `wrangler dev` open a remote connection for it, which needs `CLOUDFLARE_API_TOKEN`. CI has none and **must** have none: ADR-11 says Actions never holds Cloudflare credentials, and the obvious fix of adding a token to the repository secrets would have quietly undone that decision to make a test pass.
+
+Every test now spawns `wrangler dev --local`, which disables remote bindings. The binding is still declared, production still gets it, and CI still holds nothing. Worth knowing before adding the next binding that has no local emulation: the failure appears as an authentication error from wrangler rather than as anything to do with the feature, and the temptation is to fix it in the wrong place.
+
+Generalized: **a broadcast is not delivery.** Anything a session needs a client to act on has to survive the moment nobody is listening, and this app has three such moments now, the others being a reconnect after a drop and a voice room rejoin.
 
 **Learned here, and it is a process point rather than a technical one.** The provider was first built asking the model for words only, which contradicts the layout ADR without anyone noticing, because the ADR lives in section 17 and the milestone bullets in section 12 do not repeat it. It was caught one commit later while building the loop, which is early enough to be cheap and late enough to be worth recording: **the milestone list is a summary and the ADR is the decision.** Read the record before implementing the bullet.
 

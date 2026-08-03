@@ -37,6 +37,7 @@ const worker = spawn(
   [
     "wrangler",
     "dev",
+    "--local",
     "--port",
     String(PORT),
     "--var",

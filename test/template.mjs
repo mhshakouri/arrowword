@@ -70,6 +70,7 @@ async function startWorker(vars) {
   const args = [
     "wrangler",
     "dev",
+    "--local",
     "--port",
     String(PORT),
     "--persist-to",

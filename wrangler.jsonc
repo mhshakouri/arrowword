@@ -11,6 +11,10 @@
       { "name": "RATE_LIMITER", "class_name": "RateLimiter" },
     ],
   },
+  // Workers AI, B3. No key, no account setup, no spend cap: the free
+  // allocation fails with errors rather than charging, which is what ADR-12
+  // rests on and section 16 records having checked.
+  "ai": { "binding": "AI" },
   "migrations": [
     // SQLite-backed Durable Objects, required for the storage API used here.
     { "tag": "v1", "new_sqlite_classes": ["ArrowwordSession"] },

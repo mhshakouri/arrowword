@@ -165,3 +165,23 @@ export const NEVER_VALID: Proposal[] = [UNUSABLE, UNUSABLE];
 
 /* One bad attempt then a good one, for the repair and retry path. */
 export const RECOVERS: Proposal[] = [UNUSABLE, RIVERS];
+
+/* ---- Named sets the acceptance suite selects with GENERATION_FIXTURES ----
+
+   The suffix convention is what `providerFor` in the worker looks for: a set
+   named FOO supplies word lists and FOO_LAYOUTS supplies layouts. Named rather
+   than passed as JSON so a test selects a scenario by intent, and so a typo
+   fails loudly at the first call rather than quietly generating something
+   else. */
+
+/* The model lays out a valid puzzle first time. */
+export const GOOD: Proposal[] = [RIVERS];
+export const GOOD_LAYOUTS: LayoutProposal[] = [LAYOUT_VALID];
+
+/* The model cannot lay one out, so the client is asked to pack instead. */
+export const FALLBACK: Proposal[] = [CROSSING_RICH];
+export const FALLBACK_LAYOUTS: LayoutProposal[] = [LAYOUT_DISAGREES];
+
+/* Nothing works anywhere, so the session ends in `failed`. */
+export const HOPELESS: Proposal[] = [UNUSABLE];
+export const HOPELESS_LAYOUTS: LayoutProposal[] = [LAYOUT_DISAGREES];
