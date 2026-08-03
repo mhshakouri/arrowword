@@ -447,7 +447,7 @@ Persian keyboard hardening, loading and empty and error states, player list, cop
 - Automated: full check suite
 - Human: solve one complete real puzzle together, start to finish, with at least three players
 
-Out of v1: OCR, auto grid detection, perspective correction, correctness checking, generation, accounts and authentication.
+Out of v1: OCR, auto grid detection, perspective correction, correctness checking, generation, accounts and authentication. AI puzzle generation and the sign-in that would gate it are recorded in ADR-12 and remain unscheduled: no milestone owns them.
 
 Changed 2026-08-02: **per-player colors moved into v1** (A3 and A5). With an unbounded number of players and unverified nicknames, telling people apart stops being polish and becomes the only way the player list means anything.
 
@@ -651,7 +651,7 @@ Alternatives weighed and rejected, in ascending cost:
 - **Generic OIDC, Google now and Keycloak later.** About 250 lines, a vendor in the loop, and it requires every player to hold an account with that provider. Rejected as disproportionate for a puzzle toy, and it fails the "no credentials" requirement outright.
 - **Username and password.** Rejected on a verified platform constraint, not on taste: Workers Free allows 10 ms of CPU per request, and no defensible PBKDF2 iteration count fits in it. The options were to weaken the hash, which section 15 trigger 5 forbids, or move to the paid plan, which trigger 1 forbids without asking. Separately, no email verification means no password reset, so one forgotten password destroys a player's puzzles permanently.
 
-Consequences: identity is an unverified per-session nickname, so impersonation is possible and the app makes no trust claim about who anyone is. Abuse control is rate limits plus bounded retention rather than authentication. The accepted cost is hosting unmoderated user images under Hossein's domain, treated at length in section 16. Attribution comes free with nicknames, which is why the "who filled what" question left open in v5 is now closed.
+Consequences: identity is an unverified per-session nickname, so impersonation is possible and the app makes no trust claim about who anyone is. Abuse control is rate limits plus bounded retention rather than authentication. The accepted cost is hosting unmoderated user images under Hossein's domain, treated at length in section 16. Attribution comes free with nicknames, which is why the "who filled what" question left open in v5 is now closed. Narrowed, not reversed, by ADR-12: if AI generation is ever built, that one operation requires a signed-in user while everything here stays credential-free.
 
 **ADR-8: Sessions expire themselves with Durable Object alarms.** Each session slides its own alarm forward on every write and deletes itself when the alarm fires.
 
@@ -684,6 +684,65 @@ What makes that safe is not the pipeline, it is **branch protection**: `checks` 
 Alternative, and it was built first in the previous commit: a deploy job inside the Actions workflow, gated on `needs: checks`. It worked and was deployed twice. Rejected for consistency with the site rather than on merit; two personal projects on the same platform with two different deployment stories is a cost paid every time either one is touched. Its one real advantage, that the gate is visible in the same file as the deploy, is replaced by branch protection enforcing the same thing one level up.
 
 Consequences: the `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` repository secrets become unnecessary and should be deleted, because the point of the split is that Actions holds no credentials it does not need. Deploy logs move from the Actions tab to the Cloudflare dashboard. Non-production branch builds are available and give preview URLs, with a caveat that does not apply to the site, recorded in section 14: a preview version of this worker shares production's Durable Objects and R2 bucket.
+
+**ADR-12: AI puzzle generation, and sign-in that gates only it.** Decided 2026-08-03. **Not scheduled: no milestone owns this**, and nothing in section 12 depends on it. Recorded now because both halves were reasoned through in full and the reasoning is expensive to reconstruct, not because work is imminent.
+
+Two decisions in one record, because they are one decision: the feature is only defensible on a public app if the thing that spends money is the thing that requires an account.
+
+### The model proposes the layout, a validator decides
+
+Generated puzzles are **crossword-style with a numbered clue list beside the grid**, English only. The model proposes the whole puzzle: words, positions, directions, and clues. Nothing it proposes is trusted.
+
+The pipeline:
+
+1. The model proposes a complete layout against a strict schema, given a theme and a grid size.
+2. A validator checks it: every crossing agrees, no entry leaves the grid, no unintended adjacencies, every filled cell belongs to at least one entry.
+3. On failure the **specific** violations go back for repair, naming cells and the letters in conflict. Two or three attempts.
+4. If repair fails, a deterministic packer places the model's word list instead, so the button always works.
+5. Nothing invalid reaches storage. Invariant 4 makes a saved puzzle immutable, so an invalid grid would be permanently broken rather than merely wrong.
+
+Why the model is asked for coordinates rather than a rendered grid: a schema can guarantee that output is well formed, and cannot guarantee it is well formed _as a puzzle_. No schema expresses "the letter at row 3 column 4 must agree between the entry crossing it across and the entry crossing it down". Words with coordinates are mechanically checkable; a picture of a grid invites fudging.
+
+**Density is a design variable, not a fixed cost.** A dense grid with many forced crossings is close to the hardest version of this problem, and a sparser one still reads as a real puzzle. Grid size, target entry count, and required crossings are all configuration. If layouts are failing validation, lower the density before concluding the model cannot do it.
+
+Alternatives:
+
+- **Clue generation only**, which an earlier draft of this record chose: deterministic layout, model writes clue text against it. Reliable and unambitious. Rejected because the layout is the interesting part, and doing it with a validator and a fallback is both honest and more demonstrable than avoiding it.
+- **Generation with no validator.** Rejected on invariant 4 alone: immutable storage plus unverified output is a permanent defect generator.
+- **Pre-generated puzzles shipped as templates.** Cheapest, and it reuses the template and clone machinery from A0.5. Rejected for the stated purpose: a puzzle from a file and a puzzle from a model are indistinguishable in the artifact. Still correct if the goal ever becomes "more puzzles" rather than "show the AI".
+
+Consequences:
+
+- **This introduces a second puzzle form, in a project called Arrowword.** Deliberate. Dense in-grid clue cells with arrows are materially harder both to generate and to render, and a visitor solving a themed word grid does not care what the form is called. The photo path stays arrowword and stays Persian-capable; only generation is crossword-style and English.
+- A generated puzzle uses just two of the four cell types in section 3, `dead` and `answer`. It does not use `clue` cells at all, since those are the arrowword mechanism. It adds an entries list: number, direction, start cell, length, clue text, and answer.
+- **Answers therefore live in the document, and `state` currently ships the document whole.** The WebSocket `state` message becomes a server-side projection that strips answers. This is a section 7 protocol change and it is cheaper before any client depends on the current shape.
+- Runs and direction have to be modeled whichever form is chosen, because an entry's cells cannot be known without them. ADR-5 deferred that to v2; generation pulls it forward. Arrow rendering is the only part that stays deferred.
+- Schema bump with migrate-on-read. **`migrate()` has no test coverage today**, so covering it is the first task of this work rather than the last.
+- English only removes four problems rather than deferring them: no zero-width non-joiner that is not a letter yet would occupy a cell, no bidirectional clue text so section 9 stays true, no gap in model quality for Persian wordplay to review around, and English word lists and letter frequencies are well understood. Persian generation is not planned.
+- Latency is a design constraint. Two or three model calls plus repairs means roughly 10 to 30 seconds per generation, which needs labeled progress states rather than a spinner. A small pre-warmed pool per popular theme can make some requests instant.
+- **The artifact worth publishing is the measurement**: how often a first proposal validates, how often repair rescues it, how often the fallback runs. A measured failure rate with a designed fallback is a stronger engineering claim than a demo that happens to work.
+
+### Sign-in is required to generate, and for nothing else
+
+Generation requires a signed-in user over OIDC. Play, cloning, the demo, and every existing endpoint stay credential-free.
+
+This is the first operation that costs money per call rather than storage, and section 16's threat model asks what a stranger looping an endpoint for a day costs. For every current endpoint the answer is bounded by cheap resources. For this one it is an invoice, so the caller has to be attributable.
+
+Gating play was rejected on ADR-7's reasoning, which is unchanged, and Google SSO sharpens it: every player would need a Google account. A recruiter who has to sign in before seeing a puzzle mostly does not see the puzzle. This narrows ADR-7 rather than reversing it.
+
+Alternatives:
+
+- **Full accounts with owned sessions.** Contradicts ADR-2 and ADR-7, and contradicts section 16 directly, which says there is no listing endpoint and no session is ever enumerable. It also needs a members model, because several people solve one puzzle, so ownership alone does not describe access. Several times the cost for something the product does not want.
+- **Username and password.** Still ruled out by the verified 10 ms CPU limit per request on Workers Free: no defensible PBKDF2 iteration count fits in it. If credentials are wanted at all, OIDC is the option.
+- **No auth, cost controls only:** a daily budget that fails closed, aggressive caching, and Turnstile in front of the endpoint. Genuinely cheaper and would work. Rejected because per-caller accounting is the honest way to bound per-caller spend, and because a shared budget means one heavy user can exhaust the feature for everyone.
+
+Consequences, and the first is the one that gets underestimated:
+
+- **A session cookie creates a threat class this project does not currently have.** CSRF is a non-issue today precisely because there are no credentials: `PUT /puzzle`, `PUT /photo`, `DELETE /session/:id`, `POST /session/:id/clone`, and the WebSocket write path have no CSRF protection because none was needed. Cookie auth makes every one of them a target. Section 16 gains a CSRF requirement in the same commit that introduces the cookie, never later.
+- Written against generic OIDC configuration, an issuer, a client id, and a JWKS URL, so that swapping Google for a self-hosted Keycloak is a configuration change rather than a rewrite.
+- Needs a Google Cloud OAuth client and one worker secret, both of which are Hossein's steps under section 15 trigger 1.
+- `SessionDoc` needs no ownership field. That is the specific reason this is cheap: no ownership means no migration for existing sessions and no members model.
+- A generation budget must exist and must fail closed, because authentication bounds who spends and not how much.
 
 ## 18. Open questions (non-blocking)
 
