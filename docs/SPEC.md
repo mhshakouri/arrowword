@@ -531,7 +531,7 @@ Replaces an earlier handoff that asked for two GitHub secrets. Those were for th
    - **Production branch:** `main`
    - **Build command: leave it empty.** The dashboard auto-detects `npm run build`, and **there is no `build` script in this repository yet**, so accepting the default fails with a missing-script error. `wrangler deploy` bundles the TypeScript itself, so there is nothing to compile before it
    - **Deploy command:** `npx wrangler deploy`, which is the default
-   - Leave non-production branch builds **off** for now, see the caveat below
+   - Non-production branch builds are **on**, which is a deliberate change from an earlier draft of this handoff that said to leave them off. See the caveat below for what that costs
      Then delete the `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` repository secrets, since Actions no longer deploys and should hold no Cloudflare credentials.
 3. **Success:** a build appears in the Cloudflare dashboard on the next push to `main` and finishes green.
 4. **Verify:** `npx wrangler deployments list` shows a new version whose author is the build system rather than your own account.
@@ -539,7 +539,11 @@ Replaces an earlier handoff that asked for two GitHub secrets. Those were for th
 
 **This changes at A1.** Once the Vite app exists, its output has to be built before `wrangler deploy` can upload it as assets, so the build command becomes `npm run build`. Set it in the same commit that adds the script, or the first deploy after A1 ships a worker with no UI attached.
 
-**Preview builds carry a risk here that the site does not have.** Enabling non-production branch builds gives a preview URL per branch, which is genuinely useful, but a preview version of this worker binds to the **same Durable Objects and the same R2 bucket as production**. On a static site a preview is an inert copy; here it is live code pointed at real sessions and real photos. Treat that as production access, and never exercise `DELETE` or expiry against a preview. Leaving it off until A1 costs nothing, because a preview URL of a worker with no UI is a 404.
+**Preview builds carry a risk here that the site does not have.** A preview version of this worker binds to the **same Durable Objects and the same R2 bucket as production**. On a static site a preview is an inert copy; here it is live code pointed at real sessions and real photos.
+
+Verified 2026-08-03 on the pull request that introduced this arrangement, because the distinction bounds the risk and is worth knowing precisely. A non-production build runs `npx wrangler versions upload`, which **uploads a version without promoting it**. Two branch pushes produced two uploaded versions, and `wrangler deployments list` showed no new production deployment; production kept serving the version deployed before them. So a preview does not take traffic on its own.
+
+What that leaves: opening a preview URL runs that branch's code against production data. Treat a preview URL as production access. Never exercise `DELETE` or expiry from one, and never point a preview at a session that matters. The reason this is an acceptable trade rather than a bad one is that everything in the bucket is a throwaway public puzzle on a thirty day clock; if that ever stops being true, previews need their own bindings before they need anything else.
 
 ### Blocking A2.5: the demo puzzle
 
