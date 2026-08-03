@@ -37,7 +37,14 @@ jobs:
     needs: checks
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    # The environment is created on first use and gives a deployment record,
+    # plus somewhere to hang approval rules later. It needs deployments: write,
+    # which the read-only default at the top of this file would otherwise deny.
+    # A pull request run cannot catch that, because this job skips on one.
     environment: production
+    permissions:
+      contents: read
+      deployments: write
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
