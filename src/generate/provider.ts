@@ -210,8 +210,88 @@ function extractJson(text: string): unknown {
   return null;
 }
 
+function layoutPrompt(theme: string, rows: number, cols: number): string {
+  return [
+    `Design a small English crossword on the theme "${theme}" for a ${rows} by ${cols} grid.`,
+    `Reply with JSON only, no prose:`,
+    `{"entries":[{"dir":"across","row":0,"col":0,"answer":"WORD","clue":"..."}]}`,
+    `row and col are zero-based and mark the first letter. Answers are A-Z only, ${MIN_ANSWER} to ${MAX_ANSWER} letters.`,
+    `Every answer after the first must cross an earlier one, and crossing answers must share the same letter at the shared square.`,
+    `No two answers may sit side by side without crossing, and nothing may run off the grid.`,
+    `Each clue is one short sentence under ${MAX_CLUE} characters and must not contain its answer.`,
+  ].join(" ");
+}
+
+/* Model output for a layout, which arrives with whatever shape it felt like.
+   `len` and `number` are derived rather than read: the model has no business
+   deciding either, since length follows from the answer and numbering follows
+   from the grid, and letting it propose them would create two more ways for it
+   to contradict itself. */
+function readEntries(raw: unknown): Entry[] {
+  const list = (raw as { entries?: unknown })?.entries;
+  if (!Array.isArray(list)) return [];
+  const out: Entry[] = [];
+  for (const item of list) {
+    const e = item as Record<string, unknown>;
+    const answer = String(e?.answer ?? "")
+      .trim()
+      .toUpperCase();
+    const clue = String(e?.clue ?? "")
+      .replace(/\s+/g, " ")
+      .trim();
+    const dir = e?.dir === "down" ? "down" : "across";
+    const row = Number(e?.row);
+    const col = Number(e?.col);
+    if (!ANSWER.test(answer) || !clue) continue;
+    if (!Number.isInteger(row) || !Number.isInteger(col)) continue;
+    out.push({ number: 0, dir, row, col, len: answer.length, clue, answer });
+  }
+  return out;
+}
+
 export function workersAiProvider(ai: AiBinding): Provider {
+  const ask = async (content: string): Promise<unknown> => {
+    const result = await ai.run(GENERATION_MODEL, {
+      messages: [{ role: "user", content }],
+    });
+    return extractJson(result?.response ?? "");
+  };
+
   return {
+    async proposeLayout(
+      theme: string,
+      rows: number,
+      cols: number,
+    ): Promise<LayoutProposal> {
+      return {
+        theme,
+        rows,
+        cols,
+        entries: readEntries(await ask(layoutPrompt(theme, rows, cols))),
+      };
+    },
+
+    /* The violations go back verbatim, naming cells and conflicting letters,
+       because a model told what is wrong fixes it and a model told it failed
+       produces a different failure. */
+    async repair(
+      previous: LayoutProposal,
+      problems: string[],
+    ): Promise<LayoutProposal> {
+      const content = [
+        `This crossword layout was rejected. Fix only what is listed and keep everything else.`,
+        `Problems: ${problems.join("; ")}.`,
+        `Previous: ${JSON.stringify({ entries: previous.entries.map((e) => ({ dir: e.dir, row: e.row, col: e.col, answer: e.answer, clue: e.clue })) })}`,
+        `Reply with the corrected JSON only, same shape, no prose.`,
+      ].join(" ");
+      return {
+        theme: previous.theme,
+        rows: previous.rows,
+        cols: previous.cols,
+        entries: readEntries(await ask(content)),
+      };
+    },
+
     async propose(theme: string, count: number): Promise<Proposal> {
       const result = await ai.run(GENERATION_MODEL, {
         messages: [{ role: "user", content: prompt(theme, count) }],

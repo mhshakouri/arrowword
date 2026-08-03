@@ -130,6 +130,23 @@ export type ServerMessage =
     }
   | { type: "peers"; players: PeerInfo[] }
   | { type: "voice-peers"; players: VoicePeer[] }
+  /* Generation, B3. A session is addressable before it has a grid, so these
+     arrive on the socket the client already opened rather than on a channel
+     invented for them. */
+  | { type: "progress"; step: string; attempt: number }
+  /* The model could not lay out a puzzle. The client packs these and sends the
+     result to PUT /session/:id/packed, because Workers Free allows 10 ms of CPU
+     per request and search does not fit in that. */
+  | {
+      type: "pack";
+      candidates: Array<{ answer: string; clue: string }>;
+      rows: number;
+      cols: number;
+    }
+  /* Success. A `state` message by another name, kept distinct so a client can
+     tell "the puzzle you asked for is ready" from "here is the document again". */
+  | { type: "generated"; doc: SessionDoc }
+  | { type: "failed"; reason: string }
   /* Relayed audio. `from` is stamped by the server from the sending socket's
      own identity and a client-supplied `from` is discarded (invariant 16). The
      server never stores this and never inspects `audio` beyond its size. */
