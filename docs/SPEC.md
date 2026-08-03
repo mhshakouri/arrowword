@@ -515,7 +515,7 @@ from nothing needs the order, not just the outcome.
 
 One thing to note on that last step, because the config and reality disagree. The domain was attached through the Cloudflare dashboard, so the `routes` block in `wrangler.jsonc` is still commented out. The worker keeps the domain across deploys, so nothing is broken, but the domain is undeclared infrastructure: it lives in dashboard state rather than in the repository.
 
-Uncommenting `routes` would fix that, and it was deliberately not done yet for one reason: `wrangler deploy` can prompt when it finds a custom domain already attached by other means, and a prompt inside the CI deploy job is a hang, not a failure. So it stays dashboard-managed until someone uncomments the block and runs `npm run deploy` **by hand once** to confirm it goes through without asking anything. If it does, the block stays uncommented and the domain is declared in code. If it prompts, the comment goes back with a note saying so.
+Uncommenting `routes` would fix that, and it was deliberately not done yet for one reason: `wrangler deploy` can prompt when it finds a custom domain already attached by other means, and a prompt inside an automated deploy is a hang, not a failure. That applies to the Workers Builds deploy in ADR-11 exactly as it applied to the Actions deploy job that preceded it; neither has a keyboard. So it stays dashboard-managed until someone uncomments the block and runs `npm run deploy` **by hand once** to confirm it goes through without asking anything. If it does, the block stays uncommented and the domain is declared in code. If it prompts, the comment goes back with a note saying so.
 
 ### Blocking A1: nothing
 
