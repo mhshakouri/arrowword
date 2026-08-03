@@ -291,9 +291,15 @@ An expired session is indistinguishable from one that never existed, and deliber
 
 Any early return from a request that carries a body must deal with that body before returning. Returning while it is unread makes the runtime throw `Can't read from request stream after response has been sent`, which stalls the next request on the connection. This cost 146 seconds of wall time once; the acceptance test guards it.
 
+**A single oversized upload could kill the worker, and did.** Found chasing the above, and much worse than it. A0.5 enforced the photo cap by reading the body into memory and cancelling past the ceiling, on the reasoning that buffering was bounded by the cap being enforced. It is, and that was still wrong: a 9 MB upload against an 8 MB ceiling took `wrangler dev` down within two attempts, reproducibly. The first attempt dropped the connection, the second answered 500, the third found nothing listening, and the only clue was an empty error. On a public endpoint that is a denial of service, reachable by anyone, costing one request.
+
+The upload now streams straight to R2 through a `FixedLengthStream` built from `Content-Length`, which is what R2 wants anyway and what its earlier error message was pointing at. Nothing is buffered.
+
+Content-Length is therefore **required**, answered with 411 when missing, and it is a declaration rather than a claim taken on trust: `FixedLengthStream` enforces it byte for byte, so a client that declares 120 and sends 9 MB is cut off after 120 bytes and stores nothing. That inverts the old shape usefully. Before, a lie meant reading up to the cap before refusing; now a lie is bounded by the lie itself. Requiring the header is acceptable because every browser sets it for a Blob or a typed array, which is what the wizard sends.
+
 **Corrected 2026-08-03 (A2): drain the body, do not cancel it.** This paragraph used to say cancel, and cancelling turned out to be a cause of the very error it was meant to prevent. Tearing down a body the client is still uploading makes the runtime complain asynchronously, after the status has already gone out, so the failure appears as an uncaught error with no request to blame and it kills `wrangler dev` rather than failing a check. It reproduced about twice in six runs, always immediately after the write-once 409 on `PUT /puzzle`.
 
-`discardBody` now reads and throws away up to 64 KB, and only cancels past that ceiling, because a caller must never be made to read unlimited bytes in order to decline a request. Past the ceiling a dropped connection is the lesser evil, which is the same trade the oversize upload path already accepts.
+`discardBody` now reads and throws away up to twice the photo cap, and only cancels past that, because a caller must never be made to read unbounded bytes in order to decline a request. The ceiling is deliberately above the photo cap rather than small: the bodies most often declined are photos a little over the limit, draining one costs ingress, which is free, and cancelling one costs an uncaught error. A 64 KB ceiling was tried first and left four such errors per oversize upload; raising it left none.
 
 Two related things that were also wrong, and both cost time:
 
@@ -323,6 +329,7 @@ Values a coding agent would otherwise invent. All enforced server side.
 | Limit                          | Value            | Reason                                                           |
 | ------------------------------ | ---------------- | ---------------------------------------------------------------- |
 | Photo size                     | 8 MB             | Client downscales to 2000px first, so this is a generous ceiling |
+| Photo `Content-Length`         | required         | Enforced by `FixedLengthStream`, not trusted; 411 when missing   |
 | Grid rows                      | 30               | See storage note below                                           |
 | Grid columns                   | 30               | See storage note below                                           |
 | Title length                   | 200 chars        | Display only                                                     |

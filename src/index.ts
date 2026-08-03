@@ -192,7 +192,12 @@ function corsHeaders(request: Request, env: Env): Record<string, string> {
    runtime throw "Can't read from request stream after response has been sent",
    which stalls the next request on the connection. Any early return from a
    request that carries a body must drop it first. */
-const DRAIN_LIMIT = 64 * 1024;
+/* Comfortably above the photo cap. The bodies most often declined are photos
+   only a little over the ceiling, and draining one costs ingress, which is free,
+   while cancelling it costs an uncaught runtime error. Past this, cancelling is
+   the lesser evil: declining a request must not oblige the server to read
+   unbounded bytes, and the per-IP upload limit bounds how often anyone can try. */
+const DRAIN_LIMIT = 2 * MAX_PHOTO_BYTES;
 
 async function discardBody(request: Request): Promise<void> {
   const body = request.body;
@@ -614,46 +619,49 @@ export class ArrowwordSession implements DurableObject {
       if (!request.body) {
         return new Response("photo body required", { status: 400 });
       }
-      /* An honest client is turned away before uploading anything. This header
-         is an optimization and nothing more: the loop below is the enforcing
-         check, which is invariant 9 and the whole point of this milestone. */
-      const claimed = Number(request.headers.get("Content-Length") ?? "0");
-      if (claimed > MAX_PHOTO_BYTES) {
+
+      /* Content-Length is required, and it is a declaration rather than a claim
+         we trust: FixedLengthStream below enforces it byte for byte, so a client
+         that lies gets an errored stream instead of a stored photo. Requiring it
+         is acceptable because every browser sets it for a Blob or a typed array,
+         which is what the wizard sends. */
+      const declared = Number(request.headers.get("Content-Length"));
+      if (!Number.isInteger(declared) || declared <= 0) {
+        await discardBody(request);
+        return new Response("photo needs a Content-Length", { status: 411 });
+      }
+      if (declared > MAX_PHOTO_BYTES) {
         await discardBody(request);
         return new Response("photo too large", { status: 413 });
       }
 
-      /* Counted into memory rather than piped straight to R2, because R2 needs
-         a known length and a TransformStream has none: `put` rejects with
-         "Provided readable stream must have a known length". Buffering is
-         bounded by the very cap being enforced, so the ceiling on memory is the
-         8 MB we already refuse to exceed, and rejecting before R2 is touched is
-         what turns a mid-stream abort into an honest 413. */
-      const reader = request.body.getReader();
-      const chunks: Uint8Array[] = [];
-      let seen = 0;
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        seen += value.byteLength;
-        if (seen > MAX_PHOTO_BYTES) {
-          await reader.cancel();
-          return new Response("photo too large", { status: 413 });
-        }
-        chunks.push(value);
-      }
+      /* Streamed straight to R2 through a FixedLengthStream, which gives `put`
+         the known length it demands while capping how much is ever read.
 
-      const body = new Uint8Array(seen);
-      let offset = 0;
-      for (const chunk of chunks) {
-        body.set(chunk, offset);
-        offset += chunk.byteLength;
-      }
+         This replaces buffering the whole body in memory and cancelling past the
+         cap, which was a way to kill the worker: a single 9 MB upload against an
+         8 MB ceiling took `wrangler dev` down within two attempts, reproducibly,
+         with an empty error. On a public endpoint that is a denial of service
+         rather than a flaky test. Nothing is accumulated now, and a liar is cut
+         off at the length it declared rather than at the cap. */
+      const fixed = new FixedLengthStream(declared);
+      /* Not awaited: R2 consumes the readable half while this fills the writable
+         half, and awaiting here would deadlock. A rejection is expected whenever
+         the body and the declared length disagree, and surfaces below as a
+         failed `put`. */
+      void request.body.pipeTo(fixed.writable).catch(() => {});
 
       const key = `photos/${this.ctx.id.toString()}.jpg`;
-      await this.env.PHOTOS.put(key, body, {
-        httpMetadata: { contentType: "image/jpeg" },
-      });
+      try {
+        await this.env.PHOTOS.put(key, fixed.readable, {
+          httpMetadata: { contentType: "image/jpeg" },
+        });
+      } catch {
+        /* R2 writes are atomic, so a stream that errored stored nothing. */
+        return new Response("photo did not match its declared length", {
+          status: 400,
+        });
+      }
       await this.save({ ...doc, photoKey: key });
       return json({ ok: true, photoKey: key });
     }
