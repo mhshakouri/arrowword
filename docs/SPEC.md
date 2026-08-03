@@ -239,9 +239,6 @@ Small and boring on purpose.
 | GET    | `/session/:id/ws`     | Upgrade to WebSocket                                      |
 | POST   | `/generate`           | Start a generation, returns `{ id }` at once (B3)         |
 | PUT    | `/session/:id/packed` | Client-packed grid, validated then saved (B3)             |
-| GET    | `/auth/authorize`     | Begin OIDC sign-in (B2)                                   |
-| GET    | `/auth/callback`      | OIDC redirect target (B2)                                 |
-| POST   | `/auth/logout`        | Clear the session cookie (B2)                             |
 
 Added 2026-08-02: `clone`, which is the demo front door in section 5, and `DELETE`, which section 16 has required since v5 and which public hosting makes urgent rather than eventual.
 
@@ -280,8 +277,8 @@ The client must not have to guess. Every rejection is one of these.
 | Write to a template                  | WS `error`, `this puzzle is read only` |
 | Write before `hello`                 | WS `error`, `pick a nickname first`    |
 | Nickname over the cap                | trimmed silently, not an error         |
-| Generation without sign-in           | HTTP 401 `sign in to generate`         |
-| Over 2 generations today             | HTTP 429 `daily limit reached`         |
+| Generation without passing Turnstile | HTTP 403 `are you a person?`           |
+| Over 2 generations today, this IP    | HTTP 429 `daily limit reached`         |
 | Over 30 generations today, everyone  | HTTP 429 `out of budget for today`     |
 | Generation gave up                   | session `status` becomes `failed`      |
 | Packed grid fails validation         | HTTP 422 naming the failing crossing   |
@@ -364,27 +361,27 @@ The fix is an allowlist: only `photo`, `puzzle`, `ws`, and `clone` are forwarded
 
 Values a coding agent would otherwise invent. All enforced server side.
 
-| Limit                          | Value            | Reason                                                           |
-| ------------------------------ | ---------------- | ---------------------------------------------------------------- |
-| Photo size                     | 8 MB             | Client downscales to 2000px first, so this is a generous ceiling |
-| Photo `Content-Length`         | required         | Enforced by `FixedLengthStream`, not trusted; 411 when missing   |
-| Grid rows                      | 30               | See storage note below                                           |
-| Grid columns                   | 30               | See storage note below                                           |
-| Title length                   | 200 chars        | Display only                                                     |
-| WS messages per socket         | 20 per second    | One human typing cannot exceed this                              |
-| Nickname length                | 24 graphemes     | Display only, and it is rendered to other people                 |
-| Concurrent sockets per session | 10               | Bounds broadcast fanout and DO memory                            |
-| Players recorded per session   | 50               | Stops `players` growing without bound on a popular clone         |
-| Session creations per IP       | 30 per hour      | `POST /session` is the cheapest way to make the worker do work   |
-| Photo uploads per IP           | 20 per hour      | The only endpoint that costs storage                             |
-| Clones per IP                  | 60 per hour      | Generous: this is the path visitors are meant to take            |
-| Session retention              | 30 days inactive | Sliding, see self-expiry below                                   |
-| Generated grid size            | 11 x 11 max      | Smallest playable, see generation architecture below             |
-| Entries per generated puzzle   | 12 max           | Keeps packing tractable and the clue list scannable              |
-| Theme length                   | 60 chars         | User input, sent to a model and rendered back                    |
-| Clue length                    | 120 chars        | Model output, rendered to other people                           |
-| Generations per signed-in user | 2 per day        | The only endpoint that costs money per call, see below           |
-| Generations per day, all users | 30               | Per-user limits do not bound total spend, see below              |
+| Limit                          | Value             | Reason                                                           |
+| ------------------------------ | ----------------- | ---------------------------------------------------------------- |
+| Photo size                     | 8 MB              | Client downscales to 2000px first, so this is a generous ceiling |
+| Photo `Content-Length`         | required          | Enforced by `FixedLengthStream`, not trusted; 411 when missing   |
+| Grid rows                      | 30                | See storage note below                                           |
+| Grid columns                   | 30                | See storage note below                                           |
+| Title length                   | 200 chars         | Display only                                                     |
+| WS messages per socket         | 20 per second     | One human typing cannot exceed this                              |
+| Nickname length                | 24 graphemes      | Display only, and it is rendered to other people                 |
+| Concurrent sockets per session | 10                | Bounds broadcast fanout and DO memory                            |
+| Players recorded per session   | 50                | Stops `players` growing without bound on a popular clone         |
+| Session creations per IP       | 30 per hour       | `POST /session` is the cheapest way to make the worker do work   |
+| Photo uploads per IP           | 20 per hour       | The only endpoint that costs storage                             |
+| Clones per IP                  | 60 per hour       | Generous: this is the path visitors are meant to take            |
+| Session retention              | 30 days inactive  | Sliding, see self-expiry below                                   |
+| Generated grid size            | 11 x 11 max       | Smallest playable, see generation architecture below             |
+| Entries per generated puzzle   | 12 max            | Keeps packing tractable and the clue list scannable              |
+| Theme length                   | 60 chars          | User input, sent to a model and rendered back                    |
+| Clue length                    | 120 chars         | Model output, rendered to other people                           |
+| Generations per IP             | 2 per day         | Plus Turnstile, since IP alone is a weak key. See below          |
+| Generations per day, all users | **measure first** | Derived from the Workers AI neuron allocation, not chosen        |
 
 Added 2026-08-02: everything from nickname length down. Section 16 has required rate limiting since v5 and nothing implemented it, which was survivable while the app was private and is not now.
 
@@ -436,24 +433,27 @@ can drive a limit down, and a production deployment should run on the defaults. 
 one ever needs setting for real, add it to the config so the value is visible
 rather than passed on a command line.
 
-Nothing here is a secret. Secrets arrive with B2 and B3, and section 14 has their
-handoffs.
+Nothing here is a secret, and there may never be one. B3 needs a key only if it
+uses an external provider rather than Workers AI, and section 14 has that fork.
 
-### Generation limits (ADR-12, milestones B2 and B3)
+### Generation limits (ADR-12, milestone B3)
 
-Two limits, and the second exists because the first does not do what it looks like it does.
+Rewritten 2026-08-03, because the reasoning underneath the old numbers turned out to be wrong.
 
-**Two generations per signed-in user per day.** This is the first limit in the project keyed on **identity** rather than on a network address, which is most of the argument for requiring sign-in at all: `CF-Connecting-IP` is shared by everyone behind one NAT and rotated freely by anyone who wants to, so it can shape casual use and cannot bound deliberate use. An OIDC subject can.
+**There is no per-call bill to bound.** Workers AI gives 10,000 neurons a day free, and on the free plan exhausting the allocation **returns errors rather than charging**. That is the same shape as Workers requests answering 429 past 100,000 a day: no cap to configure, nothing to be surprised by, and no invoice to protect. The old framing, that generation is the first operation costing money per call, was simply not true of Workers AI on this plan.
 
-No new mechanism is needed. The existing `RateLimiter` Durable Object already takes a bucket, a limit, and a window, so this is a `user:{sub}` key with a limit of 2 and a window of 86,400,000. Its window is anchored to first use rather than to the calendar, which incidentally avoids the boundary case a calendar day would create, where two generations at 23:59 and two more at 00:01 is four in two minutes.
+**What remains is fairness, and it became the real problem.** The 10,000 neurons are a single global pool. Without a limit, one script drains the day in seconds and every visitor after it, recruiters included, meets "out of budget for today". That is a denial of service against the showcase, which is the whole purpose of the app, and it is worse than a bill because it cannot be refunded.
 
-**A global daily ceiling, and it is not optional.** A per-user limit bounds what one account can spend and says nothing about total spend, because signing up is free and unlimited: anyone with a Google account gets two. Total exposure is therefore two generations times however many people arrive, which is unbounded in exactly the dimension a public showcase hopes to grow. The ceiling is what makes the bill knowable.
+Two mechanisms, neither of which needs to know who anyone is:
 
-Set at **30 per day** on 2026-08-03, counted across everyone. That is 15 users at their full personal allowance, so the per-user limit of 2 is the binding constraint only until roughly the sixteenth person of the day; past that the global ceiling is what people meet. That is the intended shape: a quiet day costs almost nothing and a busy day costs a known maximum.
+- **Turnstile on the generate endpoint only.** Free, on-platform, and built for exactly this: stopping scripts without identity. Clone-and-play stays untouched, so the path a visitor actually takes never sees a challenge.
+- **Two generations per IP per day.** The same weak key the rest of the app uses. It is rotatable and it punishes shared NAT, and it is not trying to stop a determined attacker: it stops accidents and casual repetition, which is most of what happens.
 
-It must **fail closed**, and its failure needs a user-facing state saying the day's budget is spent, with when it resets, rather than a generic error. That is rule 4 of the Done gate.
+A determined attacker rotating addresses through Turnstile is not who this app has to survive. The worst outcome is a day of generation being unavailable while cloning and playing keep working.
 
-**Attempts count, not successes.** A failed generation costs the same model calls as a successful one, so counting only what worked would let anyone burn the entire daily budget for free by causing failures. The counter increments when generation is attempted, including when repair fails and the deterministic packer takes over.
+**The daily ceiling is a measurement, not a decision.** An earlier version of this section said 30, and that number was invented to bound an imaginary bill. The real ceiling comes from what 10,000 neurons buys, which depends on the model and is not something to guess: B3 starts by generating one puzzle, reading the neuron cost, and setting the limit from it. It might be five a day or five hundred.
+
+It must still **fail closed** with a user-facing state naming when it resets, which is rule 4 of the Done gate, and **attempts must count rather than successes**, since a failed generation spends the same neurons as a successful one.
 
 The per-IP limits above are a starting point, not a measurement. IP is a weak key: it punishes shared NAT and is trivially rotated. It is chosen because it needs no identity, which is the whole premise of the app. Revisit with real traffic rather than in advance.
 
@@ -727,7 +727,7 @@ Checks:
 
 ### B series: v2, AI puzzle generation
 
-Scheduled 2026-08-03 (ADR-12). Begins after A5, because generation needs play rendering to exist before it has anywhere to render, and because finishing v1 first keeps the showcase coherent. It **could** start after A3 instead, at the cost of leaving sync and polish unfinished; that trade is worth revisiting only if generation becomes the more important demonstration.
+Scheduled 2026-08-03 (ADR-12). **Two milestones, not three:** B2 required a signed-in user for generation and was deleted on 2026-08-03 when Workers AI turned out to fail closed rather than bill, which removed the only reason it existed. See the amendment in ADR-12. Begins after A5, because generation needs play rendering to exist before it has anywhere to render, and because finishing v1 first keeps the showcase coherent. It **could** start after A3 instead, at the cost of leaving sync and polish unfinished; that trade is worth revisiting only if generation becomes the more important demonstration.
 
 #### B1 Runs and direction, status: TODO
 
@@ -743,27 +743,17 @@ Checks:
 - Automated: unit tests over run detection on hand-built grids, including a single-cell run, an entry touching each edge, and a grid with no runs at all
 - Human: none
 
-#### B2 Sign-in for generation, status: TODO
-
-- Generic OIDC: authorization with PKCE, callback, JWKS fetch, RS256 verification, claim checks. Written against issuer, client id, and JWKS URL so Keycloak later is configuration
-- Signed `HttpOnly` session cookie, and **CSRF protection on every mutating endpoint in the same commit**, per section 16. `PUT /puzzle`, `PUT /photo`, `DELETE /session/:id`, `POST /session/:id/clone`, and the WebSocket write path have none today because none was needed
-- Per-user generation counter, `user:{sub}` in the existing `RateLimiter`
-- Nothing else requires sign-in. Play, cloning, and the demo stay credential-free (ADR-7)
-
-Checks:
-
-- Automated: a rejected callback with a bad `state`, a rejected token with a wrong `aud`, a mutating request without a CSRF token, and a third generation in one day refused
-- Human: sign in on a phone, then confirm the demo still plays fully signed out
-
 #### B3 AI puzzle generation, status: TODO
 
+- **First, measure.** Generate one puzzle and read its neuron cost, then set the daily ceiling from what 10,000 neurons a day actually buys. The number in section 7 is deliberately blank until then
+- Turnstile on the generate endpoint, and two generations per IP per day. No sign-in (ADR-12, amended)
 - Theme input, then propose, validate, repair, and fall back to packing the model's word list
 - **Packing runs in the browser**, and the server validates what comes back (invariant 10). Workers Free allows 10 ms CPU per request and a backtracking packer does not fit
 - Asynchronous: `POST /generate` returns at once, progress arrives over the session's existing WebSocket, terminal state is `playable` or `failed`
 - Crossword-style renderer with a numbered clue list, English only, 11 by 11 and 12 entries at most
 - No auto-advance, no correctness checking, no reveal, no prefilled cells
-- Global daily ceiling of 30 that fails closed, with its own user-facing state
-- A provider interface with recorded fixtures, so the suite runs without an API key
+- A global daily ceiling that fails closed, with its own user-facing state naming when it resets. Attempts count, not successes, since a failed generation spends the same neurons
+- A provider interface with recorded fixtures, so the suite runs without an API key or a neuron budget
 
 Checks:
 
@@ -771,7 +761,7 @@ Checks:
 - Human: generate three puzzles from three themes and solve one end to end
 - Published with the milestone, from a script run by hand against the real model: the measured rate at which first proposals validate, repair rescues them, and the fallback runs. ADR-12 treats that measurement as the deliverable, not a footnote
 
-Out of v1: OCR, auto grid detection, perspective correction, correctness checking. AI puzzle generation and the sign-in that gates it were out of v1 and are now scheduled as the B series below, which is v2.
+Out of v1: OCR, auto grid detection, perspective correction, correctness checking, accounts of any kind. AI puzzle generation is scheduled as the B series below, which is v2.
 
 Changed 2026-08-02: **per-player colors moved into v1** (A3 and A5). With an unbounded number of players and unverified nicknames, telling people apart stops being polish and becomes the only way the player list means anything.
 
@@ -864,32 +854,15 @@ Verified 2026-08-03 on the pull request that introduced this arrangement, becaus
 
 What that leaves: opening a preview URL runs that branch's code against production data. Treat a preview URL as production access. Never exercise `DELETE` or expiry from one, and never point a preview at a session that matters. The reason this is an acceptable trade rather than a bad one is that everything in the bucket is a throwaway public puzzle on a thirty day clock; if that ever stops being true, previews need their own bindings before they need anything else.
 
-### Blocking B2: a Google OAuth client and a cookie secret
+### Blocking B3: a generation provider
 
-1. **Blocked:** generation cannot require a signed-in user, so it cannot be rate limited per person and its cost cannot be attributed. Completing this unblocks B2 and therefore B3.
-2. **Do**, in the Google Cloud Console: create an OAuth 2.0 Client ID of type Web application. Add two redirect URIs, one for `https://arrowword.mhshakouri.dev/auth/callback` and one for `http://localhost:8787/auth/callback` so local development works. Then from this repository:
-   ```bash
-   npx wrangler secret put OIDC_CLIENT_SECRET
-   npx wrangler secret put COOKIE_SIGNING_KEY
-   ```
-   For the second, paste 32 random bytes of your own generating; it is not the Google secret and must not be reused from anything.
-3. **Success:** both commands report the secret uploaded, and the client id is available to paste into `wrangler.jsonc` as a plain var, since a client id is not a secret.
-4. **Verify:** `npx wrangler secret list` shows both names and no values.
-5. **Paste back:** the client id only, never either secret.
+1. **Blocked:** there is nothing to generate with. Completing this unblocks B3, and it may need nothing from Hossein at all.
+2. **Decide first, because it is a vendor choice under section 15 trigger 3:** Cloudflare Workers AI needs no key, no account and no spend cap, because the free allocation fails with errors rather than charging. An external API is likely better at clue writing and brings back a secret, a bill and a spend cap to configure.
+3. **If Workers AI:** add the binding to `wrangler.jsonc` and there is no handoff. Verify output quality on a real theme first, because free and adequate are different claims.
+4. **If an external provider:** `npx wrangler secret put GENERATION_API_KEY`, and set a spend cap in that provider's dashboard, because the ceiling in section 7 protects against traffic and not against a bug that retries.
+5. **Paste back:** which provider, and the cap if there is one.
 
-### Blocking B3: a generation provider and a budget
-
-1. **Blocked:** there is nothing to generate with, and no ceiling on what generation can cost. Completing this unblocks B3.
-2. **Decide first, because it is a vendor choice under section 15 trigger 3:** Cloudflare Workers AI keeps generation on the same platform and inside a free tier, while an external API is likely better at clue writing. Whichever is chosen, verify its output quality on a real theme before B3 starts rather than after.
-3. **Then**, if an external provider is chosen:
-   ```bash
-   npx wrangler secret put GENERATION_API_KEY
-   ```
-   And set a spend cap in that provider's own dashboard, because the ceiling in section 7 protects against traffic and not against a bug that retries.
-4. **Verify:** `npx wrangler secret list` shows the name, and the provider dashboard shows the cap.
-5. **Paste back:** which provider, and the cap.
-
-Two caps, deliberately. The application ceiling fails closed and gives users a real message; the provider cap is what stands between a retry loop and an invoice.
+The asymmetry is the point. Workers AI turns this from a handoff into a config line, which is most of why B2 no longer exists.
 
 ### Blocking A2.5: the demo puzzle
 
@@ -952,7 +925,7 @@ Accepted deliberately: this app hosts unmoderated user images. The mitigation th
 
 Escape hatch, pre-decided so it is not designed under pressure: if abuse appears, gate `PUT photo` behind a shared passphrase while leaving the demo, cloning, and play fully open. That preserves the entire visitor experience and costs roughly a hundred lines. It is written down here because the time to choose it is before it is needed.
 
-**Cost control.** New in v6, and extended by ADR-12. Everything in v1 costs storage or requests, both cheap and both bounded. Generation costs money per call, which is a different kind of exposure: a per-user limit bounds one account and not the total, because signing up is free, so a global ceiling that fails closed and a provider-side spend cap are both required. See the generation limits in section 7. The numbers below are in section 6, verified rather than assumed. The summary: R2 egress is free and storage overage is linear and cheap, Workers request overage returns 429 instead of billing, so no single burst produces a large invoice. The two dimensions that were genuinely uncapped were indefinite retention and a header-trusted size limit, and A0.5 closes both. Billing alerts in the Cloudflare dashboard are the backstop for everything unforeseen.
+**Cost control.** New in v6, and extended by ADR-12. Everything in v1 costs storage or requests, both cheap and both bounded. Generation was expected to be the first thing costing money per call, and on Workers AI it is not: the free allocation fails with errors rather than charging, so the exposure is a day of unavailability rather than a bill. That moves the concern from cost to fairness, since the allocation is a single pool anyone can drain, and section 7 has the two mechanisms. An external provider would put the bill back and with it a provider-side spend cap. The numbers below are in section 6, verified rather than assumed. The summary: R2 egress is free and storage overage is linear and cheap, Workers request overage returns 429 instead of billing, so no single burst produces a large invoice. The two dimensions that were genuinely uncapped were indefinite retention and a header-trusted size limit, and A0.5 closes both. Billing alerts in the Cloudflare dashboard are the backstop for everything unforeseen.
 
 **Logging and observability.** The worker runs with observability enabled. **Session ids must never be logged in full**, because the id is the credential; log a short hash prefix instead. Log enough to answer "why did this session fail" without logging puzzle content or letters.
 
@@ -996,10 +969,10 @@ Alternatives weighed and rejected, in ascending cost:
 
 - **Cloudflare Access in front of the worker.** Zero application code, about thirty minutes of dashboard work. Rejected because it gates the entire app behind a policy, which destroys the showcase: a visitor who is not in the policy sees a login wall, which is the exact opposite of the goal.
 - **Shared household passphrase and a signed cookie.** About a hundred lines, no new dependency, and a genuinely strong abuse control because it makes the app closed by construction. Rejected for the same reason: closed is the wrong shape for a portfolio piece. Retained as the pre-decided escape hatch for upload abuse in section 16.
-- **Generic OIDC, Google now and Keycloak later.** About 250 lines, a vendor in the loop, and it requires every player to hold an account with that provider. Rejected as disproportionate for a puzzle toy, and it fails the "no credentials" requirement outright.
+- **Generic OIDC, Google now and Keycloak later.** About 250 lines, a vendor in the loop, and it requires every player to hold an account with that provider. Rejected as disproportionate for a puzzle toy, and it fails the "no credentials" requirement outright. Revisited for generation alone in ADR-12 and rejected there too, on different grounds.
 - **Username and password.** Rejected on a verified platform constraint, not on taste: Workers Free allows 10 ms of CPU per request, and no defensible PBKDF2 iteration count fits in it. The options were to weaken the hash, which section 15 trigger 5 forbids, or move to the paid plan, which trigger 1 forbids without asking. Separately, no email verification means no password reset, so one forgotten password destroys a player's puzzles permanently.
 
-Consequences: identity is an unverified per-session nickname, so impersonation is possible and the app makes no trust claim about who anyone is. Abuse control is rate limits plus bounded retention rather than authentication. The accepted cost is hosting unmoderated user images under Hossein's domain, treated at length in section 16. Attribution comes free with nicknames, which is why the "who filled what" question left open in v5 is now closed. Narrowed, not reversed, by ADR-12: if AI generation is ever built, that one operation requires a signed-in user while everything here stays credential-free.
+Consequences: identity is an unverified per-session nickname, so impersonation is possible and the app makes no trust claim about who anyone is. Abuse control is rate limits plus bounded retention rather than authentication. The accepted cost is hosting unmoderated user images under Hossein's domain, treated at length in section 16. Attribution comes free with nicknames, which is why the "who filled what" question left open in v5 is now closed. Briefly narrowed by ADR-12, which required a signed-in user for AI generation, and then restored in full on 2026-08-03 when that requirement was withdrawn: Workers AI fails closed rather than billing, so there was no cost for identity to bound. This app has no credentials anywhere.
 
 **ADR-8: Sessions expire themselves with Durable Object alarms.** Each session slides its own alarm forward on every write and deletes itself when the alarm fires.
 
@@ -1041,7 +1014,9 @@ Alternative, and it was built first in the previous commit: a deploy job inside 
 
 Consequences: the `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` repository secrets become unnecessary and should be deleted, because the point of the split is that Actions holds no credentials it does not need. Deploy logs move from the Actions tab to the Cloudflare dashboard. Non-production branch builds are available and give preview URLs, with a caveat that does not apply to the site, recorded in section 14: a preview version of this worker shares production's Durable Objects and R2 bucket.
 
-**ADR-12: AI puzzle generation, and sign-in that gates only it.** Decided 2026-08-03, and **scheduled 2026-08-03 as milestones B1, B2, and B3** in section 12. The B series is v2 work and begins after A5 completes v1.
+**ADR-12: AI puzzle generation.** Decided 2026-08-03, and **scheduled as milestones B1 and B3** in section 12. The B series is v2 work and begins after A5 completes v1.
+
+This record was originally titled "and sign-in that gates only it", and half of it argued for requiring an account to generate. That half was withdrawn the same day; the amendment is at the end and the title no longer claims it.
 
 Two decisions in one record, because they are one decision: the feature is only defensible on a public app if the thing that spends money is the thing that requires an account.
 
@@ -1078,27 +1053,26 @@ Consequences:
 - Latency is a design constraint. Two or three model calls plus repairs means roughly 10 to 30 seconds per generation, which needs labeled progress states rather than a spinner. A small pre-warmed pool per popular theme can make some requests instant.
 - **The artifact worth publishing is the measurement**: how often a first proposal validates, how often repair rescues it, how often the fallback runs. A measured failure rate with a designed fallback is a stronger engineering claim than a demo that happens to work.
 
-### Sign-in is required to generate, and for nothing else
+### No sign-in, after all
 
-Generation requires a signed-in user over OIDC. Play, cloning, the demo, and every existing endpoint stay credential-free.
+**Amended 2026-08-03, and this reverses the decision this record was half written to make.** An earlier version required a signed-in user for generation and nothing else, on the reasoning that it was the first operation costing money per call and therefore the first that needed an attributable caller.
 
-This is the first operation that costs money per call rather than storage, and section 16's threat model asks what a stranger looping an endpoint for a day costs. For every current endpoint the answer is bounded by cheap resources. For this one it is an invoice, so the caller has to be attributable.
+That reasoning does not survive contact with Workers AI. The free plan allocates 10,000 neurons a day and **fails with errors rather than charging** once they are gone, so there is no per-call bill and nothing for identity to bound. Checking that was one page of documentation, and it deleted an entire milestone.
 
-Gating play was rejected on ADR-7's reasoning, which is unchanged, and Google SSO sharpens it: every player would need a Google account. A recruiter who has to sign in before seeing a puzzle mostly does not see the puzzle. This narrows ADR-7 rather than reversing it.
+Generation is therefore **anonymous like everything else**, guarded by Turnstile and a per-IP limit as described in section 7. ADR-2 and ADR-7 stand unqualified again: there are no credentials anywhere in this app.
 
-Alternatives:
+What this gives up, said plainly rather than glossed:
 
-- **Full accounts with owned sessions.** Contradicts ADR-2 and ADR-7, and contradicts section 16 directly, which says there is no listing endpoint and no session is ever enumerable. It also needs a members model, because several people solve one puzzle, so ownership alone does not describe access. Several times the cost for something the product does not want.
-- **Username and password.** Still ruled out by the verified 10 ms CPU limit per request on Workers Free: no defensible PBKDF2 iteration count fits in it. If credentials are wanted at all, OIDC is the option.
-- **No auth, cost controls only:** a daily budget that fails closed, aggressive caching, and Turnstile in front of the endpoint. Genuinely cheaper and would work. Rejected because per-caller accounting is the honest way to bound per-caller spend, and because a shared budget means one heavy user can exhaust the feature for everyone.
+- **Per-caller accounting is weaker.** An IP is shared and rotatable where an OIDC subject is neither. Accepted, because the thing being rationed is now a daily pool that refills rather than money that does not come back.
+- **A portfolio piece is gone.** Hand-rolled OIDC with JWKS verification is a legible and reasonably rare skill signal, and B2 would have demonstrated it. That is a real loss and it is a reason to build auth _if you want auth built_, which is a different thing from needing it. Recorded here so that reintroducing sign-in later is an honest new decision rather than a reversal of a reversal.
 
-Consequences, and the first is the one that gets underestimated:
+What this avoids, which is the larger half:
 
-- **A session cookie creates a threat class this project does not currently have.** CSRF is a non-issue today precisely because there are no credentials: `PUT /puzzle`, `PUT /photo`, `DELETE /session/:id`, `POST /session/:id/clone`, and the WebSocket write path have no CSRF protection because none was needed. Cookie auth makes every one of them a target. Section 16 gains a CSRF requirement in the same commit that introduces the cookie, never later.
-- Written against generic OIDC configuration, an issuer, a client id, and a JWKS URL, so that swapping Google for a self-hosted Keycloak is a configuration change rather than a rewrite.
-- Needs a Google Cloud OAuth client and one worker secret, both of which are Hossein's steps under section 15 trigger 1.
-- `SessionDoc` needs no ownership field. That is the specific reason this is cheap: no ownership means no migration for existing sessions and no members model.
-- A generation budget must exist and must fail closed, because authentication bounds who spends and not how much.
+- The whole threat class ADR-12 warned about. **CSRF is a non-issue in this app precisely because there are no credentials**, and every mutating endpoint still has no protection because none is needed. A session cookie would have made `PUT /puzzle`, `PUT /photo`, `DELETE`, `POST /clone` and the WebSocket write path targets in one commit.
+- A user store, a second Durable Object class, two secrets, a Google Cloud OAuth client, and the sign-in screens.
+- A milestone. The B series is B1 and B3.
+
+The `10 ms` CPU limit that ruled out passwords is now moot rather than binding, and stays recorded because it is a fact about the platform that will come up again.
 
 **ADR-13: Answers are not secret.** Decided 2026-08-03. A generated puzzle's `answer` strings live in `SessionDoc` and are sent to every client with the rest of the document. There is no projection, no separate storage key, and no attempt to hide them.
 
