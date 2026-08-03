@@ -543,13 +543,17 @@ check(
 /* Nicknames are rendered to other people, so they are capped and stripped. */
 const longNick = "x".repeat(40);
 const c2 = await open(wsUrl);
-await wait(200);
-hello(c2, "3".repeat(32), `${longNick}`);
-await wait(250);
-const capped = c2.messages
-  .filter((m) => m.type === "peers")
-  .at(-1)
-  ?.players.find((p) => p.id === "3".repeat(32));
+await eventually(() => c2.messages.some((m) => m.type === "state"));
+/* The control character is an escape, not a literal. An invisible BEL in the
+   source is unreadable, breaks exact-match edits, and is easy to delete by
+   accident, which is the same mistake the bidi range in src/index.ts made. */
+hello(c2, "3".repeat(32), `${longNick}\u0007`);
+const capped = await eventually(() =>
+  c2.messages
+    .filter((m) => m.type === "peers")
+    .at(-1)
+    ?.players.find((p) => p.id === "3".repeat(32)),
+);
 check(
   "nickname capped at 24 and control chars stripped",
   capped?.nickname === "x".repeat(24),
@@ -559,9 +563,8 @@ c2.close();
 await wait(200);
 
 const b = await open(wsUrl);
-await wait(200);
+await eventually(() => b.messages.some((m) => m.type === "state"));
 hello(b, playerB, "Partner");
-await wait(300);
 check(
   "peers carries every named player",
   await eventually(() =>
@@ -586,27 +589,32 @@ check(
 check("letter is attributed to its writer", cellMsg?.by === playerB);
 
 b.send(JSON.stringify({ type: "set", row: 1, col: 1, ch: "x" }));
-await wait(200);
 check(
   "prefilled cell rejected",
-  b.messages.some((m) => m.type === "error"),
+  await eventually(() => b.messages.some((m) => m.type === "error")),
 );
 
 b.messages.length = 0;
 b.send(JSON.stringify({ type: "set", row: 0, col: 1, ch: "ab" }));
-await wait(200);
 check(
   "multi-character rejected",
-  b.messages.some((m) => m.type === "error"),
+  await eventually(() => b.messages.some((m) => m.type === "error")),
 );
 
-/* One grapheme, not one code point: this is two code points and one letter. */
+/* One grapheme, not one code point: this is two code points and one letter.
+
+   Asserting an absence, so there is nothing to poll for. Waiting for the
+   broadcast that acceptance produces is better than waiting for an interval:
+   once the `cell` message has arrived, any error would have arrived too. */
 b.messages.length = 0;
+a.messages.length = 0;
 b.send(JSON.stringify({ type: "set", row: 1, col: 0, ch: "سّ" }));
-await wait(250);
+const graphemeAccepted = await eventually(() =>
+  a.messages.find((m) => m.type === "cell" && m.row === 1 && m.col === 0),
+);
 check(
   "a multi-code-point grapheme is accepted",
-  !b.messages.some((m) => m.type === "error"),
+  graphemeAccepted !== null && !b.messages.some((m) => m.type === "error"),
 );
 
 a.messages.length = 0;
@@ -623,7 +631,6 @@ check(
 b.send(JSON.stringify({ type: "set", row: 1, col: 0, ch: "ک" }));
 await wait(300);
 const c = await open(wsUrl);
-await wait(300);
 const state = await eventually(() =>
   c.messages.find((m) => m.type === "state"),
 );
@@ -642,7 +649,6 @@ check("clone serves the borrowed photo", cloneState.ok);
 const cloneWs = await open(
   `${BASE.replace("http", "ws")}/session/${cloneId}/ws`,
 );
-await wait(300);
 const cloneDoc = await eventually(
   () => cloneWs.messages.find((m) => m.type === "state")?.doc,
 );
