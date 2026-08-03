@@ -59,6 +59,11 @@ export interface LiveSession {
   joinVoice: () => void;
   leaveVoice: () => void;
   sendClip: (audio: string) => void;
+  /* Generation, B3. What the session is doing while it has no grid yet, so the
+     play screen can render a labeled step rather than a spinner: section 11
+     says 10 to 30 seconds needs words. */
+  progress: { step: string; attempt: number } | null;
+  failure: string | null;
 }
 
 /* Section 16 budgets a reconnect within five seconds of a drop, so the first two
@@ -81,6 +86,11 @@ export function useSession(id: string): LiveSession {
   const [pending, setPending] = useState<PendingMap>({});
   const [voicePeers, setVoicePeers] = useState<VoicePeer[]>([]);
   const [lastClip, setLastClip] = useState<IncomingClip | null>(null);
+  const [progress, setProgress] = useState<{
+    step: string;
+    attempt: number;
+  } | null>(null);
+  const [failure, setFailure] = useState<string | null>(null);
 
   const socketRef = useRef<WebSocket | null>(null);
   const attemptRef = useRef(0);
@@ -233,6 +243,70 @@ export function useSession(id: string): LiveSession {
           case "voice-peers":
             setVoicePeers(msg.players as VoicePeer[]);
             break;
+          case "progress":
+            setProgress({ step: msg.step as string, attempt: msg.attempt });
+            break;
+          case "generated":
+            setProgress(null);
+            setFailure(null);
+            setDoc(msg.doc as SessionDoc);
+            break;
+          case "failed":
+            setProgress(null);
+            setFailure(msg.reason as string);
+            break;
+          /* The model could not lay out a puzzle, so the packing happens here.
+             Section 7: Workers Free allows 10 ms of CPU per request and a
+             backtracking packer does not fit, so the browser does the search
+             and the server validates the result. Imported lazily because a
+             visitor who never generates anything should not pay for the packer
+             in their bundle. */
+          case "pack": {
+            setProgress({ step: "packing", attempt: 0 });
+            const request = msg as {
+              candidates: Array<{ answer: string; clue: string }>;
+              rows: number;
+              cols: number;
+            };
+            void import("../../generate/pack.ts")
+              .then(({ pack }) => {
+                const packed = pack(request.candidates, {
+                  rows: request.rows,
+                  cols: request.cols,
+                });
+                if (!packed) {
+                  setProgress(null);
+                  setFailure("this theme did not make a puzzle. Try another.");
+                  return;
+                }
+                return fetch(`/session/${id}/packed`, {
+                  method: "PUT",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                    rows: packed.rows,
+                    cols: packed.cols,
+                    entries: packed.entries,
+                  }),
+                }).then((res) => {
+                  /* A 422 means the server refused what this browser packed,
+                     which is a defect rather than a user error, so it says so
+                     plainly instead of blaming the theme. */
+                  if (!res.ok) {
+                    setProgress(null);
+                    setFailure(
+                      res.status === 422
+                        ? "the grid this device built was rejected. Try again."
+                        : "could not save the puzzle. Try again.",
+                    );
+                  }
+                });
+              })
+              .catch(() => {
+                setProgress(null);
+                setFailure("could not build the puzzle on this device.");
+              });
+            break;
+          }
           case "clip":
             /* Stored as the newest clip rather than appended to a list. Nothing
                keeps audio around: voice.ts queues it for playback and drops it,
@@ -386,5 +460,7 @@ export function useSession(id: string): LiveSession {
     joinVoice,
     leaveVoice,
     sendClip,
+    progress,
+    failure,
   };
 }

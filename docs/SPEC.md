@@ -862,7 +862,11 @@ Checks:
 
 - `POST /generate` and `PUT /session/:id/packed` in the worker, with Turnstile, both rate limits, and the async progress messages. Its own acceptance run, `npm run test:generate`, 28 checks, which needs a worker configured with a Turnstile test secret and a fixture set and so cannot share the default one
 
-**What remains:** the crossword renderer, and the neuron measurement that sets the daily ceiling. Only the second is blocked, and on spending neurons rather than on a handoff.
+- The renderer: `CrosswordBoard` and `ClueList`, a `/generate` route with the Turnstile widget, and the `generating` and `failed` states. Verified by generating a puzzle against fixtures and playing it in a browser
+
+**What remains:** the neuron measurement that sets the daily ceiling, and the human checks. Neither is blocked on a handoff; the measurement is blocked on deciding to spend neurons.
+
+**Two things the browser found that no test would have.** A generated puzzle was titled "Untitled", because nothing gives it a name: there is no photo to recognize it by and no person typing a title, so every generated puzzle in a visitor's own list would have been called the same thing. It takes its theme now. And the clue buttons had **no accessible name at all**: the number, the clue and the length are three spans, and the computed name came out empty, so a screen reader read "button" and stopped. Section 16 has required state announced to assistive tech since v5, and the automated checks cannot see it. Both were found by opening the page, which is the argument for the human line in every milestone's checks.
 
 **Learned wiring the endpoint, and it is the kind of bug that only appears in production.** Generation finishes whenever it finishes, and the client that asked for it is still navigating to the session when it does. Broadcasting the fallback's word list reached whoever happened to be connected, which on a fast generation is nobody, and the session then sat in `generating` holding a request no one was ever told about until it expired thirty days later. The fix is to store the request before broadcasting it and replay it to any socket that connects while the session is still generating. Found by an acceptance test that connected too late, which is exactly what a real browser does.
 

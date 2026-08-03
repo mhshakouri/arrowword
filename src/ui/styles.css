@@ -269,3 +269,143 @@ input[type="text"] {
   transform-origin: top left;
   max-width: none;
 }
+
+/* ---- Generated puzzles, B3. A CSS grid rather than quads over a photo,
+   because a generated puzzle has no photo (invariant 11). ---- */
+
+.crossword {
+  position: relative;
+  margin: 0 auto;
+  max-width: min(100%, 32rem);
+}
+
+.crossword-grid {
+  display: grid;
+  gap: 2px;
+  background: var(--border);
+  border: 2px solid var(--border);
+  border-radius: 4px;
+}
+
+/* Square cells whatever the grid size, so a 7x11 puzzle is not stretched. */
+.cw-cell {
+  aspect-ratio: 1;
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: clamp(0.8rem, 4vw, 1.4rem);
+  font-weight: 600;
+  padding: 0;
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  min-height: 0;
+}
+
+.cw-dead {
+  background: var(--foreground);
+  opacity: 0.85;
+}
+
+.cw-answer {
+  background: var(--background);
+  color: var(--foreground);
+  cursor: pointer;
+}
+
+/* The run the selected clue covers. Subtle on purpose: it is orientation, not
+   emphasis, and a grid where a third of the squares shout competes with the
+   letters people are trying to read. */
+.cw-lit {
+  background: color-mix(in srgb, var(--accent) 12%, var(--background));
+}
+
+.cw-selected {
+  outline: 3px solid var(--accent);
+  outline-offset: -3px;
+  background: color-mix(in srgb, var(--accent) 22%, var(--background));
+}
+
+.cw-answer:focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: -3px;
+}
+
+.cw-number {
+  position: absolute;
+  top: 1px;
+  left: 2px;
+  font-size: 0.5em;
+  font-weight: 500;
+  line-height: 1;
+  color: var(--muted-foreground);
+}
+
+/* Whoever typed it, using the palette A5 assigned. Subtle for the reason
+   section 11 gives: a grid tinted by author competes with the puzzle. */
+.cw-letter {
+  color: var(--by-color, var(--foreground));
+}
+
+.clues {
+  display: grid;
+  gap: var(--gap);
+  margin-top: var(--gap);
+}
+
+@media (min-width: 40rem) {
+  .clues {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+.clue-heading {
+  font-size: 0.9rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted-foreground);
+  margin: 0 0 0.4rem;
+}
+
+.clue-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.clue {
+  display: grid;
+  grid-template-columns: 1.6rem 1fr auto;
+  gap: 0.5rem;
+  align-items: baseline;
+  width: 100%;
+  text-align: start;
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius);
+  padding: 0.4rem 0.5rem;
+  font-size: 0.95rem;
+  min-height: 0;
+  color: var(--foreground);
+}
+
+.clue:hover {
+  background: var(--muted);
+}
+
+.clue-selected {
+  background: color-mix(in srgb, var(--accent) 14%, var(--background));
+}
+
+.clue-number {
+  font-weight: 600;
+  color: var(--muted-foreground);
+}
+
+.clue-length {
+  color: var(--muted-foreground);
+  font-size: 0.85em;
+}

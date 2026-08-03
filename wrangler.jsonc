@@ -40,9 +40,13 @@
       "/session",
       "/session/*",
       "/config",
+      // Every method, including the browser asking for the page: the worker
+      // serves the shell for a GET rather than letting the asset handler have
+      // the path, because POST must reach the worker and this list is not
+      // method-aware.
       "/generate",
-      "/auth",
-      "/auth/*",
+      // Removed 2026-08-04: "/auth" and "/auth/*" were here for the sign-in
+      // that ADR-12 deleted, and had been routing to a worker that answers 404.
     ],
   },
   "r2_buckets": [

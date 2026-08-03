@@ -97,6 +97,22 @@ export function Landing() {
           <button onClick={() => navigate("/new")}>New puzzle</button>
         </section>
 
+        {/* B3. Deliberately a separate card from the photo path rather than a
+            second button on it: they produce different puzzle forms in
+            different languages, and offering them as variants of one thing
+            would promise a Persian arrowword and deliver an English
+            crossword. */}
+        <section class="card">
+          <h2 style="margin-top:0;font-size:1.1rem">Or have one written</h2>
+          <p class="muted">
+            Give a theme and a small English crossword is generated for it, in
+            under a minute. No photo needed.
+          </p>
+          <button onClick={() => navigate("/generate")}>
+            Make from a theme
+          </button>
+        </section>
+
         {sessions.length === 0 ? (
           <p class="muted">
             Puzzles you open will be listed here, in this browser only, because
