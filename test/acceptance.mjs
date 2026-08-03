@@ -312,6 +312,26 @@ for (const [what, badCells] of rejects) {
   check(`rejects ${what}`, res.status === 400, `got ${res.status}`);
 }
 
+const invisibleGiven = await req(
+  `${BASE}/session/${await newSession()}/puzzle`,
+  as(MAIN, {
+    method: "PUT",
+    body: JSON.stringify({
+      ...puzzle,
+      cells: [
+        [{ type: "clue" }, { type: "answer" }],
+        [{ type: "answer" }, { type: "prefilled", letter: "\u200C" }],
+      ],
+    }),
+    headers: { "Content-Type": "application/json" },
+  }),
+);
+check(
+  "rejects an invisible given letter",
+  invisibleGiven.status === 400,
+  `got ${invisibleGiven.status}`,
+);
+
 const badAlignment = await req(
   `${BASE}/session/${await newSession()}/puzzle`,
   as(MAIN, {
@@ -600,6 +620,27 @@ check(
   "multi-character rejected",
   await eventually(() => b.messages.some((m) => m.type === "error")),
 );
+
+/* A grapheme that draws nothing is not a letter. A zero-width non-joiner is a
+   single grapheme and legitimate Persian text, and a cell holding one on its own
+   looks empty while being full, so it reads as unanswered and cannot be told
+   apart from a cell nobody has touched. */
+for (const [what, ch] of [
+  ["a zero-width non-joiner", "\u200C"],
+  ["a space", " "],
+  ["a zero-width joiner", "\u200D"],
+]) {
+  b.messages.length = 0;
+  b.send(JSON.stringify({ type: "set", row: 0, col: 1, ch }));
+  const refused = await eventually(() =>
+    b.messages.find((m) => m.type === "error"),
+  );
+  check(
+    `rejects ${what} as a letter`,
+    refused !== null,
+    `got ${JSON.stringify(refused)}`,
+  );
+}
 
 /* One grapheme, not one code point: this is two code points and one letter.
 

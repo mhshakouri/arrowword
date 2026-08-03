@@ -17,6 +17,7 @@ import { useSession } from "../lib/session.ts";
 import { firstGrapheme, graphemes } from "../lib/grapheme.ts";
 import { Board } from "../components/Board.tsx";
 import { ClueZoom } from "../components/ClueZoom.tsx";
+import { ShareLink } from "../components/ShareLink.tsx";
 
 const MAX_NICKNAME = 24;
 
@@ -27,6 +28,7 @@ export function Play({ id }: { id: string }) {
   );
   const [clue, setClue] = useState<{ row: number; col: number } | null>(null);
   const [draftName, setDraftName] = useState("");
+  const [sharing, setSharing] = useState(false);
 
   const doc = session.doc;
 
@@ -180,11 +182,14 @@ export function Play({ id }: { id: string }) {
             </p>
           )}
 
-          {session.status === "live" && session.waiting > 0 && (
-            <p class="muted" role="status" style="margin:0 0 0.5rem">
-              Sending {session.waiting}…
-            </p>
-          )}
+          {/* No per-keystroke indicator. When the connection is healthy a write
+              is acknowledged in milliseconds, so this line mounted and unmounted
+              on every letter, changing the page height each time. On a phone,
+              where the grid is tall and the keyboard already covers half the
+              viewport, a height change while scrolled near the limit makes the
+              browser clamp the scroll position, which reads as the page jumping
+              while you type. The count is worth showing when it means something,
+              which is while reconnecting, and that notice is already there. */}
 
           {session.refusal && (
             <p class="notice error" role="alert">
@@ -215,6 +220,14 @@ export function Play({ id }: { id: string }) {
             Tap an outlined cell to read its clue. Tap an empty cell and type
             one letter. Backspace clears it.
           </p>
+
+          {/* The link was only offered at save time, so a solver wanting to
+              bring somebody in mid-puzzle had to go and find the URL. */}
+          {sharing ? (
+            <ShareLink id={id} />
+          ) : (
+            <button onClick={() => setSharing(true)}>Invite someone</button>
+          )}
         </>
       )}
 

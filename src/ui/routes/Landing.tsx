@@ -11,7 +11,11 @@ import { navigate } from "../lib/router.ts";
 
 export function Landing() {
   const [sessions, setSessions] = useState(visited);
-  const [demoId, setDemoId] = useState<string | null>(null);
+  /* Three states rather than two. Starting at `null` and only learning the real
+     value after `/config` resolves meant a visitor saw "no demo puzzle is set up
+     yet" for a moment before the button appeared, which is the opposite of the
+     truth and is the first thing anyone arriving from the playground reads. */
+  const [demoId, setDemoId] = useState<string | null | "unknown">("unknown");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -24,7 +28,7 @@ export function Landing() {
   }, []);
 
   async function openDemo() {
-    if (!demoId) return;
+    if (!demoId || demoId === "unknown") return;
     setError(null);
     setBusy(true);
     try {
@@ -55,7 +59,9 @@ export function Landing() {
       <div class="stack">
         <section class="card">
           <h2 style="margin-top:0;font-size:1.1rem">Play the demo</h2>
-          {demoId ? (
+          {demoId === "unknown" ? (
+            <p class="muted">Looking for today's puzzle…</p>
+          ) : demoId ? (
             <>
               <p class="muted">
                 A ready-made puzzle. Opening it makes your own copy, so you
@@ -91,7 +97,12 @@ export function Landing() {
           <button onClick={() => navigate("/new")}>New puzzle</button>
         </section>
 
-        {sessions.length > 0 && (
+        {sessions.length === 0 ? (
+          <p class="muted">
+            Puzzles you open will be listed here, in this browser only, because
+            there are no accounts.
+          </p>
+        ) : (
           <section>
             <h2 style="font-size:1.1rem">Puzzles you have opened</h2>
             <p class="muted">

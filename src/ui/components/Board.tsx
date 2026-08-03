@@ -4,7 +4,7 @@
    never enters: CSS `direction` has no effect on absolutely positioned elements,
    and the app has no concept of words. See ADR-5. */
 
-import { useEffect, useRef } from "preact/hooks";
+import { useEffect, useRef, useState } from "preact/hooks";
 import type { Cell, GridAlignment, LetterValue, PeerInfo } from "../../types";
 import { cellQuad } from "../lib/alignment.ts";
 import { firstGrapheme } from "../lib/grapheme.ts";
@@ -50,11 +50,22 @@ export function Board({
   onClear,
 }: BoardProps) {
   const captureRef = useRef<HTMLInputElement>(null);
+  /* The photo is around 550 KB, so on a phone over 4G there is a real moment
+     where the grid would otherwise be drawn over nothing. */
+  const [photoReady, setPhotoReady] = useState(false);
 
   /* Focus follows selection, as a fallback for selection that did not come from
-     a tap: keyboard navigation, or a later reconnect restoring a selection. */
+     a tap: keyboard navigation, or a later reconnect restoring a selection.
+
+     `preventScroll` is not optional here. Reported from a real Android device:
+     focusing a cell threw the page back to the top, and so did every keystroke,
+     which fights the on-screen keyboard and makes a tall grid unusable. The
+     browser was scrolling the focused field into view, and the field was pinned
+     to the top corner of the board. */
   useEffect(() => {
-    if (selected && !readOnly) captureRef.current?.focus();
+    if (selected && !readOnly) {
+      captureRef.current?.focus({ preventScroll: true });
+    }
   }, [selected, readOnly]);
 
   /* iOS opens the on-screen keyboard only for a `focus()` that happens inside
@@ -64,8 +75,23 @@ export function Board({
      synchronously, before any state update. Section 12's human check for this
      milestone exists to confirm it on a real device. */
   function focusCapture() {
-    if (!readOnly) captureRef.current?.focus();
+    if (!readOnly) captureRef.current?.focus({ preventScroll: true });
   }
+
+  /* Where the capture field sits. Moving it onto the selected cell means that a
+     browser which insists on scrolling the focused element into view scrolls to
+     the cell the player is already looking at, so the scroll is a no-op rather
+     than a jump. `preventScroll` above handles the common case; this handles the
+     browsers that ignore it, which is why both are here. */
+  const capturePosition = selected
+    ? (() => {
+        const q = cellQuad(alignment, rows, cols, selected.row, selected.col);
+        return {
+          left: `${((q.topLeft.x + q.bottomRight.x) / 2) * 100}%`,
+          top: `${((q.topLeft.y + q.bottomRight.y) / 2) * 100}%`,
+        };
+      })()
+    : { left: "0%", top: "0%" };
 
   function colorFor(playerId: string): string {
     const peer = peers.find((p) => p.id === playerId);
@@ -74,7 +100,21 @@ export function Board({
 
   return (
     <div class="board">
-      <img src={photoSrc} alt="The photographed puzzle you are solving." />
+      <img
+        src={photoSrc}
+        alt="The photographed puzzle you are solving."
+        onLoad={() => setPhotoReady(true)}
+      />
+
+      {!photoReady && (
+        <p
+          class="muted"
+          role="status"
+          style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;margin:0"
+        >
+          Loading the photo…
+        </p>
+      )}
 
       {/* One hidden input for the whole grid rather than one per cell: section 9
           calls for a hidden input to capture keystrokes, and 247 of them would
@@ -82,6 +122,7 @@ export function Board({
       <input
         ref={captureRef}
         class="capture"
+        style={`left:${capturePosition.left};top:${capturePosition.top}`}
         type="text"
         inputMode="text"
         autocomplete="off"

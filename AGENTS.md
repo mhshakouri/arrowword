@@ -10,8 +10,8 @@ Parent project: the personal website, `github.com/mhshakouri/mhshakouri.dev`,
 local path `../mhshakouri`. It links to this project and describes it; it never
 hosts it. Design tokens are copied from there, never imported.
 
-**State: A4 code complete 2026-08-03, awaiting the two-device check. A5,
-polish, is next.** The demo is playable end to end: clone it from the landing
+**State: A5 code complete 2026-08-03, awaiting the full-puzzle check. That is
+the last of v1; after it, the B series adds AI generated puzzles.** The demo is playable end to end: clone it from the landing
 page and type into the grid. What remains is optimistic echo, reconnection, and
 retry of an unacknowledged write. A puzzle can
 now be made end to end: photo, alignment, tagging, save, share link. What
@@ -40,11 +40,32 @@ limits are load-bearing rather than nice to have.
 
 ## Commands
 
-- `npm run dev` - local worker on :8787
-- `npm run typecheck` - TypeScript
-- `npm test` - acceptance suite, starts its own worker if none is running
-- `npm run deploy` - deploy to Cloudflare (needs `wrangler login`)
-- `npm run format` - Prettier
+- `npm run dev` - the worker on :8787, serving the API and the built UI
+- `npm run dev:ui` - Vite with hot reload, proxying the API to :8787. Run both
+- `npm run build` - the UI into `dist/`, which the worker serves as assets
+- `npm run typecheck` - two configs: the worker has no DOM, the UI has no Workers
+- `npm test` - the CI suite: unit, acceptance, photo cap, expiry. 84 checks
+- `npm run test:all` - the above plus the template run. 99 checks
+- `npm run deploy` - deploy by hand. Normally a merge to `main` does it
+- `npm run format` / `format:check` - Prettier
+
+Each test file starts and stops its own `wrangler dev`, so they need no setup and
+must not be run in parallel. Four entry points, because three of them need a
+worker configured differently:
+
+- `test:acceptance` - the main suite, default configuration
+- `test:photo` - a 2 KB photo cap, so the limit is testable without moving 8 MB
+- `test:expiry` - a 3 second retention window, so expiry is observable
+- `test:template` - **local only, excluded from `npm test`.** Needs Durable Object
+  state to survive a worker restart, which a GitHub runner does not manage. See
+  spec section 7
+
+## Configuration
+
+Spec section 7 has the table. Two things worth knowing before changing anything:
+`RETENTION_MS` and `MAX_PHOTO_BYTES` exist for tests and are absent from
+`wrangler.jsonc` on purpose, and `TEMPLATE_SESSIONS` is how a demo puzzle is
+named, which is a config edit plus a deploy rather than an API call.
 
 ## Conventions
 

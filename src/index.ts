@@ -116,6 +116,17 @@ function graphemes(value: string): string[] {
   return [...segmenter.segment(value)].map((s) => s.segment);
 }
 
+/* A grapheme that draws nothing is not a letter. A zero-width non-joiner and a
+   space are both single graphemes, and a cell holding one looks empty while
+   being full, so it reads as untouched and cannot be told apart from a cell
+   nobody has answered. Rejected here as well as on the client, because the
+   client is not the authority (invariant 14). */
+const INVISIBLE_GRAPHEME = /^[\s\p{Cf}\p{Cc}\p{Zs}]+$/u;
+
+function isVisibleGrapheme(value: string): boolean {
+  return value.length > 0 && !INVISIBLE_GRAPHEME.test(value);
+}
+
 /* Controls and bidi overrides are stripped. ZWNJ (U+200C) and ZWJ (U+200D) are
    deliberately kept: both are format characters, and ZWNJ is load-bearing in
    Persian, so a blanket \p{Cf} strip would mangle real names. */
@@ -182,7 +193,8 @@ function checkCells(cells: unknown, rows: number, cols: number): CellCheck {
            write path applies to player letters. */
         if (
           typeof cell.letter !== "string" ||
-          graphemes(cell.letter).length !== 1
+          graphemes(cell.letter).length !== 1 ||
+          !isVisibleGrapheme(cell.letter)
         ) {
           return {
             ok: false,
@@ -902,6 +914,10 @@ export class ArrowwordSession implements DurableObject {
          a combining mark is several code points and one grapheme. */
       if (typeof msg.ch !== "string" || graphemes(msg.ch).length !== 1) {
         this.fail(ws, "one character per cell", { row, col });
+        return;
+      }
+      if (!isVisibleGrapheme(msg.ch)) {
+        this.fail(ws, "that character would not show", { row, col });
         return;
       }
       letters[key] = { ch: msg.ch, at, by };

@@ -14,9 +14,25 @@ export function graphemes(value: string): string[] {
    deliver a whole word. */
 export function firstGrapheme(value: string): string | null {
   const parts = graphemes(value.trim());
-  return parts.length > 0 ? (parts[0] ?? null) : null;
+  /* The first grapheme that draws something, rather than simply the first: a
+     paste or a keyboard can lead with a zero-width joiner. */
+  for (const part of parts) if (isVisible(part)) return part;
+  return null;
 }
 
 export function isSingleGrapheme(value: string): boolean {
   return graphemes(value).length === 1;
+}
+
+/* Whether a grapheme would actually draw something.
+
+   A zero-width non-joiner is a grapheme, and so is a space. Both are legitimate
+   in Persian text and neither belongs in a cell on its own: the cell would look
+   empty while holding a letter, so it would read as untouched and refuse to look
+   filled. ZWNJ is kept inside a nickname for exactly the opposite reason, where
+   it is doing real work between letters. */
+const INVISIBLE = /^[\s\p{Cf}\p{Cc}\p{Zs}]+$/u;
+
+export function isVisible(value: string): boolean {
+  return value.length > 0 && !INVISIBLE.test(value);
 }
