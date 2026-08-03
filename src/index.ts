@@ -729,6 +729,10 @@ export class ArrowwordSession implements DurableObject {
         letters: {},
         players: {},
         puzzleSaved: true,
+        /* v3. These two describe one session from two angles and must never
+           disagree: the play screen reads `status`, expiry and invariant 4 read
+           `puzzleSaved`. Set together, always. */
+        status: "playable",
       });
       return json({ ok: true });
     }
@@ -800,6 +804,8 @@ export class ArrowwordSession implements DurableObject {
         alignment: body.alignment as GridAlignment,
         cells: checked.cells,
         puzzleSaved: true,
+        /* Set with `puzzleSaved`, never apart from it. See the clone path. */
+        status: "playable",
       });
       this.broadcast({ type: "state", doc: next });
       return json({ ok: true });
