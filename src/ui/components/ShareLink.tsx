@@ -5,7 +5,15 @@
 
 import { useState } from "preact/hooks";
 
-export function ShareLink({ id }: { id: string }) {
+export interface ShareLinkProps {
+  id: string;
+  /* Whether to offer a way into the puzzle. False when the reader is already
+     looking at it: after saving, "open the puzzle" is the next thing anyone
+     wants, and mid-solve it is an invitation to a room you are standing in. */
+  showOpen?: boolean;
+}
+
+export function ShareLink({ id, showOpen = true }: ShareLinkProps) {
   const url = `${location.origin}/s/${id}`;
   const [copied, setCopied] = useState(false);
   const [failed, setFailed] = useState(false);
@@ -42,9 +50,11 @@ export function ShareLink({ id }: { id: string }) {
         <button class="primary" onClick={() => void copy()}>
           {copied ? "Copied" : "Copy link"}
         </button>
-        <a class="button" href={`/s/${id}`}>
-          Open the puzzle
-        </a>
+        {showOpen && (
+          <a class="button" href={`/s/${id}`}>
+            Open the puzzle
+          </a>
+        )}
       </div>
       {failed && (
         <p class="muted" role="status" style="margin:0">

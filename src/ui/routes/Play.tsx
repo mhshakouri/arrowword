@@ -224,7 +224,7 @@ export function Play({ id }: { id: string }) {
           {/* The link was only offered at save time, so a solver wanting to
               bring somebody in mid-puzzle had to go and find the URL. */}
           {sharing ? (
-            <ShareLink id={id} />
+            <ShareLink id={id} showOpen={false} />
           ) : (
             <button onClick={() => setSharing(true)}>Invite someone</button>
           )}
