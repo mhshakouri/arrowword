@@ -175,10 +175,14 @@ export function useVoice(
      be mixed into noise that is neither of them. */
   const queueRef = useRef<IncomingClip[]>([]);
   const playingRef = useRef(false);
+  /* Guards against a clip that starts and never finishes. See the watchdog
+     below: without it a suspended context stalls the queue permanently. */
+  const watchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const teardown = useCallback(() => {
     if (stopTimerRef.current) clearTimeout(stopTimerRef.current);
     if (heldTimerRef.current) clearInterval(heldTimerRef.current);
+    if (watchdogRef.current) clearTimeout(watchdogRef.current);
     nodeRef.current?.disconnect();
     nodeRef.current = null;
     /* Stopping every track is what turns the browser's recording indicator off.
@@ -287,6 +291,10 @@ export function useVoice(
 
   const startTalking = useCallback(() => {
     if (!ctxRef.current || recordingRef.current) return;
+    /* The press is itself a gesture, so this is the one moment resuming is
+       always allowed. Belt and braces against a suspension that arrived without
+       a visibility change, which iOS does produce. */
+    if (ctxRef.current.state === "suspended") void ctxRef.current.resume();
     chunksRef.current = [];
     recordingRef.current = true;
     setState("recording");
@@ -305,42 +313,110 @@ export function useVoice(
   }, [stopTalking]);
 
   /* Playback. Queued rather than played on arrival, so two clips that land
-     together are heard in turn. */
+     together are heard in turn.
+
+     Defined at hook level rather than inside the effect that receives a clip,
+     because two other things have to be able to restart a stalled queue: the
+     watchdog below, and coming back from the background. */
+  const playNext = useCallback(() => {
+    if (watchdogRef.current) clearTimeout(watchdogRef.current);
+    const next = queueRef.current.shift();
+    const ctx = ctxRef.current;
+    if (!next || !ctx) {
+      playingRef.current = false;
+      setSpeaking(null);
+      return;
+    }
+    playingRef.current = true;
+    setSpeaking(next.from);
+    /* `decodeAudioData` wants its own copy: it detaches the buffer it is
+       given, and the queued clip may still be needed if decoding fails. */
+    const bytes = fromBase64(next.audio);
+    ctx
+      .decodeAudioData(bytes.buffer.slice(0) as ArrayBuffer)
+      .then((buffer) => {
+        const source = ctx.createBufferSource();
+        source.buffer = buffer;
+        source.connect(ctx.destination);
+        source.onended = () => playNext();
+        source.start();
+
+        /* `onended` is not guaranteed to arrive. iOS can interrupt the audio
+           session when the phone locks or a call comes in, which discards the
+           source without ever ending it, and the queue then waits on a callback
+           that will never fire. Silent, permanent, and indistinguishable from a
+           blocked network, which is the worst kind of failure this app can have.
+
+           So: expect the clip to finish, and if it has not, move on. A context
+           that is merely paused is not a stall, so that case re-arms instead of
+           skipping, and the clip resumes where it left off when the tab does. */
+        const arm = (ms: number) => {
+          watchdogRef.current = setTimeout(() => {
+            if (!playingRef.current) return;
+            if (ctxRef.current && ctxRef.current.state !== "running") {
+              arm(1000);
+              return;
+            }
+            playNext();
+          }, ms);
+        };
+        arm(buffer.duration * 1000 + 500);
+      })
+      .catch(() => {
+        /* A clip that will not decode is dropped rather than stalling the
+           queue behind it. Nothing is retried: it is already spoken. */
+        playNext();
+      });
+  }, []);
+
   useEffect(() => {
     if (!lastClip || !inVoice) return;
     queueRef.current.push(lastClip);
-
-    const playNext = () => {
-      const next = queueRef.current.shift();
-      const ctx = ctxRef.current;
-      if (!next || !ctx) {
-        playingRef.current = false;
-        setSpeaking(null);
-        return;
-      }
-      playingRef.current = true;
-      setSpeaking(next.from);
-      /* `decodeAudioData` wants its own copy: it detaches the buffer it is
-         given, and the queued clip may still be needed if decoding fails. */
-      const bytes = fromBase64(next.audio);
-      ctx
-        .decodeAudioData(bytes.buffer.slice(0) as ArrayBuffer)
-        .then((buffer) => {
-          const source = ctx.createBufferSource();
-          source.buffer = buffer;
-          source.connect(ctx.destination);
-          source.onended = playNext;
-          source.start();
-        })
-        .catch(() => {
-          /* A clip that will not decode is dropped rather than stalling the
-             queue behind it. Nothing is retried: it is already spoken. */
-          playNext();
-        });
-    };
-
     if (!playingRef.current) playNext();
-  }, [lastClip, inVoice]);
+  }, [lastClip, inVoice, playNext]);
+
+  /* Coming back from the background.
+
+     iOS suspends an `AudioContext` when the tab is hidden or the phone locks,
+     and never resumes it on its own. Everything downstream keeps working: clips
+     arrive, decode, and get scheduled onto a context that produces no sound. A
+     player who locks their phone once during a puzzle would have had voice go
+     silent for the rest of the session with nothing on screen to say so.
+
+     Resuming needs no user gesture here because the context was already
+     unlocked by the tap that joined; iOS only requires the gesture for the
+     first one. */
+  useEffect(() => {
+    if (!inVoice) return;
+    const wake = () => {
+      const ctx = ctxRef.current;
+      if (!ctx || document.hidden) return;
+      if (ctx.state === "suspended") {
+        void ctx.resume().then(
+          () => {
+            /* Whatever was mid-clip when the tab went away is gone as often as
+               not, so a queue that still thinks it is playing gets restarted
+               rather than trusted. */
+            if (playingRef.current && queueRef.current.length) playNext();
+          },
+          () => {
+            /* A context that will not resume means voice is over for this
+               session. Said out loud, because a silent failure here is exactly
+               the thing this effect exists to prevent. */
+            setState("failed");
+          },
+        );
+      }
+    };
+    document.addEventListener("visibilitychange", wake);
+    /* `focus` as well, because a phone unlocking does not always fire a
+       visibility change on iOS. */
+    window.addEventListener("focus", wake);
+    return () => {
+      document.removeEventListener("visibilitychange", wake);
+      window.removeEventListener("focus", wake);
+    };
+  }, [inVoice, playNext]);
 
   return {
     state,

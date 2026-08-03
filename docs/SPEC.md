@@ -344,6 +344,12 @@ Worth stating plainly, because it is the same failure the A0 photo cap was: **a 
 
 **Per-socket state has to live in the attachment, not in a field.** The Durable Object hibernates, which is what makes idle sessions free, and hibernation discards everything in memory while the sockets stay open. A rate window kept in a `Map` on the object would reset every time the object slept, which on a quiet puzzle is most of the time, so the limit would have been unenforceable exactly when a flood is cheapest to start. `serializeAttachment` survives, is capped at 2 KB, and holds timestamps rather than messages for that reason.
 
+**An `AudioContext` suspended in the background is the worst failure this app can produce.** iOS suspends one when the tab is hidden or the phone locks, and never resumes it. Everything downstream keeps working: clips arrive, decode, and get scheduled onto a context that makes no sound. Worse, the playback queue waits on an `onended` that never fires, so it stalls permanently rather than just missing one clip. Locking your phone once during a puzzle was enough to end voice for the session, silently.
+
+It is the worst kind because **it is indistinguishable from the network failure this whole feature was designed around.** Somebody in Iran reporting "I hear nothing" could mean the app is broken or the connection is blocked, and there would have been no way to tell which. Found by reasoning about the iOS audio session rather than by a test, and worth stating: the checks in section 12 cannot catch it, because no automated check in this repository can hear anything.
+
+Fixed three ways, because one was not enough: resume on both `visibilitychange` and `focus`, since an unlocking phone does not reliably fire the first; resume on the talk press, which is always a gesture; and a watchdog that expects each clip to end and moves on when it does not, re-arming rather than skipping while the context is legitimately paused. A resume that fails sets the failed state rather than going quiet.
+
 **Voice is deliberately allowed on a read-only template.** Invariant 7 says a template never accepts a letter write, and the voice branch sits above that check on purpose: people looking at the shared demo can still talk to each other, because talking is not writing to the puzzle. Recorded because the opposite reading is defensible and would have been chosen by accident if the checks had been ordered the other way round.
 
 ### Learned while building A5
