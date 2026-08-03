@@ -17,6 +17,28 @@ const bad = [];
 const check = (name, pass, detail = "") =>
   (pass ? ok : bad).push(`${name}${detail ? ` (${detail})` : ""}`);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+/* `wrangler dev` reloads its worker after the initial bundle: the parent process
+   stays alive, so nothing exits, but the port refuses connections for a moment
+   while it swaps. CI hit that twice, as an uncaught ECONNREFUSED from whichever
+   request came next. Readiness checks cannot fix it, because the window can open
+   after readiness. So every request tolerates a connection error and retries.
+
+   Only connection errors are retried. An HTTP response, including a failing one,
+   is returned untouched: this hides a flaky socket, never a flaky assertion. */
+async function req(url, init) {
+  let last;
+  for (let attempt = 0; attempt < 8; attempt++) {
+    try {
+      return await fetch(url, init);
+    } catch (err) {
+      last = err;
+      await sleep(400);
+    }
+  }
+  throw new Error(
+    `${url} refused ${8} connection attempts, last: ${last?.message}`,
+  );
+}
 
 const ABSENT_ID = "0".repeat(32);
 async function isUp() {
@@ -100,7 +122,7 @@ const as = (ip, init = {}) => ({
 });
 
 async function newSession(ip) {
-  const res = await fetch(`${BASE}/session`, as(ip, { method: "POST" }));
+  const res = await req(`${BASE}/session`, as(ip, { method: "POST" }));
   if (!res.ok) throw new Error(`could not create session: ${res.status}`);
   return (await res.json()).id;
 }
@@ -111,7 +133,7 @@ const jpg = new Uint8Array([0xff, 0xd8, 0xff, 0xd9]);
    it. Waiting well past the window rather than exactly on it, because the
    alarm is scheduled, not instantaneous. */
 const abandoned = await newSession(`${RUN}-abandoned`);
-await fetch(
+await req(
   `${BASE}/session/${abandoned}/photo`,
   as(`${RUN}-abandoned`, {
     method: "PUT",
@@ -119,11 +141,11 @@ await fetch(
     headers: { "Content-Type": "image/jpeg" },
   }),
 );
-const beforeExpiry = await fetch(`${BASE}/session/${abandoned}/photo`);
+const beforeExpiry = await req(`${BASE}/session/${abandoned}/photo`);
 check("session is alive before the window passes", beforeExpiry.ok);
 
 await sleep(RETENTION_MS + 4000);
-const afterExpiry = await fetch(`${BASE}/session/${abandoned}/photo`);
+const afterExpiry = await req(`${BASE}/session/${abandoned}/photo`);
 check(
   "abandoned session expired",
   afterExpiry.status === 404,
@@ -136,7 +158,7 @@ check(
 const busy = await newSession(`${RUN}-busy`);
 for (let i = 0; i < 4; i++) {
   await sleep(RETENTION_MS / 2);
-  await fetch(
+  await req(
     `${BASE}/session/${busy}/photo`,
     as(`${RUN}-busy`, {
       method: "PUT",
@@ -145,7 +167,7 @@ for (let i = 0; i < 4; i++) {
     }),
   );
 }
-const stillAlive = await fetch(`${BASE}/session/${busy}/photo`);
+const stillAlive = await req(`${BASE}/session/${busy}/photo`);
 check(
   "activity slides the window",
   stillAlive.ok,
