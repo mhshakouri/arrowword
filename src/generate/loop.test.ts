@@ -329,3 +329,55 @@ test("one throw among working calls does not read as an outage", async () => {
   if (out.status !== "failed") return;
   assert.doesNotMatch(out.reason, /unreachable/);
 });
+
+/* ---- An unparseable answer is re-proposed, not "repaired" ----
+
+   `repair` sends the previous proposal back for correction. Correcting nothing
+   returns nothing to correct, so when the first answer failed to parse, two of
+   the three attempts were spent asking the model to fix an empty list. */
+
+test("an empty proposal is re-proposed rather than sent for repair", async () => {
+  let proposals = 0;
+  let repairs = 0;
+  const provider: Provider = {
+    async proposeLayout(theme, rows, cols) {
+      proposals += 1;
+      /* Second proposal is the good one, so the test also proves the retry
+         actually reaches it. */
+      return proposals >= 2 ? LAYOUT_VALID : { theme, rows, cols, entries: [] };
+    },
+    async repair() {
+      repairs += 1;
+      return LAYOUT_VALID;
+    },
+    async propose() {
+      return RIVERS;
+    },
+  };
+  const out = await generate(provider, "t", SMALL);
+  assert.equal(out.status, "playable");
+  assert.equal(proposals, 2, "the empty answer should be asked again");
+  assert.equal(repairs, 0, "nothing was there to repair");
+});
+
+test("a proposal with entries is sent for repair, not re-proposed", async () => {
+  let proposals = 0;
+  let repairs = 0;
+  const provider: Provider = {
+    async proposeLayout() {
+      proposals += 1;
+      return LAYOUT_DISAGREES;
+    },
+    async repair() {
+      repairs += 1;
+      return LAYOUT_VALID;
+    },
+    async propose() {
+      return RIVERS;
+    },
+  };
+  const out = await generate(provider, "t", SMALL);
+  assert.equal(out.status, "playable");
+  assert.equal(proposals, 1);
+  assert.equal(repairs, 1, "a broken layout is worth repairing");
+});
