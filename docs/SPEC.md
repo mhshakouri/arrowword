@@ -1013,6 +1013,35 @@ Checks:
 
 **Security pass.** D1 adds no endpoint, no message, no stored server field. The dictionary is bundled text; the one new persisted value is `arrowword:lang` in `localStorage`, which holds one of two constants and is validated on read. Model output and user text render exactly as before, as text, never as HTML.
 
+#### D2 Persian AI generation, status: INVESTIGATED 2026-08-05, not started, blocked on one decision
+
+Generated puzzles are English only (B3). This milestone would make the theme's language a choice. **It is not started, and the investigation below is the reason it should not start yet:** one decision belongs to Hossein and it is the kind section 15 says to stop and ask about, because it changes the cost reasoning in ADR-12.
+
+**What already exists**, built during the investigation because it is needed whatever gets decided:
+
+- `src/generate/persian.ts`: folding, length, and the giveaway rule, with tests. Every comparison in generation is a letter comparison, and in Persian the same word has several spellings, so nothing else can be trusted until this exists
+- `scripts/probe.mjs` and its worker: prompts in front of the real model, judged by the real module. **This is also the by-hand measurement script ADR-12 has asked for since B3** and section 7 says the ceiling depends on
+
+**The prompt matters and the model matters more, measured rather than argued.** The same prompt, one call, theme «پرندگان» (birds):
+
+- `llama-3.1-8b-instruct-fp8`, the model in production: مرغابی (duck) four times over with the glosses duck, goose, swan and pigeon; پنجه (paw) offered as a falcon; شکاری (an adjective, "hunting") offered as a sparrow. Earlier runs called a squirrel, a jackal, a leopard and a fly birds, each with a clue confidently describing it as one. **8.2 neurons.**
+- `llama-3.3-70b-instruct-fp8-fast`, same prompt: بلبل، کبک، عقاب، شاهین، طاووس، گنجشک، حمام. Real birds, distinct, with clues that describe them. **42.2 neurons**, and about twice as fast in wall time.
+
+**Every mechanical check passed on both.** Script, length, one-word-ness, no Arabic letters, no ZWNJ: the 8B scored 8 out of 8 while proposing a paw as a bird. That is the finding that matters most, and it generalizes past Persian: **the validator can only see whether a puzzle is well formed, never whether it is any good.** A wrong word that crosses correctly is invisible to every automated check this project has, and there is no cheap way to change that. Persian only makes it obvious, because the failure stops being a subtly odd clue and becomes a leopard.
+
+**What the prompt fixed and what it could not.** Three prompt variants were compared. Instructions in English beat the same instructions in Persian decisively: the all-Persian prompt produced repeated JSON keys, duplicate answers, and one 45 second call. A worked example with real words got the example words copied into the answer, so «کتاب» arrived in a puzzle about birds; placeholders fixed that. Asking for a throwaway English gloss per word measurably improved theme adherence on both models and is the single most useful line in the prompt. None of it made the 8B's vocabulary reliable.
+
+**The normalizer earns its place, and one of its decisions has a visible consequence.** Real replies contained `شکاري` with an Arabic yeh, folded to `شکاری`. But `آبگوشت` folds to `ابگوشت`, and if the folded form is what gets stored and drawn, a Persian solver is shown a misspelling. Folding is right for _comparison_ and wrong for _display_, which the module does not currently separate. Whether آ and ا share a square at all is a convention question for a native speaker, and it is the first thing D2 must settle.
+
+**Two vendor facts, both read rather than remembered**, which is the standing lesson from the wrong model id in B3:
+
+- `llama-3.1-8b-instruct-fp8` does not support JSON schema at all: Workers AI answers `5025: This model doesn't support JSON Schema`. The provider's try-schema-then-plain fallback is therefore not a precaution, it is the path production takes every time
+- Neurons per million tokens, from the pricing page on 2026-08-05: the 8B is 13,778 in and 26,128 out; the 70B is 26,668 in and **204,805 out**. Output dominates, so the 70B costs about five times as much per call and a longer prompt is nearly free
+
+**The decision, and it is Hossein's.** Switching `GENERATION_MODEL` to the 70B is a configuration change by design, but the daily ceiling in section 7 derives from the model's output rate, so it moves: roughly 95 generations a day across all visitors instead of roughly 480, on the same free allocation that still fails closed rather than billing. For an app whose per-IP limit is ten a day, 95 is a real reduction and not obviously a problem. The alternative is shipping Persian on a model that calls a leopard a bird, which is worse than not shipping it. **What is not on the table is keeping the 8B for Persian and hoping the prompt improves; that was tested and it does not.**
+
+Owed before D2 can start, and neither is code: the آ/ا convention, and the model decision above.
+
 Out of v1: OCR, auto grid detection, perspective correction, correctness checking, accounts of any kind. Voice is the C series and AI puzzle generation is the B series, both above, both v2.
 
 Changed 2026-08-02: **per-player colors moved into v1** (A3 and A5). With an unbounded number of players and unverified nicknames, telling people apart stops being polish and becomes the only way the player list means anything.

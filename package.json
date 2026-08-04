@@ -20,6 +20,7 @@
     "test:unit": "node --test src/*.test.ts src/generate/*.test.ts src/ui/lib/*.test.ts src/ui/i18n/*.test.ts",
     "test:photo": "node test/photo-limit.mjs",
     "test:template": "node test/template.mjs",
+    "probe": "node --experimental-strip-types scripts/probe.mjs",
     "test:all": "npm test && npm run test:template"
   },
   "devDependencies": {

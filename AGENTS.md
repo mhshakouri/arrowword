@@ -61,6 +61,11 @@ limits are load-bearing rather than nice to have.
 - `npm test` - the CI suite: unit, acceptance, photo cap, expiry, generation. 333 checks
 - `npm run test:all` - the above plus the template run. 348 checks
 - `npm run deploy` - deploy by hand. Normally a merge to `main` does it
+- `npm run probe` - put prompts in front of the **real** model and report what
+  came back, judged by the real modules. Needs `wrangler login` and spends
+  neurons, so it is local only and never in CI. `PROBE_MODEL`, `PROBE_VARIANTS`,
+  `PROBE_THEMES` and `PROBE_DUMP` narrow a run. This is the by-hand measurement
+  script ADR-12 asks for, and it reports neurons per call
 - `npm run format` / `format:check` - Prettier
 
 Each test file starts and stops its own `wrangler dev`, so they need no setup and

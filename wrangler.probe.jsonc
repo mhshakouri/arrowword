@@ -1,0 +1,10 @@
+{
+  // The prompt probe, run by hand: `npm run probe`. Never deployed, and
+  // deliberately not part of the app's own configuration, so nothing here can
+  // change what production does. Its only binding is the model.
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "arrowword-probe",
+  "main": "scripts/probe-worker.ts",
+  "compatibility_date": "2026-07-31",
+  "ai": { "binding": "AI" },
+}
