@@ -118,20 +118,28 @@ export function Play({ id }: { id: string }) {
      creates a new session rather than reusing this one, because `puzzleSaved`
      is write-once and this session may already be part way through. */
   if (doc.status === "failed" || session.failure) {
+    /* The heading, the explanation and the button have to agree. A screen that
+       says "this is not your theme" above a button saying "try another theme"
+       tells somebody to do the one thing it just said would not help, and it
+       shipped that way. */
+    const unreachable = (session.failure ?? "").startsWith("unreachable");
+    const known = session.failure && !unreachable;
     return (
       <main>
-        <h1>That theme did not work out</h1>
+        <h1>
+          {unreachable
+            ? "Could not reach the puzzle writer"
+            : "That theme did not work out"}
+        </h1>
         <p class="lede">
-          {/* Only blame the theme when the theme was the problem. An outage
-              reported as a bad theme sends somebody away rewording a word that
-              was fine, which is what happened the first time this ran. */}
-          {doc.status === "failed" && !session.failure
-            ? "The puzzle writer could not be reached just now. This is not your theme, and it is worth trying again in a few minutes."
-            : (session.failure ??
-              "The puzzle could not be built. Some themes give the model too little to work with.")}
+          {unreachable
+            ? "The model could not be reached just now, so nothing was built. This is not your theme, and the attempt has been given back to you."
+            : known
+              ? session.failure
+              : "The model answered but could not make a puzzle from it. Short, common, everyday words work best: a subject like “the kitchen” gives it more to work with than a list of names."}
         </p>
         <a class="button primary" href="/generate">
-          Try another theme
+          {unreachable ? "Try again" : "Try another theme"}
         </a>
       </main>
     );

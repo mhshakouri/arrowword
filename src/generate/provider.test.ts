@@ -11,6 +11,7 @@ import {
   clean,
   GENERATION_MODEL,
   recordedProvider,
+  workersAiProvider,
   type Proposal,
 } from "./provider.ts";
 import {
@@ -228,4 +229,109 @@ test("the generation model id is pinned, and changing it is deliberate", () => {
 
 test("the model id looks like a Workers AI id at all", () => {
   assert.match(GENERATION_MODEL, /^@cf\/[a-z0-9-]+\/[a-z0-9.-]+$/);
+});
+
+/* ---- The clue-gives-it-away rule matches words, not substrings ----
+
+   Shipped as `clue.toUpperCase().includes(answer)`, which kills a three letter
+   answer whenever its letters appear anywhere in the clue. Short answers are
+   the ones a small grid needs most, and enough of them were dropped that the
+   word list came back empty and the packing fallback could not run. */
+
+const kept = (answer: string, clue: string) =>
+  clean({ theme: "t", candidates: [{ answer, clue }] }).candidates.length === 1;
+
+test("a clue merely containing the answer's letters is kept", () => {
+  assert.ok(kept("ART", "Departure lounge"), "ART killed by 'departure'");
+  assert.ok(kept("ONE", "Money spent on a film"), "ONE killed by 'money'");
+  assert.ok(kept("OAT", "Coat of paint"), "OAT killed by 'coat'");
+  assert.ok(kept("SET", "Sunset over the studio"), "SET killed by 'sunset'");
+  assert.ok(kept("ACT", "A factual scene"), "ACT killed by 'factual'");
+});
+
+test("a clue containing the answer as a word is still dropped", () => {
+  assert.equal(kept("LADLE", "A ladle for serving soup"), false);
+  assert.equal(kept("ART", "The art of film"), false);
+  assert.equal(kept("REEL", "A film reel holder"), false);
+});
+
+test("the word match ignores case and punctuation around the word", () => {
+  assert.equal(kept("SET", "On the set, before dawn"), false);
+  assert.equal(kept("SET", "Where filming happens (the SET)"), false);
+});
+
+/* ---- readEntries accepts the shapes a model actually produces ---- */
+
+test("a layout split into across and down arrays is read", async () => {
+  const ai = {
+    async run() {
+      return {
+        response: JSON.stringify({
+          across: [{ row: 0, col: 0, answer: "CAT", clue: "It ignores you" }],
+          down: [{ row: 0, col: 0, answer: "COT", clue: "A small bed" }],
+        }),
+      };
+    },
+  };
+  const out = await workersAiProvider(ai).proposeLayout("t", 5, 5);
+  assert.equal(out.entries.length, 2);
+  assert.equal(out.entries[0]?.dir, "across");
+  assert.equal(out.entries[1]?.dir, "down");
+});
+
+test("a bare array of entries is read", async () => {
+  const ai = {
+    async run() {
+      return {
+        response: JSON.stringify([
+          {
+            dir: "across",
+            row: 0,
+            col: 0,
+            answer: "CAT",
+            clue: "It ignores you",
+          },
+        ]),
+      };
+    },
+  };
+  const out = await workersAiProvider(ai).proposeLayout("t", 5, 5);
+  assert.equal(out.entries.length, 1);
+});
+
+test("prose around the JSON does not stop it being read", async () => {
+  const ai = {
+    async run() {
+      return {
+        response:
+          'Sure! Here is your crossword:\n```json\n{"entries":[{"dir":"down","row":1,"col":2,"answer":"COT","clue":"A small bed"}]}\n```\nHope that helps.',
+      };
+    },
+  };
+  const out = await workersAiProvider(ai).proposeLayout("t", 5, 5);
+  assert.equal(out.entries.length, 1);
+  assert.equal(out.entries[0]?.answer, "COT");
+});
+
+test("len is derived from the answer, never read from the model", async () => {
+  const ai = {
+    async run() {
+      return {
+        response: JSON.stringify({
+          entries: [
+            {
+              dir: "across",
+              row: 0,
+              col: 0,
+              answer: "CAT",
+              clue: "c",
+              len: 99,
+            },
+          ],
+        }),
+      };
+    },
+  };
+  const out = await workersAiProvider(ai).proposeLayout("t", 5, 5);
+  assert.equal(out.entries[0]?.len, 3);
 });

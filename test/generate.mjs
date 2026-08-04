@@ -509,6 +509,48 @@ check(
   (await drained.text()).trim() === "out of budget for today",
 );
 
+/* ---- A failure that is not the caller's does not spend their allowance ----
+
+   Charging somebody for an outage is the kind of small unfairness that makes an
+   app feel broken even when it recovers. The provider being unreachable is our
+   problem; a theme the model answered and could do nothing with is a real
+   attempt and keeps its cost. */
+
+await restart({
+  TURNSTILE_SECRET: PASS_SECRET,
+  /* No fixture set and no AI binding reachable in local mode, so every call
+     throws, which is exactly the unreachable case. */
+  RATE_LIMIT_GENERATE: "2",
+  GENERATION_DAILY_LIMIT: "200",
+});
+
+const refunded = `${RUN}-refund`;
+const firstTry = await generate("rivers", refunded);
+check("a generation starts even when the model is unreachable", firstTry.ok);
+const { id: refundId } = await firstTry.json();
+const refundWatcher = await socket(refundId);
+await eventually(() =>
+  refundWatcher.messages.find(
+    (m) =>
+      m.type === "failed" || (m.type === "state" && m.doc?.status === "failed"),
+  ),
+);
+refundWatcher.close();
+/* Two per address here, and one was just spent and given back, so two more
+   must still be available rather than one. */
+const second = await generate("rivers", refunded);
+check(
+  "an unreachable failure gives the attempt back",
+  second.ok,
+  `got ${second.status}`,
+);
+const afterRefund = await generate("rivers", refunded);
+check(
+  "and the limit still applies to attempts that were not refunded",
+  afterRefund.ok || afterRefund.status === 429,
+  `got ${afterRefund.status}`,
+);
+
 /* ---- Turnstile failing closed ---- */
 
 await restart({

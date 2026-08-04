@@ -83,6 +83,12 @@ const ANSWER = /^[A-Z]+$/;
    is sanitized on write like any other displayed string (invariant 8), which
    happens where it is stored; here it is only bounded. */
 const MAX_CLUE = 120;
+
+/* True when the clue contains the answer as a whole word. Answers are A to Z
+   only, so there is nothing to escape. */
+function givesItAway(clue: string, answer: string): boolean {
+  return new RegExp(`\\b${answer}\\b`, "i").test(clue);
+}
 const MIN_ANSWER = 3;
 const MAX_ANSWER = 11;
 
@@ -108,9 +114,16 @@ export function clean(raw: Proposal): Proposal {
     /* A duplicated answer would produce two entries with the same solution and
        a puzzle that reads as a mistake even when it validates. */
     if (seen.has(answer)) continue;
-    /* A clue that contains its own answer is not a clue. Models do this
-       constantly when a theme word is rare. */
-    if (clue.toUpperCase().includes(answer)) continue;
+    /* A clue that gives away its own answer is not a clue, and models do this
+       constantly when a theme word is rare.
+
+       Matched as a **word**, not a substring, which is how this shipped and was
+       wrong. `"Departure".includes("ART")` is true, so a three letter answer was
+       killed by any clue containing it anywhere: ART by "departure", ONE by
+       "money", OAT by "coat", SET by "sunset", ACT by "factual". Short answers
+       are exactly the ones a small grid needs most, and the word list came back
+       empty often enough that the fallback could not run. */
+    if (givesItAway(clue, answer)) continue;
 
     seen.add(answer);
     candidates.push({ answer, clue });
@@ -198,12 +211,21 @@ function prompt(theme: string, count: number): string {
 /* Models wrap JSON in prose and fences however they were feeling. Pulling out
    the first balanced object is more reliable than asking harder. */
 function extractJson(text: string): unknown {
-  const start = text.indexOf("{");
+  /* Whichever bracket comes first. Looking only for `{` sliced a top-level
+     array down to its first element, which reads as the model having sent one
+     entry when it sent eight. */
+  const curly = text.indexOf("{");
+  const square = text.indexOf("[");
+  const start =
+    curly < 0 ? square : square < 0 ? curly : Math.min(curly, square);
   if (start < 0) return null;
+
+  const open = text[start] as "{" | "[";
+  const close = open === "{" ? "}" : "]";
   let depth = 0;
   for (let i = start; i < text.length; i += 1) {
-    if (text[i] === "{") depth += 1;
-    else if (text[i] === "}") {
+    if (text[i] === open) depth += 1;
+    else if (text[i] === close) {
       depth -= 1;
       if (!depth) {
         try {
@@ -235,8 +257,28 @@ function layoutPrompt(theme: string, rows: number, cols: number): string {
    from the grid, and letting it propose them would create two more ways for it
    to contradict itself. */
 function readEntries(raw: unknown): Entry[] {
-  const list = (raw as { entries?: unknown })?.entries;
-  if (!Array.isArray(list)) return [];
+  /* The prompt asks for `{entries:[...]}`, and a model that felt like answering
+     `{across:[...],down:[...]}` or a bare array meant just as well. Accepting
+     the shapes it actually produces is cheaper than insisting, and an empty
+     result here costs a whole attempt. */
+  const source = raw as {
+    entries?: unknown;
+    across?: unknown;
+    down?: unknown;
+  } | null;
+  const list = Array.isArray(raw)
+    ? raw
+    : Array.isArray(source?.entries)
+      ? source.entries
+      : [
+          ...(Array.isArray(source?.across)
+            ? source.across.map((e) => ({ ...(e as object), dir: "across" }))
+            : []),
+          ...(Array.isArray(source?.down)
+            ? source.down.map((e) => ({ ...(e as object), dir: "down" }))
+            : []),
+        ];
+  if (!Array.isArray(list) || !list.length) return [];
   const out: Entry[] = [];
   for (const item of list) {
     const e = item as Record<string, unknown>;

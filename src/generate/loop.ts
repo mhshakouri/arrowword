@@ -114,7 +114,14 @@ export async function generate(
     report({ step: "validating", attempt });
     const entries = proposal.entries ?? [];
     if (!entries.length) {
-      lastProblems = ["the proposal contained no entries"];
+      /* Ask again rather than asking for a repair. `repair` sends the previous
+         proposal back for correction, and correcting nothing is a wasted call
+         that returns nothing to correct next time either: two of the three
+         attempts were being spent that way whenever the first answer failed to
+         parse, which was often. Clearing it makes the next iteration propose
+         from scratch. */
+      proposal = null;
+      lastProblems = ["the model returned no usable entries"];
       continue;
     }
 

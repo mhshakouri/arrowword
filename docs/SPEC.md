@@ -874,6 +874,16 @@ Checks:
 
 **What remains:** the neuron measurement that sets the daily ceiling, and the human checks. Neither is blocked on a handoff; the measurement is blocked on deciding to spend neurons.
 
+**The clue rule was a substring match, and it starved the fallback.** `clean()` dropped any candidate whose clue contained its answer, which is a real rule and models break it constantly. It was written as `clue.includes(answer)`, so a three letter answer died whenever its letters appeared anywhere: `ART` killed by "departure", `ONE` by "money", `OAT` by "coat", `SET` by "sunset", `ACT` by "factual". Five of six realistic clues were dropped in a quick check, and short answers are exactly what a small grid needs most. The word list came back too thin to pack, so the fallback that exists so the button always works could not run. Matched as a whole word now.
+
+**Two of three attempts were being spent repairing nothing.** When a proposal failed to parse, the loop held an object with an empty entry list, saw it as a proposal, and sent it to `repair`, which asks the model to correct what it previously said. Correcting nothing returns nothing to correct. An empty answer now clears the proposal so the next attempt proposes afresh, which is the difference between three real tries and one.
+
+**The parser insisted on one shape.** The prompt asks for `{entries:[...]}` and a model answering `{across:[...],down:[...]}` or a bare array meant just as well. `extractJson` also looked only for `{`, so a top-level array was sliced down to its first element and read as one entry when eight were sent. Both accepted now: insisting is not free when an unparsed answer costs a whole attempt.
+
+**A failed generation spent one of the caller's ten, including when the fault was ours.** Charging somebody for an outage is the kind of small unfairness that makes an app feel broken even when it recovers. The per-IP counter is refunded when generation fails as unreachable, and never when the model answered and could do nothing with the theme, which is a real attempt. The **global pool is deliberately not refunded**: those neurons were spent either way, which is precisely what counting attempts rather than successes means.
+
+**The failure screen contradicted itself.** It said "This is not your theme" above a button reading "Try another theme", which tells somebody to do the one thing it just said would not help. Heading, explanation and button now agree, and the theme-failure text suggests what actually works rather than restating that it did not.
+
 **The model id was wrong, and every automated check passed anyway.** B3 shipped naming `@cf/meta/llama-3.1-8b-instruct`, which Workers AI does not serve: the real id carries an `-fp8` suffix. Every call threw, the loop counted each throw as a failed attempt exactly as designed, exhausted its repairs, fell through to the word list, threw again, and reported `failed`. The first person to try the feature was told their theme was the problem.
 
 Three separate lessons, and the middle one is the expensive one:

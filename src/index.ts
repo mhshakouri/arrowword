@@ -540,6 +540,28 @@ async function allowGenerate(env: Env, request: Request): Promise<boolean> {
   return res.ok;
 }
 
+/* Hand back one attempt. Called when generation failed in a way that was not
+   the caller's doing, because charging somebody for an outage is the kind of
+   small unfairness that makes an app feel broken even when it recovers.
+
+   The global pool is deliberately **not** refunded: those neurons were spent
+   whether or not a puzzle came out, which is exactly what section 7 means by
+   counting attempts rather than successes. Per IP is a fairness limit and can
+   forgive; the global one is an accounting of something already gone. */
+async function refundGenerate(env: Env, key: string): Promise<void> {
+  if (!key) return;
+  const override = Number(env.RATE_LIMIT_GENERATE);
+  const limit =
+    Number.isInteger(override) && override > 0
+      ? override
+      : GENERATE_PER_IP_PER_DAY;
+  const stub = env.RATE_LIMITER.get(env.RATE_LIMITER.idFromName(key));
+  await stub.fetch(
+    `https://do/take?bucket=generate&limit=${limit}&window=${DAY_MS}&refund=1`,
+    { method: "POST" },
+  );
+}
+
 /* The global pool. One shared counter, keyed by nothing, because the resource
    it protects is shared by everyone: 10,000 neurons a day is a single
    allocation and the failure it prevents is one caller draining the day for
@@ -656,7 +678,9 @@ export default {
          and start watching. */
       const go = await stub.fetch("https://do/generate", {
         method: "POST",
-        body: JSON.stringify({ theme }),
+        /* The limiter key travels as an opaque string so the object can hand an
+           attempt back without ever learning what it identifies. */
+        body: JSON.stringify({ theme, limiterKey: `ip:${clientIp(request)}` }),
         headers: { "Content-Type": "application/json" },
       });
       if (!go.ok) {
@@ -816,6 +840,23 @@ export class RateLimiter implements DurableObject {
       count: number;
       windowStart: number;
     }>(bucket);
+
+    /* Give one back. Used when a generation failed for a reason that was not
+       the caller's: an outage should not spend somebody's daily allowance.
+
+       Only ever decrements an existing window and never below zero, so a
+       refund cannot mint attempts, extend a window, or resurrect an expired
+       one. The worst a forged refund could do is undo a charge that a real
+       request made, and the caller could simply not have made that request. */
+    if (url.searchParams.get("refund") === "1") {
+      if (record && now - record.windowStart < windowMs) {
+        await this.ctx.storage.put(bucket, {
+          count: Math.max(0, record.count - 1),
+          windowStart: record.windowStart,
+        });
+      }
+      return json({ ok: true });
+    }
 
     /* Counters are worthless once their window has passed, so the object drops
        its own storage rather than accumulating one row per IP forever. */
@@ -1169,9 +1210,12 @@ export class ArrowwordSession implements DurableObject {
       }
       const body = (await request.json().catch(() => ({}))) as {
         theme?: unknown;
+        limiterKey?: unknown;
       };
       const theme = sanitizeTheme(body.theme);
       if (!theme) return new Response("a theme is required", { status: 400 });
+      const limiterKey =
+        typeof body.limiterKey === "string" ? body.limiterKey : "";
 
       await this.save(
         {
@@ -1183,7 +1227,7 @@ export class ArrowwordSession implements DurableObject {
         },
         false,
       );
-      this.ctx.waitUntil(this.runGeneration(theme));
+      this.ctx.waitUntil(this.runGeneration(theme, limiterKey));
       return json({ ok: true });
     }
 
@@ -1495,7 +1539,7 @@ export class ArrowwordSession implements DurableObject {
      Never throws. A generation that fails is a session in `failed`, which is a
      user-facing state offering a fresh attempt, not an unhandled rejection in a
      detached promise where nobody would ever see it. */
-  private async runGeneration(theme: string): Promise<void> {
+  private async runGeneration(theme: string, limiterKey = ""): Promise<void> {
     try {
       const provider = providerFor(this.env);
       const outcome = await generate(provider, theme, {
@@ -1573,6 +1617,13 @@ export class ArrowwordSession implements DurableObject {
         return;
       }
 
+      /* Charging somebody for an outage is the kind of small unfairness that
+         makes an app feel broken even when it recovers. Only for a reachability
+         failure: a theme the model answered and could do nothing with is a real
+         attempt and keeps its cost. */
+      if (outcome.reason.startsWith("unreachable")) {
+        await refundGenerate(this.env, limiterKey);
+      }
       await this.save({ ...doc, status: "failed" }, false);
       this.broadcast({ type: "failed", reason: outcome.reason });
     } catch (error) {
@@ -1583,6 +1634,8 @@ export class ArrowwordSession implements DurableObject {
           message: String((error as Error)?.message ?? error).slice(0, 200),
         }),
       );
+      /* An exception escaping the loop is never the caller's doing. */
+      await refundGenerate(this.env, limiterKey);
       const doc = await this.doc();
       if (doc) await this.save({ ...doc, status: "failed" }, false);
       this.broadcast({
