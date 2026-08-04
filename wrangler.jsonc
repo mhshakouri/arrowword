@@ -81,5 +81,17 @@
     // hostname list on the widget must include both localhost and the
     // production subdomain or the challenge fails with a domain error.
     "TURNSTILE_SITE_KEY": "0x4AAAAAAEFf0D8w4Nnv-fZm",
+    // Which Workers AI model writes the puzzle. Empty uses the default in
+    // src/generate/provider.ts. Set here so comparing two models is a config
+    // change and a deploy rather than a code edit. The daily ceiling in spec
+    // section 7 is derived from the chosen model's output rate, so switching to
+    // one with a different rate means re-deriving it.
+    "GENERATION_MODEL": "",
+    // "1" logs the model's raw output, truncated to 400 characters.
+    // **Diagnosis only, and it should go back to "" once a question is
+    // answered.** Spec section 16 forbids logging puzzle content, and this is
+    // the one switch that does. On now because the model could not produce a
+    // valid layout and nobody has seen what it actually replies with.
+    "GENERATION_DEBUG": "1",
   },
 }

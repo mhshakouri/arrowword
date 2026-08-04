@@ -223,8 +223,34 @@ test("a recorded provider with no proposals is a programming error", () => {
    the diff rather than an edit nobody reviews. `wrangler ai models list` is
    the ten seconds that would have caught it. */
 
-test("the generation model id is pinned, and changing it is deliberate", () => {
-  assert.equal(GENERATION_MODEL, "@cf/meta/llama-3.1-8b-instruct-fp8");
+test("the default generation model id is pinned, and changing it is deliberate", () => {
+  assert.equal(GENERATION_MODEL, "@cf/google/gemma-4-26b-a4b-it");
+});
+
+/* Configurable, so a comparison is a deploy rather than a pull request, and the
+   value actually reaches the call rather than being decoration. */
+test("an overriding model id is the one asked for", async () => {
+  let asked = "";
+  const ai = {
+    async run(model: string) {
+      asked = model;
+      return { response: '{"candidates":[]}' };
+    },
+  };
+  await workersAiProvider(ai, false, "@cf/some/other-model").propose("t", 4);
+  assert.equal(asked, "@cf/some/other-model");
+});
+
+test("no override means the default", async () => {
+  let asked = "";
+  const ai = {
+    async run(model: string) {
+      asked = model;
+      return { response: '{"candidates":[]}' };
+    },
+  };
+  await workersAiProvider(ai).propose("t", 4);
+  assert.equal(asked, GENERATION_MODEL);
 });
 
 test("the model id looks like a Workers AI id at all", () => {

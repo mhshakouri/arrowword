@@ -72,6 +72,12 @@ export interface Env {
   /* "1" logs the model's raw output, truncated. Diagnosis only: section 16
      forbids logging puzzle content, and this is the one thing that would. */
   GENERATION_DEBUG?: string;
+  /* Which Workers AI model writes the puzzle. Empty means the default in
+     provider.ts. Configurable because comparing two models on this task means
+     running both against real themes, and that should not need a code change
+     each time. The daily ceiling in section 7 is derived from the chosen
+     model's output rate, so a switch means re-checking it. */
+  GENERATION_MODEL?: string;
 }
 
 const SESSION_ID = /^[0-9a-f]{32}$/;
@@ -319,7 +325,11 @@ function providerFor(env: Env): Provider {
     );
   }
   if (!env.AI) throw new Error("no generation provider configured");
-  return workersAiProvider(env.AI, env.GENERATION_DEBUG === "1");
+  return workersAiProvider(
+    env.AI,
+    env.GENERATION_DEBUG === "1",
+    env.GENERATION_MODEL || undefined,
+  );
 }
 
 function sanitizeNickname(raw: unknown): string {

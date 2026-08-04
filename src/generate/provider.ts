@@ -186,17 +186,32 @@ export interface AiBinding {
   ): Promise<{ response?: string }>;
 }
 
-/* Chosen for being small and instruction-following rather than for being the
-   best writer. The daily ceiling in section 7 is a function of this choice, so
-   changing the model means re-running the measurement.
+/* The default model. Overridable per deployment with `GENERATION_MODEL`, so
+   trying a different one is a configuration change and a deploy rather than a
+   code edit: the only honest way to compare two models on this task is to run
+   both against real themes, and that should not need a pull request each time.
 
-   Corrected 2026-08-04. This said `@cf/meta/llama-3.1-8b-instruct`, which is
-   not a model Workers AI serves; the real id carries an `-fp8` suffix. Every
-   call threw, the loop counted each throw as a failed attempt exactly as it
-   was designed to, and the session ended in `failed` with a message blaming
-   the theme. Written from memory instead of from `wrangler ai models list`,
-   which takes ten seconds. */
-export const GENERATION_MODEL = "@cf/meta/llama-3.1-8b-instruct-fp8";
+   **Changed 2026-08-04 to `@cf/google/gemma-4-26b-a4b-it`**, from
+   `@cf/meta/llama-3.1-8b-instruct-fp8`. The 8B could not reliably produce a
+   valid layout, which is unsurprising rather than a defect in it: the layout
+   prompt asks for a constraint-satisfaction solution in one shot, and the
+   layout ADR anticipated exactly this outcome.
+
+   Gemma 4 is a 26B mixture-of-experts with 4B active and, unusually, **costs
+   slightly less per generation than the 8B did**: 9,091 neurons per million
+   input tokens against 13,778, and 27,273 output against 26,128, which at our
+   prompt size is about 15.5 neurons rather than 15.8. The ceiling in section 7
+   therefore does not move.
+
+   Output tokens dominate our cost, which is why reasoning models that emit long
+   traces are the expensive ones here: `deepseek-r1-distill-qwen-32b` charges
+   443,756 neurons per million output tokens against Gemma's 27,273. Any model
+   with a materially different output rate means re-deriving the ceiling.
+
+   An earlier value was `@cf/meta/llama-3.1-8b-instruct` with no `-fp8`, which
+   Workers AI does not serve at all, so every call threw. Written from memory
+   rather than from `wrangler ai models list`, which takes ten seconds. */
+export const GENERATION_MODEL = "@cf/google/gemma-4-26b-a4b-it";
 
 function prompt(theme: string, count: number): string {
   return [
@@ -298,9 +313,13 @@ function readEntries(raw: unknown): Entry[] {
   return out;
 }
 
-export function workersAiProvider(ai: AiBinding, debug = false): Provider {
+export function workersAiProvider(
+  ai: AiBinding,
+  debug = false,
+  model: string = GENERATION_MODEL,
+): Provider {
   const ask = async (content: string): Promise<unknown> => {
-    const result = await ai.run(GENERATION_MODEL, {
+    const result = await ai.run(model, {
       messages: [{ role: "user", content }],
     });
     const raw = result?.response ?? "";
@@ -313,6 +332,7 @@ export function workersAiProvider(ai: AiBinding, debug = false): Provider {
       console.log(
         JSON.stringify({
           at: "model",
+          model,
           chars: raw.length,
           parsed: parsed ? "yes" : "no",
           /* Truncated hard: enough to see the shape and whether it is JSON at
@@ -360,7 +380,7 @@ export function workersAiProvider(ai: AiBinding, debug = false): Provider {
     },
 
     async propose(theme: string, count: number): Promise<Proposal> {
-      const result = await ai.run(GENERATION_MODEL, {
+      const result = await ai.run(model, {
         messages: [{ role: "user", content: prompt(theme, count) }],
       });
       const parsed = extractJson(result?.response ?? "") as {
