@@ -21,6 +21,8 @@ import { ShareLink } from "../components/ShareLink.tsx";
 import { PushToTalk } from "../components/PushToTalk.tsx";
 import { CrosswordBoard } from "../components/CrosswordBoard.tsx";
 import { ClueList } from "../components/ClueList.tsx";
+import { Crumbs } from "../components/Crumbs.tsx";
+import { mark, type Marked } from "../lib/check.ts";
 import type { Entry } from "../../types";
 
 const MAX_NICKNAME = 24;
@@ -35,19 +37,37 @@ export function Play({ id }: { id: string }) {
   const [sharing, setSharing] = useState(false);
   /* Which clue is lit. Generated puzzles only; a photo puzzle has no entries. */
   const [activeEntry, setActiveEntry] = useState<Entry | null>(null);
+  /* Null until somebody asks. Nothing here runs while a person types: ADR-1's
+     objection is to being told you are right without asking, and a button
+     somebody pressed is a different thing from a grid that colours itself. */
+  const [marked, setMarked] = useState<Marked | null>(null);
 
   const doc = session.doc;
 
   /* Once the title is known, correct what the landing page remembered. It saves
      the session before the document arrives, so "Demo puzzle" is a placeholder
-     until now. */
+     until now.
+
+     "Untitled" is skipped rather than written. A generated session carries its
+     theme from the moment it is created, and a photo session is genuinely
+     untitled until somebody names it, so writing the placeholder back only ever
+     replaced a real name with a worse one: the home list filled up with
+     Untitled entries whose themes were known all along. */
   useEffect(() => {
-    if (doc?.title) remember(id, doc.title);
-  }, [id, doc?.title]);
+    if (doc?.title && doc.title !== "Untitled") {
+      remember(id, doc.title, {
+        kind: doc.source === "generated" ? "generated" : "photo",
+        /* Recorded so the home list can say what happened rather than showing a
+           puzzle that cannot be opened. */
+        failed: doc.status === "failed",
+      });
+    }
+  }, [id, doc?.title, doc?.source, doc?.status]);
 
   if (session.status === "missing") {
     return (
       <main>
+        <Crumbs />
         <h1>This puzzle is gone</h1>
         <p class="lede">
           Puzzles disappear after 30 days without anyone touching them, and
@@ -64,6 +84,7 @@ export function Play({ id }: { id: string }) {
   if (session.status === "full") {
     return (
       <main>
+        <Crumbs />
         <h1>This puzzle is full</h1>
         <p class="lede">
           Ten people can solve together at once, and there are ten already. Try
@@ -79,6 +100,7 @@ export function Play({ id }: { id: string }) {
   if (!doc) {
     return (
       <main>
+        <Crumbs />
         <h1>Opening the puzzle…</h1>
         <p class="lede">
           Fetching the photo and the letters people have typed.
@@ -92,24 +114,67 @@ export function Play({ id }: { id: string }) {
      three model calls take 10 to 30 seconds and a spinner for that long reads
      as broken. */
   if (doc.status === "generating") {
-    const label: Record<string, string> = {
-      words: "Thinking of words…",
-      clues: "Fixing the layout…",
-      validating: "Checking the grid…",
-      packing: "Laying it out on this device…",
-    };
+    /* Named steps rather than a spinner, and shown as a list rather than one
+       line, because a person watching a blank screen for thirty seconds cannot
+       tell "working" from "stuck". Seeing which step is running, and that the
+       earlier ones finished, is the difference. */
+    const steps: Array<{ key: string; label: string; note: string }> = [
+      {
+        key: "words",
+        label: "Asking the model for a puzzle",
+        note: "words, positions and clues, all at once",
+      },
+      {
+        key: "validating",
+        label: "Checking every crossing agrees",
+        note: "nothing invalid is ever saved",
+      },
+      {
+        key: "clues",
+        label: "Sending back what was wrong",
+        note: "only if the first attempt did not fit together",
+      },
+      {
+        key: "packing",
+        label: "Laying it out on this device",
+        note: "only if the model could not place the words itself",
+      },
+    ];
+    const current = session.progress?.step ?? "words";
+    const currentIndex = steps.findIndex((s) => s.key === current);
     return (
       <main>
-        <h1>Building your puzzle</h1>
+        <Crumbs />
+        <h1>Writing “{doc.title}”</h1>
         <p class="lede">
-          {session.progress
-            ? label[session.progress.step] || "Working…"
-            : "Getting started…"}
+          A language model is writing this puzzle now. It usually takes under
+          half a minute, and you can leave this page open.
         </p>
-        <p class="muted">
-          {doc.theme ? `Theme: ${doc.theme}. ` : ""}This usually takes under
-          half a minute. You can leave this page open.
-        </p>
+        <ol class="steps">
+          {steps.map((step, i) => {
+            const state =
+              i < currentIndex ? "done" : i === currentIndex ? "now" : "todo";
+            return (
+              <li key={step.key} class={`step step-${state}`}>
+                <span class="step-mark" aria-hidden="true">
+                  {state === "done" ? "✓" : state === "now" ? "•" : ""}
+                </span>
+                <span>
+                  <strong>{step.label}</strong>
+                  <br />
+                  <span class="muted">{step.note}</span>
+                </span>
+              </li>
+            );
+          })}
+        </ol>
+        {(session.progress?.attempt ?? 0) > 0 && (
+          <p class="muted" role="status">
+            Attempt {(session.progress?.attempt ?? 0) + 1} of 3. The first
+            layout did not fit together, so it has been sent back with the exact
+            squares that disagreed.
+          </p>
+        )}
       </main>
     );
   }
@@ -126,6 +191,7 @@ export function Play({ id }: { id: string }) {
     const known = session.failure && !unreachable;
     return (
       <main>
+        <Crumbs />
         <h1>
           {unreachable
             ? "Could not reach the puzzle writer"
@@ -148,6 +214,7 @@ export function Play({ id }: { id: string }) {
   if (!doc.puzzleSaved) {
     return (
       <main>
+        <Crumbs />
         <h1>This puzzle is not finished</h1>
         <p class="lede">
           Somebody started it and has not tagged the cells yet, so there is
@@ -166,6 +233,7 @@ export function Play({ id }: { id: string }) {
   if (doc.template) {
     return (
       <main>
+        <Crumbs />
         <h1>{doc.title}</h1>
         <p class="lede">
           This is the shared demo, so it cannot be written in. Open your own
@@ -182,7 +250,18 @@ export function Play({ id }: { id: string }) {
 
   return (
     <main>
+      <Crumbs />
       <h1 style="font-size:1.25rem">{doc.title}</h1>
+      {/* Said plainly and on the puzzle itself, not only on the screen that
+          made it. Somebody arriving from a shared link has no idea where this
+          came from, and "a machine wrote this" changes how the clues read. */}
+      {doc.source === "generated" && (
+        <p class="muted" style="margin-top:-0.5rem">
+          <span class="tag">AI written</span> A language model wrote this grid
+          and its clues from the theme “{doc.theme ?? doc.title}”. Clues can be
+          loose or occasionally wrong.
+        </p>
+      )}
 
       {needsName ? (
         <div class="card stack">
@@ -287,8 +366,15 @@ export function Play({ id }: { id: string }) {
                 onType={(row, col, ch) => {
                   const letter = firstGrapheme(ch);
                   if (letter) session.setLetter(row, col, letter);
+                  /* Marks go stale the moment anything changes, and a stale
+                     mark is a lie about the square under it. */
+                  setMarked(null);
                 }}
-                onClear={(row, col) => session.clearLetter(row, col)}
+                onClear={(row, col) => {
+                  session.clearLetter(row, col);
+                  setMarked(null);
+                }}
+                wrong={marked?.wrong ?? []}
               />
               <ClueList
                 entries={doc.entries}
@@ -298,9 +384,38 @@ export function Play({ id }: { id: string }) {
                   setSelected({ row: entry.row, col: entry.col });
                 }}
               />
+
+              {/* Only generated puzzles can offer this: a photographed
+                  arrowword has no entries and therefore no answers to compare
+                  against. See the ADR-1 amendment. */}
+              <div class="row" style="margin-top:0.75rem">
+                <button
+                  onClick={() => setMarked(mark(doc.entries, doc.letters))}
+                >
+                  Check my answers
+                </button>
+                {marked && (
+                  <button onClick={() => setMarked(null)}>Hide marks</button>
+                )}
+              </div>
+
+              {marked && (
+                <p
+                  class={`notice${marked.wrong.length ? " error" : ""}`}
+                  role="status"
+                >
+                  {marked.complete
+                    ? "All done, and every letter is right."
+                    : marked.wrong.length === 0
+                      ? `Nothing wrong so far. ${marked.blank} square${marked.blank === 1 ? "" : "s"} still empty.`
+                      : `${marked.wrong.length} square${marked.wrong.length === 1 ? "" : "s"} ${marked.wrong.length === 1 ? "is" : "are"} wrong, marked on the grid.${marked.blank ? ` ${marked.blank} still empty.` : ""}`}
+                </p>
+              )}
+
               <p class="muted" style="margin-top:0.75rem">
                 Tap a clue to jump to its first square. Tap a square and type
-                one letter. Backspace clears it. Nothing checks your answers.
+                one letter. Backspace clears it. Nothing is checked unless you
+                ask.
               </p>
             </>
           ) : (

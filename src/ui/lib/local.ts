@@ -14,6 +14,15 @@ export interface Visited {
   id: string;
   title: string;
   at: number;
+  /* What kind of thing this is, so the list can say. Absent on entries written
+     before B3, which is why every read tolerates it being missing rather than
+     migrating: this is a convenience cache, not data, and losing a label is not
+     worth a migration path. */
+  kind?: "photo" | "generated";
+  /* A generation that gave up. Kept in the list rather than hidden, because a
+     session that silently vanishes reads as the app having lost it, and shown
+     as what it is rather than as an untitled puzzle nobody can open. */
+  failed?: boolean;
 }
 
 function read<T>(key: string, fallback: T): T {
@@ -39,9 +48,17 @@ export function visited(): Visited[] {
   return read<Visited[]>(VISITED, []).sort((a, b) => b.at - a.at);
 }
 
-export function remember(id: string, title: string): void {
+export function remember(
+  id: string,
+  title: string,
+  extra: Pick<Visited, "kind" | "failed"> = {},
+): void {
+  const previous = read<Visited[]>(VISITED, []).find((v) => v.id === id);
   const list = read<Visited[]>(VISITED, []).filter((v) => v.id !== id);
-  list.push({ id, title, at: Date.now() });
+  /* Merged rather than replaced, so learning the title later does not forget
+     what kind of puzzle it was, and learning it failed does not forget its
+     name. Each caller knows one thing and none of them knows all of it. */
+  list.push({ ...previous, ...extra, id, title, at: Date.now() });
   /* Sessions expire after 30 days of inactivity, so an unbounded list would
      mostly be tombstones. Keep the 30 most recent. */
   write(VISITED, list.slice(-30));

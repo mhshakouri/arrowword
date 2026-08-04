@@ -32,6 +32,9 @@ export interface CrosswordBoardProps {
   onSelect: (row: number, col: number) => void;
   onType: (row: number, col: number, ch: string) => void;
   onClear: (row: number, col: number) => void;
+  /* Squares a check found wrong. Empty unless somebody asked, and cleared by
+     the next edit, so the grid never carries a mark that is out of date. */
+  wrong?: Array<{ row: number; col: number }>;
 }
 
 const key = (row: number, col: number) => `${row},${col}`;
@@ -63,6 +66,7 @@ export function CrosswordBoard({
   onSelect,
   onType,
   onClear,
+  wrong = [],
 }: CrosswordBoardProps) {
   const captureRef = useRef<HTMLInputElement>(null);
 
@@ -83,6 +87,7 @@ export function CrosswordBoard({
     highlighted ? cellsOf(highlighted).map((c) => key(c.row, c.col)) : [],
   );
   const colorOf = (by: string) => peers.find((p) => p.id === by)?.color ?? null;
+  const marked = new Set(wrong.map((c) => key(c.row, c.col)));
 
   return (
     <div class="crossword" role="grid" aria-label="Puzzle grid">
@@ -152,7 +157,7 @@ export function CrosswordBoard({
                 role="gridcell"
                 class={`cw-cell cw-answer${isSelected ? " cw-selected" : ""}${
                   lit.has(at) ? " cw-lit" : ""
-                }`}
+                }${marked.has(at) ? " cw-wrong" : ""}`}
                 style={
                   color === null
                     ? undefined
@@ -160,7 +165,7 @@ export function CrosswordBoard({
                 }
                 aria-label={`Row ${row + 1}, column ${col + 1}${
                   value ? `, ${value.ch}` : ", empty"
-                }`}
+                }${marked.has(at) ? ", marked wrong" : ""}`}
                 onClick={() => onSelect(row, col)}
               >
                 {number !== undefined && (
