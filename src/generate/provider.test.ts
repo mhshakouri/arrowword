@@ -475,3 +475,127 @@ test("the repair prompt restates the bounds and allows deleting an entry", async
   assert.match(sent, /delete an offending entry/, "deletion not permitted");
   assert.match(sent, /0,0 is A in entry 0/, "the specific problem is missing");
 });
+
+/* ---- Replies that actually came back, pasted verbatim ----
+
+   Every case below is a real reply from a real generation, kept as evidence
+   rather than paraphrased. Invented input tests the parser against what its
+   author imagined a model does; these test it against what one did. */
+
+/* The colon migrates inside the key's closing quote from the second candidate
+   onwards. Twelve candidates, eleven lost, and the survivor was the one written
+   before the model slipped into the pattern. */
+const REAL_WORD_REPLY = `Here are 12 space-related words for your crossword:
+
+\`\`\`
+[
+  {"answer":"MARS","clue":"Red planet"},
+  {"answer":"ORBIT","clue:"Path around a star"},
+  {"answer":"ASTEROID","clue:"Rocky object in space"},
+  {"answer":"SATELLITE","clue:"Object in orbit around Earth"},
+  {"answer":"GALAXY","clue:"Collection of stars"},
+  {"answer":"COMET","clue:"Icy body in the solar system"},
+  {"answer":"NEBULA","clue:"Interstellar gas cloud"},
+  {"answer":"PLANET","clue:"Celestial body orbits a star"}
+]
+\`\`\``;
+
+/* Cut off mid-string because max_tokens was never set. The complete entries
+   before the cut are perfectly good and were being thrown away with it. */
+const REAL_TRUNCATED_LAYOUT = `{
+  "entries": [
+    {
+      "dir": "across",
+      "row": 0,
+      "col": 0,
+      "answer": "SPACE",
+      "clue": "The final frontier"
+    },
+    {
+      "dir": "down",
+      "row": 0,
+      "col": 4,
+      "answer": "EARTH",
+      "clue": "Home sweet home"
+    },
+    {
+      "dir": "across",
+      "row": 1,
+      "col": 5,
+      "answer": "MOON",
+      "clue": "Lunar phase"
+    },
+    {
+      "dir": "down",
+      "row": 2,
+      "col": 6,
+      "answer": "COMET`;
+
+const replying = (response: string) => ({
+  async run() {
+    return { response };
+  },
+});
+
+test("a truncated layout still yields the entries that arrived intact", async () => {
+  const out = await workersAiProvider(
+    replying(REAL_TRUNCATED_LAYOUT),
+  ).proposeLayout("space", 11, 11);
+  assert.equal(out.entries.length, 3, "SPACE, EARTH and MOON are complete");
+  assert.deepEqual(
+    out.entries.map((e) => e.answer),
+    ["SPACE", "EARTH", "MOON"],
+  );
+  assert.equal(
+    out.entries.some((e) => e.answer === "COMET"),
+    false,
+    "the entry cut off mid-word must not be salvaged",
+  );
+});
+
+test("the migrated colon is repaired, so eleven candidates are not lost", async () => {
+  const out = await workersAiProvider(replying(REAL_WORD_REPLY)).propose(
+    "space",
+    12,
+  );
+  assert.ok(
+    out.candidates.length >= 7,
+    `only ${out.candidates.length} survived: ${JSON.stringify(out.candidates)}`,
+  );
+  assert.ok(out.candidates.some((c) => c.answer === "MARS"));
+  assert.ok(out.candidates.some((c) => c.answer === "NEBULA"));
+});
+
+test("repairing punctuation never invents or alters an answer", async () => {
+  const out = await workersAiProvider(replying(REAL_WORD_REPLY)).propose(
+    "space",
+    12,
+  );
+  for (const c of out.candidates) {
+    assert.match(c.answer, /^[A-Z]+$/);
+    assert.ok(REAL_WORD_REPLY.includes(c.answer), `${c.answer} was invented`);
+  }
+});
+
+test("max_tokens is set, because the default cut replies in half", async () => {
+  let sent: Record<string, unknown> = {};
+  const ai = {
+    async run(_model: string, input: Record<string, unknown>) {
+      sent = input;
+      return { response: '{"entries":[]}' };
+    },
+  };
+  await workersAiProvider(ai).proposeLayout("t", 11, 11);
+  assert.equal(typeof sent.max_tokens, "number");
+  assert.ok(
+    (sent.max_tokens as number) >= 1024,
+    `max_tokens ${sent.max_tokens} is too small for a layout with clues`,
+  );
+});
+
+test("a reply that is only prose still yields nothing rather than throwing", async () => {
+  const out = await workersAiProvider(
+    replying("I am sorry, I cannot help with that."),
+  ).proposeLayout("t", 11, 11);
+  assert.deepEqual(out.entries, []);
+});

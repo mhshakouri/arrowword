@@ -77,6 +77,13 @@ export interface Env {
      the order until 2026-08-04. Kept so the two can be compared on real themes
      rather than argued about. See the note above `generate`. */
   GENERATION_LAYOUT_FIRST?: string;
+  /* Which key the shared daily pool counts against. Test only, and absent from
+     wrangler.jsonc: the pool is global by definition, so a test cannot scope it
+     the way it scopes per-IP keys, and its counter persists in `.wrangler`
+     across every local run. Without an override the suite drains its own
+     budget over a day of runs and then fails on a limit rather than on the
+     thing under test. */
+  GENERATION_POOL_KEY?: string;
   /* Which Workers AI model writes the puzzle. Empty means the default in
      provider.ts. Configurable because comparing two models on this task means
      running both against real themes, and that should not need a code change
@@ -586,7 +593,13 @@ async function allowGlobal(env: Env): Promise<boolean> {
   const override = Number(env.GENERATION_DAILY_LIMIT);
   const limit =
     Number.isInteger(override) && override > 0 ? override : GENERATE_PER_DAY;
-  const res = await take(env, "global", "generate-all", limit, DAY_MS);
+  const res = await take(
+    env,
+    env.GENERATION_POOL_KEY || "global",
+    "generate-all",
+    limit,
+    DAY_MS,
+  );
   return res.ok;
 }
 
