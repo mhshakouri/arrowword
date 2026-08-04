@@ -31,9 +31,33 @@ test("diacritics and tatweel are dropped", () => {
   assert.equal(normalizePersian("کـتـاب"), "کتاب");
 });
 
-test("alef spellings fold together", () => {
-  assert.equal(normalizePersian("آب"), "اب");
-  assert.equal(normalizePersian("أمير"), "امیر");
+/* The groups below are Hossein's ruling of 2026-08-05, one test each, so a
+   later "tidy up" of the fold table fails loudly rather than quietly changing
+   which words are considered equal. */
+test("the alef group folds together: آ ا أ إ ء", () => {
+  const forms = ["آب", "اب", "أب", "إب", "ءب"];
+  for (const form of forms) assert.equal(normalizePersian(form), "اب");
+  assert.equal(normalizePersian("جزء"), "جزا");
+});
+
+test("the yeh group folds together: ی ئ ي", () => {
+  for (const form of ["دریا", "درئا", "دريا"]) {
+    assert.equal(normalizePersian(form), "دریا");
+  }
+});
+
+test("the waw group folds together: و ؤ", () => {
+  assert.equal(normalizePersian("مؤمن"), "مومن");
+});
+
+test("the heh group folds together: ه and هٔ", () => {
+  /* هٔ is ه plus a combining hamza, so this also pins that DROP handles the
+     mark rather than the fold table needing an entry for it. */
+  assert.equal(normalizePersian("خانهٔ"), "خانه");
+  assert.equal(normalizePersian("خانه"), "خانه");
+  /* ة was listed by Hossein in two groups; it resolves to ه here, and this
+     test is what makes that resolution explicit rather than incidental. */
+  assert.equal(normalizePersian("مدرسة"), "مدرسه");
 });
 
 test("a normalized answer is letters only", () => {

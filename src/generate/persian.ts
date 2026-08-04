@@ -30,19 +30,36 @@
    check so a native speaker confirms rather than inherits it. */
 
 /* Folded to the letter on the right. Order matters only in that every source
-   here is a single code point, so a single pass is enough. */
+   here is a single code point, so a single pass is enough.
+
+   **The groups are Hossein's, given on 2026-08-05**, which settles the آ
+   question this module opened: آ ا أ إ ء are one letter, ی ئ ي are one, و ؤ
+   are one, and ه هٔ are one. That is the ruling of the person the puzzle is
+   for, and it is what a solver on paper would score.
+
+   **One conflict in it, resolved here and worth re-checking.** ة was listed in
+   two groups, with ت and with ه. It can only fold one way: folding it both
+   ways would make ت equal ه by transitivity, and «تا» and «ها» are not the
+   same word. It folds to ه, which is the ordinary Persian treatment of Arabic
+   loanwords (مدرسة is written مدرسه). If the intent was ت, this line is the
+   only thing to change. */
 const FOLD: Record<string, string> = {
   ي: "ی" /* ي Arabic yeh    -> ی Farsi yeh */,
   ى: "ی" /* ى alef maksura  -> ی */,
   ئ: "ی" /* ئ yeh with hamza -> ی */,
   ك: "ک" /* ك Arabic kaf    -> ک keheh */,
-  ة: "ه" /* ة teh marbuta   -> ه */,
+  ة: "ه" /* ة teh marbuta   -> ه, see the conflict above */,
   ؤ: "و" /* ؤ waw with hamza -> و */,
   أ: "ا" /* أ alef with hamza above -> ا */,
   إ: "ا" /* إ alef with hamza below -> ا */,
-  آ: "ا" /* آ alef with madda -> ا, see the note above */,
+  آ: "ا" /* آ alef with madda -> ا */,
   ٱ: "ا" /* ٱ alef wasla    -> ا */,
+  ء: "ا" /* ء standalone hamza -> ا, so جزء and جزا are one word */,
 };
+
+/* هٔ needs no entry: it is ه followed by U+0654, and DROP removes the mark,
+   which leaves ه on its own. Covered by a test rather than left to be
+   rediscovered. */
 
 /* Dropped outright: they are marks or joiners, never squares. U+064B to U+0652
    are the harakat, U+0640 is tatweel, U+200B to U+200D cover ZWNJ and its

@@ -1038,9 +1038,26 @@ Generated puzzles are English only (B3). This milestone would make the theme's l
 - `llama-3.1-8b-instruct-fp8` does not support JSON schema at all: Workers AI answers `5025: This model doesn't support JSON Schema`. The provider's try-schema-then-plain fallback is therefore not a precaution, it is the path production takes every time
 - Neurons per million tokens, from the pricing page on 2026-08-05: the 8B is 13,778 in and 26,128 out; the 70B is 26,668 in and **204,805 out**. Output dominates, so the 70B costs about five times as much per call and a longer prompt is nearly free
 
-**The decision, and it is Hossein's.** Switching `GENERATION_MODEL` to the 70B is a configuration change by design, but the daily ceiling in section 7 derives from the model's output rate, so it moves: roughly 95 generations a day across all visitors instead of roughly 480, on the same free allocation that still fails closed rather than billing. For an app whose per-IP limit is ten a day, 95 is a real reduction and not obviously a problem. The alternative is shipping Persian on a model that calls a leopard a bird, which is worse than not shipping it. **What is not on the table is keeping the 8B for Persian and hoping the prompt improves; that was tested and it does not.**
+**The model should be chosen per language, and that conclusion replaces an earlier one in this section.** The first reading of these runs was that the 70B is simply better and should become the default for everything. That was wrong, and it was wrong because of a defect in the probe rather than anything a model did. Measured properly, on the shipped English word prompt:
 
-Owed before D2 can start, and neither is code: the آ/ا convention, and the model decision above.
+|                                   | English, 8/8 themes     | neurons | Persian                               | neurons |
+| --------------------------------- | ----------------------- | ------- | ------------------------------------- | ------- |
+| `llama-3.1-8b-instruct-fp8`       | 8/8 and 7/8, good words | ~5.5    | unusable, a paw offered as a falcon   | 8.2     |
+| `llama-3.3-70b-instruct-fp8-fast` | 8/8 and 8/8             | ~27     | real, distinct, correctly clued birds | 42.2    |
+
+**English on the 8B is fine, which is why B3 shipped and works.** Paying five times the neurons to replace a path that already produces good puzzles buys nothing. So `GENERATION_MODEL` should stay as it is for English and D2 should add a second setting for Persian, rather than one model serving both. `workersAiProvider` already takes the model as an argument, so this is a configuration shape rather than a rewrite, and it keeps the section 7 ceiling for English exactly where it is.
+
+**The probe was wrong three times, always in the same way, and this is the lesson worth keeping.** Each time it diverged from what `provider.ts` actually does, it reported on itself rather than on the model:
+
+1. It salvaged loose objects without parsing the document first, so a **complete** reply was swallowed by its own outer brace and scored zero while a **truncated** one scored well. It was rewarding malformed JSON.
+2. It skipped `repairJson`, so the model's one repeatable malformation, the colon migrating inside a key's closing quote, destroyed candidates that production repairs and keeps.
+3. It called `JSON.parse` on the whole reply instead of `extractJson`, so "Here are 8 crossword clues:" and a Markdown fence hid eight perfectly good English candidates, and the incumbent model was measured at zero.
+
+The third one nearly became evidence in a decision to spend five times the neurons. **A harness that judges a model has to run the model's real code path, or it measures the harness.** The same applies to any future comparison in this project.
+
+Owed before D2 can start, and neither is code: confirmation of the ة fold below, and the per-language model settings above.
+
+**The letter groups are settled.** Hossein ruled on 2026-08-05 that آ ا أ إ ء are one letter, ی ئ ي are one, و ؤ are one, and ه هٔ are one, which closes the آ question this investigation opened. One conflict came with it: ة was listed both with ت and with ه, and it can only fold one way, since folding both would make ت equal ه by transitivity. It folds to ه, the ordinary treatment of Arabic loanwords in Persian, and that is one line in `persian.ts` to change if the intent was ت.
 
 Out of v1: OCR, auto grid detection, perspective correction, correctness checking, accounts of any kind. Voice is the C series and AI puzzle generation is the B series, both above, both v2.
 

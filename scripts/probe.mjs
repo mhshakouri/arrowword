@@ -148,12 +148,28 @@ const withGloss = (theme, count) =>
     `{"candidates":[{"answer":"AAAA","en":"BBBB","clue":"CCCC"}]}`,
   ].join("\n");
 
+/* EN. The shipped English word prompt, copied from `provider.ts`. Not a Persian
+   variant at all: it is here so that changing `GENERATION_MODEL` for Persian
+   can be checked against the path that already works and already has users.
+   B3's own lesson is that the first real call is the first real test, and a
+   model swap that quietly degraded English would be exactly that mistake in a
+   new costume. Judged by English rules, so `PROBE_LANG=en` with this one. */
+const shippedEnglish = (theme, count) =>
+  [
+    `Give ${count} English words for a small crossword on the theme "${theme}".`,
+    `Rules: each answer is a single word, 3 to 11 letters, letters A-Z only.`,
+    `Proper nouns are fine. No abbreviations, and no plurals of the theme word itself.`,
+    `Each clue is one short sentence under 120 characters and must not contain its answer.`,
+    `Reply with JSON only, no prose: {"candidates":[{"answer":"...","clue":"..."}]}`,
+  ].join(" ");
+
 const ALL_VARIANTS = [
   { name: "A english-instructions", build: englishInstructions },
   { name: "B all-persian", build: persianInstructions },
   { name: "C english+examples", build: withExamples },
   { name: "D theme-tight", build: themeTight },
   { name: "E theme-tight+gloss", build: withGloss },
+  { name: "EN shipped-english", build: shippedEnglish },
 ];
 
 /* `PROBE_VARIANTS=D,E` to iterate on two without paying for five. */
@@ -216,15 +232,57 @@ async function ask(prompt, { schema = process.env.PROBE_SCHEMA === "1" } = {}) {
 
    The lesson is not about braces. A harness that judges a model has to run the
    real code path or it measures itself. */
-function readCandidates(text) {
-  try {
-    const whole = JSON.parse(text);
-    const list = Array.isArray(whole) ? whole : whole?.candidates;
-    if (Array.isArray(list) && list.length) return list;
-  } catch {
-    /* Truncated or malformed; fall through to salvage, exactly as the
-       provider does. */
+/* The provider's narrow repair, and the probe has to run it or it slanders the
+   incumbent. `llama-3.1-8b-instruct-fp8` writes `{"answer":"OVEN","clue:"...}`
+   from the second candidate onwards: the colon migrates inside the key's
+   closing quote and the document is invalid from there. Production repairs it
+   and keeps eleven candidates; the probe did not, scored the 8B at one
+   candidate out of eight on English, and that number was about to be evidence
+   in a model decision. */
+function repairJson(text) {
+  return text.replace(/"([A-Za-z_][A-Za-z0-9_]*):"/g, '"$1":"');
+}
+
+/* The provider's `extractJson`: models wrap JSON in prose and markdown fences
+   however they were feeling, so take the first balanced bracketed region
+   rather than trying to parse the whole reply. Looking for `[` as well as `{`
+   matters, because a bare top-level array is a shape the model uses.
+
+   Mirroring this is the third time the probe has been wrong by diverging from
+   the provider. It measured the 8B at zero usable English candidates on a
+   reply that in fact held eight good ones behind the words "Here are 8
+   crossword clues" and a ``` fence. The rule has earned being stated plainly:
+   **the harness runs the provider's parse, or it reports on the harness.** */
+function extractJson(text) {
+  const curly = text.indexOf("{");
+  const square = text.indexOf("[");
+  const start =
+    curly < 0 ? square : square < 0 ? curly : Math.min(curly, square);
+  if (start < 0) return null;
+  const open = text[start];
+  const close = open === "{" ? "}" : "]";
+  let depth = 0;
+  for (let i = start; i < text.length; i += 1) {
+    if (text[i] === open) depth += 1;
+    else if (text[i] === close) {
+      depth -= 1;
+      if (!depth) {
+        try {
+          return JSON.parse(text.slice(start, i + 1));
+        } catch {
+          return null;
+        }
+      }
+    }
   }
+  return null;
+}
+
+function readCandidates(input) {
+  const text = repairJson(input);
+  const parsed = extractJson(text);
+  const list = Array.isArray(parsed) ? parsed : parsed?.candidates;
+  if (Array.isArray(list) && list.length) return list;
   return salvageCandidates(text);
 }
 
@@ -261,7 +319,37 @@ function salvageCandidates(text) {
   return out;
 }
 
+/* `PROBE_LANG=en` judges by the shipped English rules instead, which is what
+   makes the EN variant meaningful rather than a wall of "not-persian-letters". */
+const LANG = process.env.PROBE_LANG === "en" ? "en" : "fa";
+
+function judgeEnglish(candidate) {
+  const raw = String(candidate.answer ?? "")
+    .trim()
+    .toUpperCase();
+  const clue = String(candidate.clue ?? "")
+    .replace(/\s+/g, " ")
+    .trim();
+  const problems = [];
+  if (!/^[A-Z]+$/.test(raw)) problems.push("not-a-z");
+  if (raw.length < 3 || raw.length > 11) problems.push(`length-${raw.length}`);
+  if (!clue) problems.push("no-clue");
+  else if (clue.length > 120) problems.push("clue-too-long");
+  else if (new RegExp(`\\b${raw}\\b`, "i").test(clue))
+    problems.push("clue-gives-it-away");
+  return {
+    raw,
+    norm: raw,
+    len: raw.length,
+    clue,
+    problems,
+    needednorm: null,
+    en: null,
+  };
+}
+
 function judge(candidate) {
+  if (LANG === "en") return judgeEnglish(candidate);
   const raw = String(candidate.answer ?? "");
   const clue = String(candidate.clue ?? "");
   const norm = normalizePersian(raw);
