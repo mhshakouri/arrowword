@@ -507,3 +507,39 @@ input[type="text"] {
   color: var(--muted-foreground);
   font-size: 0.9rem;
 }
+
+/* The generation transcript. Monospace and scrollable, because a prompt is
+   structured text and wrapping it into prose makes it unreadable. */
+.trace-step summary {
+  cursor: pointer;
+  font-size: 0.9rem;
+}
+
+.trace-heading {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted-foreground);
+  margin: 0.75rem 0 0.25rem;
+}
+
+.trace-text {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.75rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: var(--muted);
+  border-radius: var(--radius);
+  padding: 0.6rem;
+  margin: 0;
+  max-height: 22rem;
+  overflow: auto;
+}
+
+.trace-problems {
+  margin: 0;
+  padding-left: 1.1rem;
+  font-size: 0.85rem;
+  color: var(--danger);
+}

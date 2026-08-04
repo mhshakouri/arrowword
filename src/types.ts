@@ -109,6 +109,24 @@ export interface PeerInfo {
   color: number;
 }
 
+/* One exchange with the model, kept so it can be shown rather than tailed.
+
+   `prompt` and `reply` are the real strings, truncated. They are model output
+   and user input respectively, so both are rendered as text and never as HTML,
+   which is invariant 8 applying to the thing that explains invariant 8. */
+export interface TraceStep {
+  at: number;
+  /* Which call this was: the first layout, a repair, or the word list. */
+  step: "layout" | "repair" | "words" | "validate" | "pack" | "done";
+  detail?: string;
+  prompt?: string;
+  reply?: string;
+  /* Whether the reply parsed, and what the validator said about it. */
+  parsed?: boolean;
+  problems?: string[];
+  ms?: number;
+}
+
 /* Who is in the voice room, which is a subset of who is in the session. `mode`
    is "ptt" for every C1 client and exists so C2 can add "live" without changing
    the message shape. */
@@ -134,6 +152,14 @@ export type ServerMessage =
      arrive on the socket the client already opened rather than on a channel
      invented for them. */
   | { type: "progress"; step: string; attempt: number }
+  /* The full record of what was asked and what came back, shown on the page.
+
+     Added 2026-08-04 because every diagnosis of a failed generation until then
+     had to go through `wrangler tail` and the author's laptop, which is not a
+     thing a visitor can do and was slow even for the person who wrote it. A
+     generated puzzle is the one place in this app where a machine makes a
+     decision nobody can see, so the decision is shown. */
+  | { type: "trace"; steps: TraceStep[] }
   /* The model could not lay out a puzzle. The client packs these and sends the
      result to PUT /session/:id/packed, because Workers Free allows 10 ms of CPU
      per request and search does not fit in that. */

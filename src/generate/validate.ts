@@ -240,6 +240,39 @@ export function cellsFrom(
   return grid;
 }
 
+/* Assign the display numbers a clue list prints, in reading order, with an
+   across and a down that start on the same square sharing one number.
+
+   Shared by both paths on purpose. The packer had its own copy and the layout
+   path had none at all, so every entry the model placed kept the `number: 0`
+   that `readEntries` stamps, and the first layout that ever validated would
+   have rendered a grid with 0 on every starting square and a clue list of
+   nothing but zeros. It never surfaced because no layout ever survived
+   validation in production, which is the kind of bug that waits for the day
+   everything else starts working.
+
+   Numbers are a function of the grid and nothing else, so they are computed
+   here rather than trusted from the model: it has no business proposing them,
+   and letting it would be one more thing for it to contradict itself about. */
+export function numberEntries(entries: Entry[]): Entry[] {
+  const starts = new Map<string, number>();
+  let next = 1;
+  const inOrder = [...entries].sort(
+    (a, b) => a.row - b.row || a.col - b.col || a.dir.localeCompare(b.dir),
+  );
+  for (const entry of inOrder) {
+    const key = `${entry.row},${entry.col}`;
+    if (!starts.has(key)) {
+      starts.set(key, next);
+      next += 1;
+    }
+  }
+  return inOrder.map((entry) => ({
+    ...entry,
+    number: starts.get(`${entry.row},${entry.col}`) ?? 0,
+  }));
+}
+
 /* The letters a valid grid implies, keyed "row,col". Used by the renderer for
    nothing and by tests for everything: it is the cheapest way to assert that a
    proposal means what it claims. Answers are not secret (ADR-13), so exposing

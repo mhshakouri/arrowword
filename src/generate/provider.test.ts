@@ -224,7 +224,7 @@ test("a recorded provider with no proposals is a programming error", () => {
    the ten seconds that would have caught it. */
 
 test("the default generation model id is pinned, and changing it is deliberate", () => {
-  assert.equal(GENERATION_MODEL, "@cf/google/gemma-4-26b-a4b-it");
+  assert.equal(GENERATION_MODEL, "@cf/meta/llama-3.1-8b-instruct-fp8");
 });
 
 /* Configurable, so a comparison is a deploy rather than a pull request, and the

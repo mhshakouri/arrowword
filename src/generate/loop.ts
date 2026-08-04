@@ -21,9 +21,11 @@
 
 import type { Entry } from "../types.ts";
 import type { Candidate, LayoutProposal, Provider } from "./provider.ts";
+import type { TraceStep } from "../types.ts";
 import {
   cellsFrom,
   DEFAULT_LIMITS,
+  numberEntries,
   validate,
   type Limits,
   type Rejection,
@@ -56,6 +58,10 @@ export interface Options {
   maxRepairs?: number;
   limits?: Limits;
   onProgress?: (progress: Progress) => void;
+  /* Called after every exchange and every decision, so the caller can show the
+     work rather than only the verdict. Separate from `onProgress` because
+     progress is four words for a spinner and this is the transcript. */
+  onTrace?: (step: TraceStep) => void;
 }
 
 /* What goes back to the model on a repair. Deliberately the `detail` strings
@@ -82,6 +88,24 @@ export async function generate(
   const limits = options.limits ?? DEFAULT_LIMITS;
   const maxRepairs = options.maxRepairs ?? 2;
   const report = options.onProgress ?? (() => {});
+  const trace = options.onTrace ?? (() => {});
+  /* Truncated, because a prompt is about 2 KB and a reply can be far larger,
+     and this is stored and sent to every client on the socket. Enough to see
+     what was asked and what came back. */
+  const CUT = 4000;
+  const record = (step: TraceStep) => trace(step);
+  const exchange = (step: TraceStep["step"], detail?: string) => {
+    const last = provider.lastExchange?.();
+    record({
+      at: Date.now(),
+      step,
+      detail,
+      prompt: last?.prompt?.slice(0, CUT),
+      reply: last?.reply?.slice(0, CUT),
+      parsed: last?.parsed,
+      ms: last?.ms,
+    });
+  };
 
   let proposal: LayoutProposal | null = null;
   let lastProblems: string[] = [];
@@ -99,6 +123,7 @@ export async function generate(
         ? await provider.repair(proposal, lastProblems)
         : await provider.proposeLayout(theme, rows, cols);
       attempts += 1;
+      exchange(attempt === 0 ? "layout" : "repair");
     } catch {
       /* A provider that throws is a failed attempt, not a failed generation.
          The next iteration asks again, and running out of iterations is what
@@ -106,6 +131,11 @@ export async function generate(
          a retry would have satisfied. */
       attempts += 1;
       threw += 1;
+      record({
+        at: Date.now(),
+        step: attempt === 0 ? "layout" : "repair",
+        detail: "the call to the model failed",
+      });
       proposal = null;
       lastProblems = [];
       continue;
@@ -122,6 +152,12 @@ export async function generate(
          from scratch. */
       proposal = null;
       lastProblems = ["the model returned no usable entries"];
+      record({
+        at: Date.now(),
+        step: "validate",
+        detail: "no entries could be read from the reply",
+        problems: lastProblems,
+      });
       continue;
     }
 
@@ -133,12 +169,23 @@ export async function generate(
       proposal.cols || cols,
     );
     const result = validate(cells, entries, limits);
+    record({
+      at: Date.now(),
+      step: "validate",
+      detail: result.ok
+        ? `${entries.length} entries, all crossings agree`
+        : `${entries.length} entries, ${result.rejections.length} problems`,
+      problems: result.ok ? undefined : problemsFrom(result.rejections),
+    });
     if (result.ok) {
       return {
         status: "playable",
         rows: proposal.rows || rows,
         cols: proposal.cols || cols,
-        entries,
+        /* Numbered here rather than by the model, and this is the only place
+           the layout path gets numbers at all. Without it every entry keeps the
+           zero `readEntries` stamps. */
+        entries: numberEntries(entries),
       };
     }
     lastProblems = problemsFrom(result.rejections);
@@ -150,10 +197,16 @@ export async function generate(
      word list was good, and `propose` is the call whose output `clean` is built
      to filter. */
   report({ step: "packing", attempt: maxRepairs + 1 });
+  record({
+    at: Date.now(),
+    step: "words",
+    detail: "the layout could not be repaired, asking for a word list to pack",
+  });
   let candidates: Candidate[] = [];
   attempts += 1;
   try {
     candidates = (await provider.propose(theme, limits.maxEntries)).candidates;
+    exchange("words", `${candidates.length} usable words after cleaning`);
   } catch {
     threw += 1;
     candidates = [];

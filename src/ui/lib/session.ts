@@ -13,7 +13,7 @@ import {
   useRef,
   useState,
 } from "preact/hooks";
-import type { PeerInfo, SessionDoc, VoicePeer } from "../../types";
+import type { PeerInfo, SessionDoc, TraceStep, VoicePeer } from "../../types";
 import type { IncomingClip } from "./voice.ts";
 import { nickname as storedNickname, playerId } from "./local.ts";
 import {
@@ -64,6 +64,9 @@ export interface LiveSession {
      says 10 to 30 seconds needs words. */
   progress: { step: string; attempt: number } | null;
   failure: string | null;
+  /* The whole exchange with the model, for the panel that shows it. Replayed
+     from storage on connect, so arriving late loses nothing. */
+  trace: TraceStep[];
 }
 
 /* Section 16 budgets a reconnect within five seconds of a drop, so the first two
@@ -91,6 +94,7 @@ export function useSession(id: string): LiveSession {
     attempt: number;
   } | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
+  const [trace, setTrace] = useState<TraceStep[]>([]);
 
   const socketRef = useRef<WebSocket | null>(null);
   const attemptRef = useRef(0);
@@ -245,6 +249,9 @@ export function useSession(id: string): LiveSession {
             break;
           case "progress":
             setProgress({ step: msg.step as string, attempt: msg.attempt });
+            break;
+          case "trace":
+            setTrace(msg.steps as TraceStep[]);
             break;
           case "generated":
             setProgress(null);
@@ -462,5 +469,6 @@ export function useSession(id: string): LiveSession {
     sendClip,
     progress,
     failure,
+    trace,
   };
 }
