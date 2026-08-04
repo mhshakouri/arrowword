@@ -9,10 +9,12 @@
    more would be furniture. */
 
 import { navigate } from "../lib/router.ts";
+import { useT } from "../i18n/index.ts";
 
 export function Crumbs({ label }: { label?: string }) {
+  const t = useT();
   return (
-    <nav class="crumbs" aria-label="Navigation">
+    <nav class="crumbs" aria-label={t.common.navLabel}>
       <button
         type="button"
         class="crumb"
@@ -24,10 +26,10 @@ export function Crumbs({ label }: { label?: string }) {
           else navigate("/");
         }}
       >
-        ← Back
+        {t.common.back}
       </button>
       <button type="button" class="crumb" onClick={() => navigate("/")}>
-        Home
+        {t.common.home}
       </button>
       {label && <span class="crumb-label">{label}</span>}
     </nav>

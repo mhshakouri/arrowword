@@ -22,6 +22,7 @@ import { navigate } from "../lib/router.ts";
 import { AlignmentEditor } from "../components/AlignmentEditor.tsx";
 import { CellTagger } from "../components/CellTagger.tsx";
 import { ShareLink } from "../components/ShareLink.tsx";
+import { t as messages, useT } from "../i18n/index.ts";
 
 const MAX_SIDE = 30; /* Spec section 7. */
 
@@ -44,6 +45,7 @@ function resumable(): string | null {
 }
 
 export function New() {
+  const t = useT();
   const resumed = resumable();
   const [step, setStep] = useState<Step>(resumed ? "grid" : "photo");
   const [busy, setBusy] = useState<string | null>(null);
@@ -61,13 +63,16 @@ export function New() {
   async function onPick(file: File) {
     setError(null);
     try {
-      setBusy("Shrinking the photo");
+      /* `messages()` at event time rather than the hook's render-time value:
+         these sentences appear while an async job runs, in whatever language
+         is current then. */
+      setBusy(messages().wizard.busyShrinking);
       const small = await downscale(file);
 
-      setBusy("Creating the puzzle");
+      setBusy(messages().wizard.busyCreating);
       const id = await createSession();
 
-      setBusy("Uploading");
+      setBusy(messages().wizard.busyUploading);
       await uploadPhoto(id, small.blob);
 
       remember(id, "Untitled");
@@ -87,7 +92,7 @@ export function New() {
           ? err.failure.message
           : err instanceof Error
             ? err.message
-            : "Something went wrong preparing that photo.",
+            : messages().wizard.photoPrepFailed,
       );
     } finally {
       setBusy(null);
@@ -98,7 +103,7 @@ export function New() {
     if (!sessionId) return;
     setError(null);
     try {
-      setBusy("Saving");
+      setBusy(messages().wizard.busySaving);
       await savePuzzle(sessionId, {
         title: title.trim() || "Untitled",
         rows,
@@ -114,9 +119,9 @@ export function New() {
       setError(
         err instanceof ApiError
           ? err.failure.kind === "conflict"
-            ? "This puzzle was already saved once, and a saved puzzle cannot be changed. Start a new one to make a different grid."
+            ? messages().wizard.alreadySaved
             : err.failure.message
-          : "Could not save the puzzle.",
+          : messages().wizard.couldNotSave,
       );
     } finally {
       setBusy(null);
@@ -127,19 +132,15 @@ export function New() {
 
   return (
     <main>
-      <h1>New puzzle</h1>
+      <h1>{t.wizard.title}</h1>
 
       {step === "photo" && (
         <>
-          <p class="lede">
-            Photograph the whole printed grid, straight on and in good light.
-            The clues have to stay readable, since you will be reading them from
-            this photo.
-          </p>
+          <p class="lede">{t.wizard.photoLede}</p>
 
           <div class="stack">
             <div class="card">
-              <label for="photo">Photo</label>
+              <label for="photo">{t.wizard.photoLabel}</label>
               <input
                 id="photo"
                 type="file"
@@ -152,8 +153,7 @@ export function New() {
                 }}
               />
               <p class="muted" style="margin-bottom:0">
-                Shrunk to {LONGEST_EDGE}px on the longest edge before it leaves
-                your device, so the upload is small and the clues stay legible.
+                {t.wizard.shrinkNote(LONGEST_EDGE)}
               </p>
             </div>
 
@@ -169,15 +169,12 @@ export function New() {
 
       {step === "grid" && sessionId && (
         <>
-          <p class="lede">
-            Say how many rows and columns the printed grid has, then drag the
-            four corners onto its outer edges.
-          </p>
+          <p class="lede">{t.wizard.gridLede}</p>
 
           <div class="stack">
             <div class="card row" style="gap:1rem">
               <div style="flex:1;min-width:6rem">
-                <label for="rows">Rows</label>
+                <label for="rows">{t.wizard.rows}</label>
                 <input
                   id="rows"
                   type="number"
@@ -194,7 +191,7 @@ export function New() {
                 />
               </div>
               <div style="flex:1;min-width:6rem">
-                <label for="cols">Columns</label>
+                <label for="cols">{t.wizard.cols}</label>
                 <input
                   id="cols"
                   type="number"
@@ -220,15 +217,11 @@ export function New() {
               onChange={setAlignment}
             />
 
-            <p class="muted">
-              Drag a corner, or focus one and use the arrow keys for small
-              adjustments. Line up the outer border of the printed grid, not the
-              first row of cells.
-            </p>
+            <p class="muted">{t.wizard.dragHint}</p>
 
             {shrunk && (
               <p class="muted">
-                Photo went from {kb(shrunk.from)} to {kb(shrunk.to)}.
+                {t.wizard.shrunk(kb(shrunk.from), kb(shrunk.to))}
               </p>
             )}
 
@@ -242,20 +235,18 @@ export function New() {
                   setStep("tag");
                 }}
               >
-                Corners look right, tag the cells
+                {t.wizard.cornersRight}
               </button>
-              <button onClick={() => navigate("/")}>Save for later</button>
+              <button onClick={() => navigate("/")}>
+                {t.wizard.saveForLater}
+              </button>
             </div>
           </div>
         </>
       )}
       {step === "tag" && sessionId && (
         <>
-          <p class="lede">
-            Mark what each cell is. Everything starts as an answer cell, so you
-            only have to mark the clues, the dead cells, and any letters already
-            printed.
-          </p>
+          <p class="lede">{t.wizard.tagLede}</p>
 
           <div class="stack">
             <CellTagger
@@ -268,12 +259,12 @@ export function New() {
             />
 
             <div class="card">
-              <label for="title">Name this puzzle</label>
+              <label for="title">{t.wizard.titleLabel}</label>
               <input
                 id="title"
                 type="text"
                 maxLength={200}
-                placeholder="Untitled"
+                placeholder={t.common.untitled}
                 value={title}
                 onInput={(e) =>
                   setTitle((e.currentTarget as HTMLInputElement).value)
@@ -281,10 +272,7 @@ export function New() {
               />
             </div>
 
-            <div class="notice">
-              Saving fixes the grid permanently. Letters people type are stored
-              separately, so the puzzle itself cannot be edited afterwards.
-            </div>
+            <div class="notice">{t.wizard.saveNotice}</div>
 
             {error && (
               <p class="notice error" role="alert">
@@ -298,10 +286,10 @@ export function New() {
                 disabled={busy !== null}
                 onClick={() => void onSave()}
               >
-                {busy ?? "Save and get the share link"}
+                {busy ?? t.wizard.saveButton}
               </button>
               <button disabled={busy !== null} onClick={() => setStep("grid")}>
-                Back to corners
+                {t.wizard.backToCorners}
               </button>
             </div>
           </div>
@@ -310,12 +298,12 @@ export function New() {
 
       {step === "saved" && sessionId && (
         <>
-          <p class="lede">
-            Saved. Send this link to whoever is solving with you.
-          </p>
+          <p class="lede">{t.wizard.savedLede}</p>
           <div class="stack">
             <ShareLink id={sessionId} />
-            <button onClick={() => navigate("/")}>Back to start</button>
+            <button onClick={() => navigate("/")}>
+              {t.common.backToStart}
+            </button>
           </div>
         </>
       )}

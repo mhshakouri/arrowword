@@ -5,6 +5,8 @@
    limit is enforced on the stream, so shrinking first is what keeps an ordinary
    phone photo from being refused. */
 
+import { t } from "../i18n/index.ts";
+
 export const LONGEST_EDGE = 2000;
 export const JPEG_QUALITY = 0.8;
 
@@ -24,7 +26,7 @@ async function load(file: File): Promise<ImageBitmap> {
        grid is not a subtle bug but it is an easy one. */
     return await createImageBitmap(file, { imageOrientation: "from-image" });
   } catch {
-    throw new Error("That file does not look like an image.");
+    throw new Error(t().photo.notAnImage);
   }
 }
 
@@ -39,18 +41,18 @@ export async function downscale(file: File): Promise<Downscaled> {
   canvas.width = width;
   canvas.height = height;
   const ctx = canvas.getContext("2d");
-  if (!ctx) throw new Error("This browser could not prepare the photo.");
+  if (!ctx) throw new Error(t().photo.prepFailed);
   ctx.drawImage(bitmap, 0, 0, width, height);
   bitmap.close();
 
   const blob = await new Promise<Blob | null>((resolve) =>
     canvas.toBlob(resolve, "image/jpeg", JPEG_QUALITY),
   );
-  if (!blob) throw new Error("This browser could not encode the photo.");
+  if (!blob) throw new Error(t().photo.encodeFailed);
 
   return { blob, width, height, originalBytes: file.size };
 }
 
 export function kb(bytes: number): string {
-  return `${Math.round(bytes / 1024)} KB`;
+  return t().photo.kb(bytes);
 }

@@ -24,11 +24,13 @@ import { ClueList } from "../components/ClueList.tsx";
 import { Crumbs } from "../components/Crumbs.tsx";
 import { mark, type Marked } from "../lib/check.ts";
 import { Trace } from "../components/Trace.tsx";
+import { useT } from "../i18n/index.ts";
 import type { Entry } from "../../types";
 
 const MAX_NICKNAME = 24;
 
 export function Play({ id }: { id: string }) {
+  const t = useT();
   const session = useSession(id);
   const [selected, setSelected] = useState<{ row: number; col: number } | null>(
     null,
@@ -69,14 +71,10 @@ export function Play({ id }: { id: string }) {
     return (
       <main>
         <Crumbs />
-        <h1>This puzzle is gone</h1>
-        <p class="lede">
-          Puzzles disappear after 30 days without anyone touching them, and
-          anyone holding the link can delete one. Either could have happened
-          here, and the app deliberately cannot tell which.
-        </p>
+        <h1>{t.play.goneTitle}</h1>
+        <p class="lede">{t.play.goneLede}</p>
         <a class="button primary" href="/">
-          Back to start
+          {t.common.backToStart}
         </a>
       </main>
     );
@@ -86,13 +84,10 @@ export function Play({ id }: { id: string }) {
     return (
       <main>
         <Crumbs />
-        <h1>This puzzle is full</h1>
-        <p class="lede">
-          Ten people can solve together at once, and there are ten already. Try
-          again when someone closes their tab.
-        </p>
+        <h1>{t.play.fullTitle}</h1>
+        <p class="lede">{t.play.fullLede}</p>
         <a class="button" href="/">
-          Back to start
+          {t.common.backToStart}
         </a>
       </main>
     );
@@ -102,10 +97,8 @@ export function Play({ id }: { id: string }) {
     return (
       <main>
         <Crumbs />
-        <h1>Opening the puzzle…</h1>
-        <p class="lede">
-          Fetching the photo and the letters people have typed.
-        </p>
+        <h1>{t.play.openingTitle}</h1>
+        <p class="lede">{t.play.openingLede}</p>
       </main>
     );
   }
@@ -120,37 +113,18 @@ export function Play({ id }: { id: string }) {
        tell "working" from "stuck". Seeing which step is running, and that the
        earlier ones finished, is the difference. */
     const steps: Array<{ key: string; label: string; note: string }> = [
-      {
-        key: "words",
-        label: "Asking the model for a puzzle",
-        note: "words, positions and clues, all at once",
-      },
-      {
-        key: "validating",
-        label: "Checking every crossing agrees",
-        note: "nothing invalid is ever saved",
-      },
-      {
-        key: "clues",
-        label: "Sending back what was wrong",
-        note: "only if the first attempt did not fit together",
-      },
-      {
-        key: "packing",
-        label: "Laying it out on this device",
-        note: "only if the model could not place the words itself",
-      },
+      { key: "words", ...t.play.steps.words },
+      { key: "validating", ...t.play.steps.validating },
+      { key: "clues", ...t.play.steps.clues },
+      { key: "packing", ...t.play.steps.packing },
     ];
     const current = session.progress?.step ?? "words";
     const currentIndex = steps.findIndex((s) => s.key === current);
     return (
       <main>
         <Crumbs />
-        <h1>Writing “{doc.title}”</h1>
-        <p class="lede">
-          A language model is writing this puzzle now. It usually takes under
-          half a minute, and you can leave this page open.
-        </p>
+        <h1>{t.play.writingTitle(doc.title)}</h1>
+        <p class="lede">{t.play.writingLede}</p>
         <ol class="steps">
           {steps.map((step, i) => {
             const state =
@@ -171,9 +145,7 @@ export function Play({ id }: { id: string }) {
         </ol>
         {(session.progress?.attempt ?? 0) > 0 && (
           <p class="muted" role="status">
-            Attempt {(session.progress?.attempt ?? 0) + 1} of 3. The first
-            layout did not fit together, so it has been sent back with the exact
-            squares that disagreed.
+            {t.play.attempt((session.progress?.attempt ?? 0) + 1, 3)}
           </p>
         )}
         <Trace steps={session.trace} />
@@ -195,19 +167,17 @@ export function Play({ id }: { id: string }) {
       <main>
         <Crumbs />
         <h1>
-          {unreachable
-            ? "Could not reach the puzzle writer"
-            : "That theme did not work out"}
+          {unreachable ? t.play.unreachableTitle : t.play.themeFailedTitle}
         </h1>
         <p class="lede">
           {unreachable
-            ? "The model could not be reached just now, so nothing was built. This is not your theme, and the attempt has been given back to you."
+            ? t.play.unreachableLede
             : known
               ? session.failure
-              : "The model answered but could not make a puzzle from it. Short, common, everyday words work best: a subject like “the kitchen” gives it more to work with than a list of names."}
+              : t.play.themeFailedLede}
         </p>
         <a class="button primary" href="/generate">
-          {unreachable ? "Try again" : "Try another theme"}
+          {unreachable ? t.play.tryAgain : t.play.tryAnotherTheme}
         </a>
         {/* The most useful thing on this screen. Somebody whose puzzle failed
             wants to know why, and the app knows. */}
@@ -220,13 +190,10 @@ export function Play({ id }: { id: string }) {
     return (
       <main>
         <Crumbs />
-        <h1>This puzzle is not finished</h1>
-        <p class="lede">
-          Somebody started it and has not tagged the cells yet, so there is
-          nothing to solve.
-        </p>
+        <h1>{t.play.notFinishedTitle}</h1>
+        <p class="lede">{t.play.notFinishedLede}</p>
         <a class="button" href={`/new?session=${id}`}>
-          Finish setting it up
+          {t.play.finishSetup}
         </a>
       </main>
     );
@@ -240,12 +207,9 @@ export function Play({ id }: { id: string }) {
       <main>
         <Crumbs />
         <h1>{doc.title}</h1>
-        <p class="lede">
-          This is the shared demo, so it cannot be written in. Open your own
-          copy and type all you like.
-        </p>
+        <p class="lede">{t.play.templateLede}</p>
         <button class="primary" onClick={() => navigate("/")}>
-          Get my own copy
+          {t.play.getMyCopy}
         </button>
       </main>
     );
@@ -262,29 +226,27 @@ export function Play({ id }: { id: string }) {
           came from, and "a machine wrote this" changes how the clues read. */}
       {doc.source === "generated" && (
         <p class="muted" style="margin-top:-0.5rem">
-          <span class="tag">AI written</span> A language model wrote this grid
-          and its clues from the theme “{doc.theme ?? doc.title}”. Clues can be
-          loose or occasionally wrong.
+          <span class="tag">{t.landing.aiWrittenTag}</span>{" "}
+          {t.play.aiWrittenNote(doc.theme ?? doc.title)}
         </p>
       )}
 
       {needsName ? (
         <div class="card stack">
           <div>
-            <label for="nickname">Pick a name</label>
+            <label for="nickname">{t.play.nicknameLabel}</label>
             <input
               id="nickname"
               type="text"
               maxLength={MAX_NICKNAME * 2}
-              placeholder="Whatever you like"
+              placeholder={t.play.nicknamePlaceholder}
               value={draftName}
               onInput={(e) =>
                 setDraftName((e.currentTarget as HTMLInputElement).value)
               }
             />
             <p class="muted" style="margin-bottom:0">
-              So the others can see who filled what. It is not an account and
-              nobody checks it.
+              {t.play.nicknameNote}
             </p>
           </div>
           <div class="row">
@@ -300,7 +262,7 @@ export function Play({ id }: { id: string }) {
                 session.introduce(name);
               }}
             >
-              Start solving
+              {t.play.startSolving}
             </button>
           </div>
         </div>
@@ -308,7 +270,7 @@ export function Play({ id }: { id: string }) {
         <>
           <div class="row" style="margin-bottom:0.75rem">
             {session.peers.length === 0 ? (
-              <span class="muted">Just you so far.</span>
+              <span class="muted">{t.play.justYou}</span>
             ) : (
               session.peers.map((p) => (
                 <span
@@ -324,9 +286,8 @@ export function Play({ id }: { id: string }) {
 
           {session.status === "reconnecting" && (
             <p class="notice" role="status">
-              Reconnecting. Keep typing: letters are kept and sent when the
-              connection comes back.
-              {session.waiting > 0 && ` ${session.waiting} waiting to send.`}
+              {t.play.reconnecting}
+              {session.waiting > 0 && t.play.waitingToSend(session.waiting)}
             </p>
           )}
 
@@ -397,10 +358,12 @@ export function Play({ id }: { id: string }) {
                 <button
                   onClick={() => setMarked(mark(doc.entries, doc.letters))}
                 >
-                  Check my answers
+                  {t.play.checkAnswers}
                 </button>
                 {marked && (
-                  <button onClick={() => setMarked(null)}>Hide marks</button>
+                  <button onClick={() => setMarked(null)}>
+                    {t.play.hideMarks}
+                  </button>
                 )}
               </div>
 
@@ -410,17 +373,15 @@ export function Play({ id }: { id: string }) {
                   role="status"
                 >
                   {marked.complete
-                    ? "All done, and every letter is right."
+                    ? t.play.allRight
                     : marked.wrong.length === 0
-                      ? `Nothing wrong so far. ${marked.blank} square${marked.blank === 1 ? "" : "s"} still empty.`
-                      : `${marked.wrong.length} square${marked.wrong.length === 1 ? "" : "s"} ${marked.wrong.length === 1 ? "is" : "are"} wrong, marked on the grid.${marked.blank ? ` ${marked.blank} still empty.` : ""}`}
+                      ? t.play.nothingWrongYet(marked.blank)
+                      : t.play.someWrong(marked.wrong.length, marked.blank)}
                 </p>
               )}
 
               <p class="muted" style="margin-top:0.75rem">
-                Tap a clue to jump to its first square. Tap a square and type
-                one letter. Backspace clears it. Nothing is checked unless you
-                ask.
+                {t.play.crosswordHint}
               </p>
             </>
           ) : (
@@ -445,8 +406,7 @@ export function Play({ id }: { id: string }) {
               />
 
               <p class="muted" style="margin-top:0.75rem">
-                Tap an outlined cell to read its clue. Tap an empty cell and
-                type one letter. Backspace clears it.
+                {t.play.photoHint}
               </p>
             </>
           )}
@@ -456,7 +416,7 @@ export function Play({ id }: { id: string }) {
           {sharing ? (
             <ShareLink id={id} showOpen={false} />
           ) : (
-            <button onClick={() => setSharing(true)}>Invite someone</button>
+            <button onClick={() => setSharing(true)}>{t.play.invite}</button>
           )}
 
           <PushToTalk

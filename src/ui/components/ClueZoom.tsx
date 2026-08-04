@@ -8,6 +8,7 @@
 import { useEffect, useRef } from "preact/hooks";
 import type { GridAlignment } from "../../types";
 import { cellQuad } from "../lib/alignment.ts";
+import { useT } from "../i18n/index.ts";
 
 export interface ClueZoomProps {
   photoSrc: string;
@@ -33,6 +34,7 @@ export function ClueZoom({
   padding = 0.35,
   onClose,
 }: ClueZoomProps) {
+  const t = useT();
   const frameRef = useRef<HTMLDivElement>(null);
   const imgRef = useRef<HTMLImageElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
@@ -112,7 +114,7 @@ export function ClueZoom({
       class="zoom-backdrop"
       role="dialog"
       aria-modal="true"
-      aria-label={`Clue at row ${row + 1}, column ${col + 1}`}
+      aria-label={t.clueZoom.dialogLabel(row, col)}
       /* Tapping outside closes, which is what a phone user reaches for first. */
       onClick={(e) => {
         if (e.target === e.currentTarget) onClose();
@@ -123,12 +125,12 @@ export function ClueZoom({
           <img
             ref={imgRef}
             src={photoSrc}
-            alt={`The clue printed at row ${row + 1}, column ${col + 1}`}
+            alt={t.clueZoom.photoAlt(row, col)}
             onLoad={place}
           />
         </div>
         <button ref={closeRef} class="primary" onClick={onClose}>
-          Close
+          {t.common.close}
         </button>
       </div>
     </div>

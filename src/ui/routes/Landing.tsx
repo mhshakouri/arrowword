@@ -8,8 +8,10 @@ import { useEffect, useState } from "preact/hooks";
 import { ApiError, cloneSession, loadConfig } from "../lib/api.ts";
 import { forget, remember, visited } from "../lib/local.ts";
 import { navigate } from "../lib/router.ts";
+import { useT } from "../i18n/index.ts";
 
 export function Landing() {
+  const t = useT();
   const [sessions, setSessions] = useState(visited);
   /* Three states rather than two. Starting at `null` and only learning the real
      value after `/config` resolves meant a visitor saw "no demo puzzle is set up
@@ -27,6 +29,11 @@ export function Landing() {
       .catch(() => setDemoId(null));
   }, []);
 
+  /* "Untitled" is the server's sentinel and is stored verbatim, so it is
+     mapped to the reader's language at display time rather than at save time. */
+  const shownTitle = (title: string | undefined) =>
+    !title || title === "Untitled" ? t.common.untitled : title;
+
   async function openDemo() {
     if (!demoId || demoId === "unknown") return;
     setError(null);
@@ -36,13 +43,13 @@ export function Landing() {
          read-only, so landing there would mean explaining why typing does
          nothing. A copy is playable immediately and cannot spoil anyone else's. */
       const mine = await cloneSession(demoId);
-      remember(mine, "Demo puzzle");
+      remember(mine, t.landing.demoTitle);
       navigate(`/s/${mine}`);
     } catch (err) {
       setError(
         err instanceof ApiError
           ? err.failure.message
-          : "Could not open the demo just now.",
+          : t.landing.demoOpenFailed,
       );
     } finally {
       setBusy(false);
@@ -51,10 +58,8 @@ export function Landing() {
 
   return (
     <main>
-      <h1>Arrowword Co-op</h1>
-      <p class="lede">
-        Solve a puzzle together, on separate devices. Letters sync as you type.
-      </p>
+      <h1>{t.landing.title}</h1>
+      <p class="lede">{t.landing.lede}</p>
 
       <div class="stack">
         {/* Two ways in, not three.
@@ -66,39 +71,35 @@ export function Landing() {
             because that is the choice a visitor is actually making. */}
         <section class="card stack">
           <h2 style="margin-top:0;font-size:1.1rem">
-            A photographed arrowword
+            {t.landing.photoCardTitle}
           </h2>
           <p class="muted" style="margin:0">
-            The Persian puzzle this app is named after: a photo of a printed
-            grid, with the clues in the picture. Play the ready-made one, or
-            photograph your own.
+            {t.landing.photoCardBody}
           </p>
           <div class="row">
             {demoId === "unknown" ? (
-              <span class="muted">Looking for the demo…</span>
+              <span class="muted">{t.landing.lookingForDemo}</span>
             ) : demoId ? (
               <button
                 class="primary"
                 disabled={busy}
                 onClick={() => void openDemo()}
               >
-                {busy ? "Making your copy…" : "Play the demo"}
+                {busy ? t.landing.makingCopy : t.landing.playDemo}
               </button>
             ) : null}
             <button onClick={() => navigate("/new")}>
-              Make one from a photo
+              {t.landing.makeFromPhoto}
             </button>
           </div>
           {demoId && (
             <p class="muted" style="margin:0">
-              Playing the demo makes your own copy, so you cannot spoil anyone
-              else's.
+              {t.landing.demoCopyNote}
             </p>
           )}
           {demoId === null && (
             <p class="muted" style="margin:0">
-              No demo is set up yet. Make one from a photo, then name it in the
-              worker's configuration to publish it here.
+              {t.landing.noDemoNote}
             </p>
           )}
           {error && (
@@ -109,33 +110,23 @@ export function Landing() {
         </section>
 
         <section class="card stack">
-          <h2 style="margin-top:0;font-size:1.1rem">
-            A crossword written by AI
-          </h2>
+          <h2 style="margin-top:0;font-size:1.1rem">{t.landing.aiCardTitle}</h2>
           <p class="muted" style="margin:0">
-            Give a theme and a language model writes an English crossword for
-            it: the grid, the words and the clues. Under a minute, no photo.
+            {t.landing.aiCardBody}
           </p>
           <div class="row">
             <button class="primary" onClick={() => navigate("/generate")}>
-              Write one from a theme
+              {t.landing.writeFromTheme}
             </button>
           </div>
         </section>
 
         {sessions.length === 0 ? (
-          <p class="muted">
-            Puzzles you open will be listed here, in this browser only, because
-            there are no accounts.
-          </p>
+          <p class="muted">{t.landing.emptyListNote}</p>
         ) : (
           <section>
-            <h2 style="font-size:1.1rem">Puzzles you have opened</h2>
-            <p class="muted">
-              Kept in this browser only, because there are no accounts. Clearing
-              site data loses the list, and puzzles expire after 30 days without
-              activity.
-            </p>
+            <h2 style="font-size:1.1rem">{t.landing.openedTitle}</h2>
+            <p class="muted">{t.landing.openedNote}</p>
             <ul class="stack" style="list-style:none;padding:0">
               {sessions.map((s) => (
                 <li
@@ -151,7 +142,7 @@ export function Landing() {
                         never will, so offering to open it promises something
                         that cannot happen. */}
                     {s.failed ? (
-                      <span style="min-width:0">{s.title || "Untitled"}</span>
+                      <span style="min-width:0">{shownTitle(s.title)}</span>
                     ) : (
                       <a
                         href={`/s/${s.id}`}
@@ -161,13 +152,15 @@ export function Landing() {
                           navigate(`/s/${s.id}`);
                         }}
                       >
-                        {s.title || "Untitled"}
+                        {shownTitle(s.title)}
                       </a>
                     )}
                     {s.failed ? (
-                      <span class="tag tag-failed">did not build</span>
+                      <span class="tag tag-failed">
+                        {t.landing.didNotBuild}
+                      </span>
                     ) : s.kind === "generated" ? (
-                      <span class="tag">AI written</span>
+                      <span class="tag">{t.landing.aiWrittenTag}</span>
                     ) : null}
                   </span>
                   <button
@@ -175,20 +168,15 @@ export function Landing() {
                       forget(s.id);
                       setSessions(visited());
                     }}
-                    aria-label={`Remove ${s.title || "Untitled"} from this list`}
+                    aria-label={t.landing.removeLabel(shownTitle(s.title))}
                   >
-                    Remove
+                    {t.landing.removeButton}
                   </button>
                 </li>
               ))}
             </ul>
             {sessions.some((s) => s.failed) && (
-              <p class="muted">
-                A puzzle that did not build still gets a link, because the
-                session is created before anyone knows whether the model can
-                write it. Nothing was saved into it and it deletes itself.
-                Removing it here just tidies this list.
-              </p>
+              <p class="muted">{t.landing.failedListNote}</p>
             )}
           </section>
         )}

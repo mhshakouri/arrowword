@@ -10,10 +10,13 @@ Parent project: the personal website, `github.com/mhshakouri/mhshakouri.dev`,
 local path `../mhshakouri`. It links to this project and describes it; it never
 hosts it. Design tokens are copied from there, never imported.
 
-**State: feature-complete as of 2026-08-04.** v1, B1, B3 and C1 are built,
+**State: v2 closed out 2026-08-04; D1, the bilingual UI, is code complete as
+of 2026-08-05 and awaits its human check.** v1, B1, B3 and C1 are built,
 deployed, and past their human checks. C2, live WebRTC voice, is declined
-rather than postponed (ADR-15); building it needs a new decision record. No
-milestone remains, so work from here is stewardship, not features.
+rather than postponed (ADR-15); building it needs a new decision record. The
+UI speaks Persian and English through a typed dictionary (ADR-16), switchable
+from every screen; the outstanding human check is a native read-through of the
+Persian copy.
 
 C1 passed the check it exists for on 2026-08-04: a voice clip from a phone in
 Iran arrived audibly. The one accepted gap is **iOS Safari, closed as not

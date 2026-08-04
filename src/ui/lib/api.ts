@@ -6,6 +6,7 @@
    nowhere to show them; A1 owes `rate-limited` and `too-large`. */
 
 import type { Cell, GridAlignment, SessionDoc } from "../../types";
+import { t } from "../i18n/index.ts";
 
 export type ApiFailure =
   | { kind: "rate-limited"; message: string }
@@ -24,38 +25,31 @@ export class ApiError extends Error {
   }
 }
 
+/* Sentences come from the dictionary at failure time, so they arrive in the
+   current UI language. The 409/400/422 branches prefer the server's body when
+   one exists; that text is written by the worker in English, and translating
+   it would mean the client second-guessing the server's contract. */
 async function describe(res: Response): Promise<ApiFailure> {
   const body = (await res.text().catch(() => "")).trim();
   switch (res.status) {
     case 429:
-      return {
-        kind: "rate-limited",
-        message:
-          "You have made a lot of puzzles in the last hour. Try again a bit later.",
-      };
+      return { kind: "rate-limited", message: t().api.rateLimited };
     case 413:
-      return {
-        kind: "too-large",
-        message:
-          "That photo is too large even after shrinking. Try a photo taken at a lower resolution.",
-      };
+      return { kind: "too-large", message: t().api.tooLarge };
     case 404:
-      return {
-        kind: "not-found",
-        message: "That puzzle does not exist, or it has expired.",
-      };
+      return { kind: "not-found", message: t().api.notFound };
     case 409:
-      return { kind: "conflict", message: body || "That is already saved." };
+      return { kind: "conflict", message: body || t().api.conflictFallback };
     case 400:
     case 422:
       return {
         kind: "bad-request",
-        message: body || "That request was not valid.",
+        message: body || t().api.badRequestFallback,
       };
     default:
       return {
         kind: "unknown",
-        message: body || `Something went wrong (${res.status}).`,
+        message: body || t().api.unknown(res.status),
       };
   }
 }
@@ -69,7 +63,7 @@ async function request(path: string, init?: RequestInit): Promise<Response> {
        failure on a phone. It still needs a sentence. */
     throw new ApiError({
       kind: "offline",
-      message: "Could not reach the server. Check your connection.",
+      message: t().api.offline,
     });
   }
   if (!res.ok) throw new ApiError(await describe(res));

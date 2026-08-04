@@ -7,16 +7,11 @@
 import { useCallback, useRef, useState } from "preact/hooks";
 import type { GridAlignment, Point } from "../../types";
 import { gridLines } from "../lib/alignment.ts";
+import { useT } from "../i18n/index.ts";
 
 type Corner = keyof GridAlignment;
 
 const CORNERS: Corner[] = ["topLeft", "topRight", "bottomRight", "bottomLeft"];
-const LABELS: Record<Corner, string> = {
-  topLeft: "top left",
-  topRight: "top right",
-  bottomRight: "bottom right",
-  bottomLeft: "bottom left",
-};
 
 /* Keyboard nudge, in normalized units. Section 16 requires grid controls to be
    keyboard reachable, and a drag handle that only responds to a pointer is not. */
@@ -37,6 +32,7 @@ export function AlignmentEditor({
   alignment,
   onChange,
 }: AlignmentEditorProps) {
+  const t = useT();
   const boxRef = useRef<HTMLDivElement>(null);
   /* A ref, not state. State is flushed asynchronously, so the first
      `pointermove` after a `pointerdown` can arrive while the component still
@@ -89,7 +85,7 @@ export function AlignmentEditor({
     >
       <img
         src={photoSrc}
-        alt="The puzzle you photographed. Drag the four corners onto the printed grid."
+        alt={t.aligner.photoAlt}
         style="display:block;width:100%;height:auto;border-radius:var(--radius)"
       />
 
@@ -120,7 +116,7 @@ export function AlignmentEditor({
           <button
             key={corner}
             type="button"
-            aria-label={`Move the ${LABELS[corner]} corner`}
+            aria-label={t.aligner.moveCorner(t.aligner.corners[corner])}
             onPointerDown={(e) => {
               draggingRef.current = corner;
               setActive(corner);

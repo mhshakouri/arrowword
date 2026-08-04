@@ -8,6 +8,7 @@ import { useEffect, useRef, useState } from "preact/hooks";
 import { navigate } from "../lib/router.ts";
 import { remember } from "../lib/local.ts";
 import { Crumbs } from "../components/Crumbs.tsx";
+import { t as messages, useT } from "../i18n/index.ts";
 
 const MAX_THEME = 60;
 const WIDGET_SRC = "https://challenges.cloudflare.com/turnstile/v0/api.js";
@@ -27,6 +28,7 @@ declare global {
 }
 
 export function Generate() {
+  const t = useT();
   const [theme, setTheme] = useState("");
   const [state, setState] = useState<State>("idle");
   const [refusal, setRefusal] = useState<string | null>(null);
@@ -123,7 +125,10 @@ export function Generate() {
     const cleaned = theme.trim().slice(0, MAX_THEME);
     if (!cleaned) return;
     if (!tokenRef.current) {
-      setRefusal("The check has not finished yet. Give it a moment.");
+      /* `messages()` rather than the hook's value: handlers run long after a
+         render, and the sentence should be in whatever language is current
+         when it is shown, not when the closure was made. */
+      setRefusal(messages().generate.checkNotFinished);
       return;
     }
     setState("starting");
@@ -157,37 +162,33 @@ export function Generate() {
       setState("refused");
       setRefusal(
         res.status === 403
-          ? "The check did not pass. Reload the page and try again."
+          ? messages().generate.checkFailed
           : body === "daily limit reached"
-            ? "You have used today's puzzles. They come back tomorrow."
+            ? messages().generate.dailyLimit
             : body === "out of budget for today"
-              ? "Everyone's shared daily budget for new puzzles is spent. It resets tomorrow, and the demo puzzle is still there."
-              : "Could not start. Try again in a moment.",
+              ? messages().generate.poolSpent
+              : messages().generate.couldNotStart,
       );
     } catch {
       setState("refused");
-      setRefusal("Could not reach the server. Check your connection.");
+      setRefusal(messages().generate.offline);
     }
   };
 
   return (
     <main>
       <Crumbs />
-      <h1>Make a puzzle</h1>
-      <p class="lede">
-        Give a theme and a language model writes a small English crossword for
-        it: the grid, the words and the clues. It takes under a minute, and you
-        can share the link with anyone.
-      </p>
+      <h1>{t.generate.title}</h1>
+      <p class="lede">{t.generate.lede}</p>
 
       <div class="card stack">
         <div>
-          <label for="theme">Theme</label>
+          <label for="theme">{t.generate.themeLabel}</label>
           <input
             id="theme"
             type="text"
             maxLength={MAX_THEME}
-            placeholder="rivers, the kitchen, birds…"
+            placeholder={t.generate.themePlaceholder}
             value={theme}
             disabled={state === "starting"}
             onInput={(e) =>
@@ -195,9 +196,7 @@ export function Generate() {
             }
           />
           <p class="muted" style="margin-bottom:0">
-            Ten puzzles a day each, because the model runs on a shared free
-            allowance. A theme is a subject, not a list: "movies" gives a puzzle
-            about film, not a puzzle of film titles.
+            {t.generate.limitNote}
           </p>
         </div>
 
@@ -206,13 +205,10 @@ export function Generate() {
         <div ref={widgetRef} />
         {siteKey !== null && !ready && (
           <p class="muted" role="status">
-            Checking that you are a person. This is Cloudflare Turnstile and it
-            occasionally takes several seconds; the button will enable itself.
+            {t.generate.turnstileSlow}
           </p>
         )}
-        {siteKey === null && (
-          <p class="muted">Loading the check that you are a person…</p>
-        )}
+        {siteKey === null && <p class="muted">{t.generate.turnstileLoading}</p>}
 
         {refusal && (
           <p class="notice error" role="alert">
@@ -227,13 +223,13 @@ export function Generate() {
             onClick={() => void start()}
           >
             {state === "starting"
-              ? "Starting…"
+              ? t.generate.starting
               : ready
-                ? "Make it"
-                : "Waiting for the check…"}
+                ? t.generate.makeIt
+                : t.generate.waitingForCheck}
           </button>
           <a class="button" href="/">
-            Back
+            {t.common.back}
           </a>
         </div>
       </div>
