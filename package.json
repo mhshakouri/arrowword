@@ -21,6 +21,7 @@
     "test:photo": "node test/photo-limit.mjs",
     "test:template": "node test/template.mjs",
     "probe": "node --experimental-strip-types scripts/probe.mjs",
+    "probe:reasoning": "node --experimental-strip-types scripts/reasoning.mjs",
     "test:all": "npm test && npm run test:template"
   },
   "devDependencies": {

@@ -1052,17 +1052,38 @@ Generated puzzles are English only (B3). This milestone would make the theme's l
 | `llama-3.3-70b-instruct-fp8-fast` | 6/8    | **44.6** | real, distinct birds; terse. One Chinese character leaked into a clue                                              |
 | `llama-4-scout-17b-16e-instruct`  | 8/9    | 42.0     | good birds, but self-corrects inside its own output: an entry glossed «غلط، جواب نیست»                             |
 | `mistral-small-3.1-24b-instruct`  | 7/8    | **24.6** | cheapest that answers, and the worst content: a butterfly offered as a bird, one invented word repeated four times |
-| `gemma-4-26b-a4b-it`              | 0      | 58.4     | reasoning model, spent all 2048 tokens thinking, returned empty                                                    |
+| `gemma-4-26b-a4b-it`              | 0      | 58.4     | reasoning model: thinks past the budget and never answers, see below                                               |
 | `qwen3-30b-a3b-fp8`               | 0      | 63.7     | same                                                                                                               |
 | `gpt-oss-20b`                     | 0      | 61.7     | same                                                                                                               |
 | `nemotron-3-120b-a12b`            | 0      | 291.8    | same, and by far the most expensive way to receive nothing                                                         |
 
 **Two things in that table are not visible on the pricing page, and both invert its ranking.**
 
-- **A reasoning model bills its thinking as output.** Gemma 4's headline rate is 27,273 neurons per million output tokens, a whisker above the 8B and an eighth of the 70B's, which made it the obvious cheap candidate. In practice it emitted 2,048 tokens of reasoning, hit the ceiling, and returned an empty answer, costing 58.4 neurons for nothing at all. Three others did the same. **On this task the cheap-looking models are the expensive ones**, and no amount of reading the price list would have shown it.
+- **A reasoning model bills its thinking as output.** Gemma 4's headline rate is 27,273 neurons per million output tokens, a whisker above the 8B and an eighth of the 70B's, which made it the obvious cheap candidate. It never returns an answer here and pays full price for the attempt. **On this task the cheap-looking models are the expensive ones**, and no amount of reading the price list would have shown it.
 - **Verbosity matters as much as rate.** Llama 4 Scout charges 77,273 per million output tokens against the 70B's 204,805, and cost the same per call anyway, because it wrote 461 tokens where the 70B wrote 181.
 
 `llama-3.3-70b-instruct-fp8-fast` is the recommendation for Persian: best content, terse, and within a neuron or two of the only comparable alternative.
+
+#### Why the reasoning models fail here, which is not the reason it first looked like
+
+The first reading of the table above was "they return nothing", and that was never a credible finding: Cloudflare does not serve four models that answer with an empty string. When a result implies the vendor is broken, the harness is the likelier suspect. Investigated with `npm run probe:reasoning`, which prints the thinking rather than counting it.
+
+**They answer perfectly well.** Asked `Name three birds in Persian`, Gemma 4 replies in **2.0 seconds** with `finish_reason: stop`, 415 characters of reasoning, and گنجشک، عقاب، طوطی. **5.3 neurons.** Nothing is wrong with the model, the binding, or the account.
+
+**What breaks is this task's prompt, and the fix runs opposite to the usual one.** Given the generation prompt, Gemma 4 expands its reasoning to fill whatever budget it is handed and never reaches an answer:
+
+| max_tokens | reasoning produced | answer                          | neurons |
+| ---------- | ------------------ | ------------------------------- | ------- |
+| 2048       | 3,762 chars        | empty                           | 56.7    |
+| 4096       | 7,177 chars        | empty                           | 112.5   |
+| 8192       | 20,385 chars       | empty                           | 225.1   |
+| 16000      | —                  | **504 Gateway Time-out at 60s** | —       |
+
+Raising the ceiling does not help, and past about 8k the gateway times out before the model finishes, so no budget both completes and is affordable. Stripping the prompt to its bare bones did not fix it either: the reasoning goes on verifying per-item constraints, counting letters in candidate words and checking each is really a bird, and those constraints are the task.
+
+**The generalizable point: prompt technique for a reasoning model is the inverse of prompt technique for a small one.** Everything that made prompt E work on the 8B, six explicit constraints and "check each answer twice", is an instruction to deliberate. A reasoning model already does that natively and then does it harder because it was asked. The 8B has to be told to be careful; a reasoning model has to be told to stop. If one of these is ever revisited, start from the shortest prompt that states the output shape and add nothing.
+
+**Reasoning mostly cannot be turned off on Workers AI, and that was read off each model's documented parameter list rather than assumed.** Only `gemma-4-26b-a4b-it` documents `reasoning_effort` and `chat_template_kwargs`. `qwen3-30b-a3b-fp8` and `gpt-oss-20b` document neither; their parameters are the ordinary sampling set. Measured on Gemma 4, `reasoning_effort: "low"` does shorten the thinking, 3,821 characters against 4,810, and still never produces an answer; `chat_template_kwargs: {thinking:false}` changes nothing. An earlier attempt sent `enable_thinking: false` to Qwen3 at the top level, where it was silently ignored, and that was read as "the switch does not work" when the truth is that Workers AI exposes no switch for that model. **Read the model's own parameter list before concluding a parameter failed.**
 
 **English on the 8B is fine, which is why B3 shipped and works.** Paying five times the neurons to replace a path that already produces good puzzles buys nothing. So `GENERATION_MODEL` should stay as it is for English and D2 should add a second setting for Persian, rather than one model serving both. `workersAiProvider` already takes the model as an argument, so this is a configuration shape rather than a rewrite, and it keeps the section 7 ceiling for English exactly where it is.
 

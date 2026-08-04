@@ -30,12 +30,18 @@ export default {
       schema?: Record<string, unknown>;
       temperature?: number;
       max_tokens?: number;
+      /* Merged into the call verbatim, so a reasoning switch can be tried
+         without editing and restarting this worker. Different families spell
+         it differently: Qwen uses `enable_thinking`, the gpt-oss models take a
+         `reasoning` object with an effort level. */
+      extra?: Record<string, unknown>;
     };
 
     const input: Record<string, unknown> = {
       messages: [{ role: "user", content: body.prompt }],
       temperature: body.temperature ?? 0.2,
       max_tokens: body.max_tokens ?? 1024,
+      ...(body.extra ?? {}),
     };
     if (body.schema) {
       input.response_format = { type: "json_schema", json_schema: body.schema };
@@ -53,11 +59,20 @@ export default {
            saying why. */
         choices?: Array<{
           finish_reason?: string;
-          message?: { content?: string; reasoning_content?: string };
+          message?: {
+            content?: string | null;
+            /* Both spellings are real. Qwen3 returns `reasoning`; the field
+               was first read as `reasoning_content` only, which reported an
+               empty thought process for a model that had written five
+               thousand characters of one. */
+            reasoning?: string | null;
+            reasoning_content?: string | null;
+          };
         }>;
       };
       const choice = out?.choices?.[0];
-      const response = out?.response ?? choice?.message?.content;
+      const message = choice?.message;
+      const response = out?.response ?? message?.content;
       return Response.json({
         ok: true,
         ms: Date.now() - started,
@@ -77,7 +92,11 @@ export default {
            reasoning model expensive: thinking is billed as output. */
         shape: typeof response,
         finish: choice?.finish_reason ?? null,
-        reasoning: (choice?.message?.reasoning_content ?? "").length,
+        /* The reasoning text itself, not merely its length. "It returned
+           nothing" turned out to be "it thought for the whole budget and was
+           cut off before answering", and the difference was invisible while
+           this was only a character count. */
+        reasoning: message?.reasoning_content ?? message?.reasoning ?? "",
       });
     } catch (err) {
       return Response.json({
