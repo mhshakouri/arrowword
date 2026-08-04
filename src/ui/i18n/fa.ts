@@ -37,7 +37,7 @@ export const fa: Messages = {
     playDemo: "حل جدول نمونه",
     makingCopy: "در حال ساختن نسخهٔ شما…",
     demoTitle: "جدول نمونه",
-    makeFromPhoto: "ساختن از روی عکس",
+    makeFromPhoto: "ایجاد جدول جدید از روی عکس",
     demoCopyNote:
       "با باز کردن جدول نمونه نسخهٔ خودتان ساخته می‌شود؛ پس جدول کس دیگری را خراب نمی‌کنید.",
     noDemoNote:
