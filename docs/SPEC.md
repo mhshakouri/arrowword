@@ -1045,6 +1045,25 @@ Generated puzzles are English only (B3). This milestone would make the theme's l
 | `llama-3.1-8b-instruct-fp8`       | 8/8 and 7/8, good words | ~5.5    | unusable, a paw offered as a falcon   | 8.2     |
 | `llama-3.3-70b-instruct-fp8-fast` | 8/8 and 8/8             | ~27     | real, distinct, correctly clued birds | 42.2    |
 
+**Which model for Persian: all plausible candidates measured 2026-08-05**, one call each, theme «پرندگان», prompt E. Workers AI serves 26 text-generation models; the ones excluded from this table are code, safety, vision, translation or LoRA-adapter models, or too small to be candidates.
+
+| model                             | usable | neurons  | what happened                                                                                                      |
+| --------------------------------- | ------ | -------- | ------------------------------------------------------------------------------------------------------------------ |
+| `llama-3.3-70b-instruct-fp8-fast` | 6/8    | **44.6** | real, distinct birds; terse. One Chinese character leaked into a clue                                              |
+| `llama-4-scout-17b-16e-instruct`  | 8/9    | 42.0     | good birds, but self-corrects inside its own output: an entry glossed «غلط، جواب نیست»                             |
+| `mistral-small-3.1-24b-instruct`  | 7/8    | **24.6** | cheapest that answers, and the worst content: a butterfly offered as a bird, one invented word repeated four times |
+| `gemma-4-26b-a4b-it`              | 0      | 58.4     | reasoning model, spent all 2048 tokens thinking, returned empty                                                    |
+| `qwen3-30b-a3b-fp8`               | 0      | 63.7     | same                                                                                                               |
+| `gpt-oss-20b`                     | 0      | 61.7     | same                                                                                                               |
+| `nemotron-3-120b-a12b`            | 0      | 291.8    | same, and by far the most expensive way to receive nothing                                                         |
+
+**Two things in that table are not visible on the pricing page, and both invert its ranking.**
+
+- **A reasoning model bills its thinking as output.** Gemma 4's headline rate is 27,273 neurons per million output tokens, a whisker above the 8B and an eighth of the 70B's, which made it the obvious cheap candidate. In practice it emitted 2,048 tokens of reasoning, hit the ceiling, and returned an empty answer, costing 58.4 neurons for nothing at all. Three others did the same. **On this task the cheap-looking models are the expensive ones**, and no amount of reading the price list would have shown it.
+- **Verbosity matters as much as rate.** Llama 4 Scout charges 77,273 per million output tokens against the 70B's 204,805, and cost the same per call anyway, because it wrote 461 tokens where the 70B wrote 181.
+
+`llama-3.3-70b-instruct-fp8-fast` is the recommendation for Persian: best content, terse, and within a neuron or two of the only comparable alternative.
+
 **English on the 8B is fine, which is why B3 shipped and works.** Paying five times the neurons to replace a path that already produces good puzzles buys nothing. So `GENERATION_MODEL` should stay as it is for English and D2 should add a second setting for Persian, rather than one model serving both. `workersAiProvider` already takes the model as an argument, so this is a configuration shape rather than a rewrite, and it keeps the section 7 ceiling for English exactly where it is.
 
 **The probe was wrong three times, always in the same way, and this is the lesson worth keeping.** Each time it diverged from what `provider.ts` actually does, it reported on itself rather than on the model:

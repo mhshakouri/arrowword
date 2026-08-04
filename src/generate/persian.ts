@@ -37,12 +37,12 @@
    are one, and ه هٔ are one. That is the ruling of the person the puzzle is
    for, and it is what a solver on paper would score.
 
-   **One conflict in it, resolved here and worth re-checking.** ة was listed in
-   two groups, with ت and with ه. It can only fold one way: folding it both
-   ways would make ت equal ه by transitivity, and «تا» and «ها» are not the
-   same word. It folds to ه, which is the ordinary Persian treatment of Arabic
-   loanwords (مدرسة is written مدرسه). If the intent was ت, this line is the
-   only thing to change. */
+   **ة folds to ه, always, confirmed by Hossein on 2026-08-05.** It was first
+   given in two groups, with ت and with ه, and it can only fold one way:
+   folding both would make ت equal ه by transitivity, and «تا» and «ها» are not
+   the same word. His ruling: a word-final ت is sometimes written ة and
+   sometimes ه, but ة is rare in Persian to begin with, so ه always is the
+   right call. */
 const FOLD: Record<string, string> = {
   ي: "ی" /* ي Arabic yeh    -> ی Farsi yeh */,
   ى: "ی" /* ى alef maksura  -> ی */,

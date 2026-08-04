@@ -39,14 +39,28 @@ const LETTERS = "ابپتثجچحخدذرزژسشصضطظعغفقکگلمنوه�
    1.9 times per input token, so a prompt can grow much more cheaply than a
    reply can. */
 const RATES = {
+  /* The incumbent, and the English baseline. */
   "@cf/meta/llama-3.1-8b-instruct-fp8": { in: 13778, out: 26128 },
+  /* Known good at Persian, and the most expensive thing on this list by a
+     wide margin. Everything else here exists to try to beat its price. */
   "@cf/meta/llama-3.3-70b-instruct-fp8-fast": { in: 26668, out: 204805 },
+  /* Candidates. Output rate is what matters, since replies cost roughly ten
+     times what prompts do at these sizes. Gemma 4 is the striking one: 27,273
+     out is within a whisker of the 8B, for a 26B mixture-of-experts. */
+  "@cf/google/gemma-4-26b-a4b-it": { in: 9091, out: 27273 },
+  "@cf/qwen/qwen3-30b-a3b-fp8": { in: 4625, out: 30475 },
+  "@cf/openai/gpt-oss-20b": { in: 18182, out: 27273 },
+  "@cf/zai-org/glm-4.7-flash": { in: 5500, out: 36400 },
+  "@cf/mistralai/mistral-small-3.1-24b-instruct": { in: 31876, out: 50488 },
+  "@cf/meta/llama-4-scout-17b-16e-instruct": { in: 24545, out: 77273 },
+  "@cf/openai/gpt-oss-120b": { in: 31818, out: 68182 },
+  "@cf/nvidia/nemotron-3-120b-a12b": { in: 45455, out: 136364 },
 };
 /* Only models whose rate has actually been read off the pricing page appear
    above, and a model that is missing prints tokens without neurons rather than
-   a number nobody checked. Qwen3 was dropped from this table on purpose: its
-   row was adjacent to deepseek's on the scraped page and the two were easy to
-   confuse, and it answered with an empty reply on both themes anyway. */
+   a number nobody checked. An earlier version of this table guessed Qwen3 at
+   deepseek's rate, which is nine times too high, purely because their rows sat
+   next to each other on the scraped page. */
 
 /* ---- The prompts under test. This is the real deliverable of this script:
    whichever wins here becomes the shipped prompt. ---- */
@@ -164,18 +178,24 @@ const shippedEnglish = (theme, count) =>
   ].join(" ");
 
 const ALL_VARIANTS = [
-  { name: "A english-instructions", build: englishInstructions },
-  { name: "B all-persian", build: persianInstructions },
-  { name: "C english+examples", build: withExamples },
-  { name: "D theme-tight", build: themeTight },
-  { name: "E theme-tight+gloss", build: withGloss },
-  { name: "EN shipped-english", build: shippedEnglish },
+  { code: "A", name: "A english-instructions", build: englishInstructions },
+  { code: "B", name: "B all-persian", build: persianInstructions },
+  { code: "C", name: "C english+examples", build: withExamples },
+  { code: "D", name: "D theme-tight", build: themeTight },
+  { code: "E", name: "E theme-tight+gloss", build: withGloss },
+  { code: "EN", name: "EN shipped-english", build: shippedEnglish },
 ];
 
-/* `PROBE_VARIANTS=D,E` to iterate on two without paying for five. */
+/* `PROBE_VARIANTS=D,E` to iterate on two without paying for five.
+
+   Matched on an explicit code, not `startsWith`, and that is a scar: `E`
+   prefix-matched `EN` as well, so a sweep of candidate Persian models silently
+   ran the English prompt at every one of them and judged the results by
+   Persian rules. Half the rejections in that sweep were English words being
+   told they were not Persian, and one model was nearly written off for it. */
 const PICK = process.env.PROBE_VARIANTS?.split(",").map((s) => s.trim());
 const VARIANTS = PICK
-  ? ALL_VARIANTS.filter((v) => PICK.some((p) => v.name.startsWith(p)))
+  ? ALL_VARIANTS.filter((v) => PICK.includes(v.code))
   : ALL_VARIANTS;
 
 const SCHEMA = {
@@ -213,7 +233,13 @@ async function ask(prompt, { schema = process.env.PROBE_SCHEMA === "1" } = {}) {
       prompt,
       schema: schema ? SCHEMA : undefined,
       temperature: 0.2,
-      max_tokens: 1024,
+      /* 2048 to match what the app sets. Section 7 records why: left unset,
+         Workers AI defaults low enough to cut a reply in half, and a reply
+         truncated into invalid JSON costs a whole attempt and is paid for
+         either way. A probe running at a lower ceiling than production
+         measures a truncation it invented, which is what the first sweep of
+         candidate models did. */
+      max_tokens: Number(process.env.PROBE_MAXTOK ?? 2048),
     }),
   });
   return res.json();
@@ -455,6 +481,14 @@ async function main() {
 
         console.log(`\n### ${variant.name} · «${theme}» · ${answer.ms}ms`);
         if (!candidates.length) {
+          if (answer.finish === "length") {
+            console.log(
+              `  TRUNCATED at max_tokens` +
+                (answer.reasoning
+                  ? `, after ${answer.reasoning} chars of reasoning that is billed as output`
+                  : ""),
+            );
+          }
           console.log("  no parsable candidates. raw reply:");
           console.log("  " + answer.reply.slice(0, 400).replace(/\n/g, "\n  "));
         }

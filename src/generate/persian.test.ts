@@ -55,8 +55,8 @@ test("the heh group folds together: ه and هٔ", () => {
      mark rather than the fold table needing an entry for it. */
   assert.equal(normalizePersian("خانهٔ"), "خانه");
   assert.equal(normalizePersian("خانه"), "خانه");
-  /* ة was listed by Hossein in two groups; it resolves to ه here, and this
-     test is what makes that resolution explicit rather than incidental. */
+  /* ة always folds to ه, confirmed 2026-08-05: a word-final ت is sometimes
+     written ة and sometimes ه, and ة is rare in Persian either way. */
   assert.equal(normalizePersian("مدرسة"), "مدرسه");
 });
 

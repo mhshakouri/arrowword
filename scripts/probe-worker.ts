@@ -46,8 +46,18 @@ export default {
       const out = (await env.AI.run(body.model, input)) as {
         response?: unknown;
         usage?: { prompt_tokens?: number; completion_tokens?: number };
+        /* Reasoning models answer in OpenAI's shape instead, and put their
+           thinking in `reasoning_content` and the actual answer in `content`.
+           Gemma 4 spent all 2048 tokens reasoning and returned an empty
+           `content`, which the probe first reported as "no reply" without
+           saying why. */
+        choices?: Array<{
+          finish_reason?: string;
+          message?: { content?: string; reasoning_content?: string };
+        }>;
       };
-      const response = out?.response;
+      const choice = out?.choices?.[0];
+      const response = out?.response ?? choice?.message?.content;
       return Response.json({
         ok: true,
         ms: Date.now() - started,
@@ -62,8 +72,12 @@ export default {
             : JSON.stringify(response ?? out),
         /* Kept so an unfamiliar shape is visible rather than merely empty: the
            first run against a reasoning model returned "" and the reason was
-           not in anything the probe printed. */
+           not in anything the probe printed. `reasoning` is the token count
+           spent thinking, which is the number that makes a cheap-looking
+           reasoning model expensive: thinking is billed as output. */
         shape: typeof response,
+        finish: choice?.finish_reason ?? null,
+        reasoning: (choice?.message?.reasoning_content ?? "").length,
       });
     } catch (err) {
       return Response.json({
