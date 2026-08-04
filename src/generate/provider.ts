@@ -49,7 +49,22 @@ export interface LayoutProposal {
   entries: Entry[];
 }
 
+/* What the last call sent and got back, so the loop can record it without the
+   provider having to know what a trace is. A field rather than a return value
+   because every method already returns the parsed thing, and threading a second
+   value through all of them would change four signatures to serve one caller. */
+export interface Exchange {
+  prompt: string;
+  reply: string;
+  parsed: boolean;
+  ms: number;
+  mode: string;
+}
+
 export interface Provider {
+  /* The last exchange, for the trace. Absent on the recorded provider, which
+     has no prompts and no replies to show. */
+  lastExchange?: () => Exchange | null;
   /* Step 1 of the ADR pipeline: the whole puzzle at once. */
   proposeLayout(
     theme: string,
@@ -191,17 +206,21 @@ export interface AiBinding {
    code edit: the only honest way to compare two models on this task is to run
    both against real themes, and that should not need a pull request each time.
 
-   **Changed 2026-08-04 to `@cf/google/gemma-4-26b-a4b-it`**, from
-   `@cf/meta/llama-3.1-8b-instruct-fp8`. The 8B could not reliably produce a
-   valid layout, which is unsurprising rather than a defect in it: the layout
-   prompt asks for a constraint-satisfaction solution in one shot, and the
-   layout ADR anticipated exactly this outcome.
+   **Back to `@cf/meta/llama-3.1-8b-instruct-fp8` on 2026-08-04**, having spent
+   part of a day on Gemma 4 for nothing. Neither model was ever the problem:
+   generation was started with `ctx.waitUntil` from a request handler and killed
+   about 100 milliseconds later, before any model could answer. Every switch and
+   every prompt rewrite was tuning something that never ran to completion.
 
-   Gemma 4 is a 26B mixture-of-experts with 4B active and, unusually, **costs
-   slightly less per generation than the 8B did**: 9,091 neurons per million
-   input tokens against 13,778, and 27,273 output against 26,128, which at our
-   prompt size is about 15.5 neurons rather than 15.8. The ceiling in section 7
-   therefore does not move.
+   Reverted rather than kept because Gemma was chosen to fix a fault it did not
+   have, and keeping it would bake in a decision made on false evidence. Once
+   generation demonstrably works, comparing the two is a `GENERATION_MODEL`
+   change and a deploy, which is exactly what that variable is for.
+
+   Costs are near enough identical either way: the 8B is 13,778 neurons per
+   million input tokens and 26,128 output, Gemma 4 is 9,091 and 27,273, which at
+   our prompt size is about 15.8 against 15.5. The ceiling in section 7 does not
+   move for either.
 
    Output tokens dominate our cost, which is why reasoning models that emit long
    traces are the expensive ones here: `deepseek-r1-distill-qwen-32b` charges
@@ -211,7 +230,7 @@ export interface AiBinding {
    An earlier value was `@cf/meta/llama-3.1-8b-instruct` with no `-fp8`, which
    Workers AI does not serve at all, so every call threw. Written from memory
    rather than from `wrangler ai models list`, which takes ten seconds. */
-export const GENERATION_MODEL = "@cf/google/gemma-4-26b-a4b-it";
+export const GENERATION_MODEL = "@cf/meta/llama-3.1-8b-instruct-fp8";
 
 function prompt(theme: string, count: number): string {
   return [
@@ -419,10 +438,13 @@ export function workersAiProvider(
      So a schema failure falls back to a plain call within the same attempt.
      Where it works we stop losing attempts to malformed JSON; where it does
      not, we are exactly where we were. */
+  let last: Exchange | null = null;
+
   const ask = async (
     content: string,
     schema: Record<string, unknown>,
   ): Promise<unknown> => {
+    const began = Date.now();
     const call = async (withSchema: boolean): Promise<string> => {
       const input: Record<string, unknown> = {
         messages: [{ role: "user", content }],
@@ -445,6 +467,15 @@ export function workersAiProvider(
     }
 
     const parsed = extractJson(raw);
+    /* Kept whatever `debug` says. The log is for the operator and this is for
+       the person waiting on the puzzle, and only one of them can read a tail. */
+    last = {
+      prompt: content,
+      reply: raw,
+      parsed: parsed !== null,
+      ms: Date.now() - began,
+      mode,
+    };
     /* Off by default: model output is large and this is the one place that
        would put a whole puzzle in the logs, which section 16 forbids for
        puzzle content. On when diagnosing, because the alternative is guessing
@@ -467,6 +498,8 @@ export function workersAiProvider(
   };
 
   return {
+    lastExchange: () => last,
+
     async proposeLayout(
       theme: string,
       rows: number,

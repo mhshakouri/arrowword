@@ -24,7 +24,7 @@
 
 import type { Entry } from "../types.ts";
 import type { Candidate } from "./provider.ts";
-import { cellsFrom, validate } from "./validate.ts";
+import { cellsFrom, numberEntries, validate } from "./validate.ts";
 
 export interface PackOptions {
   rows?: number;
@@ -249,9 +249,21 @@ export function pack(
     col: p.col - left,
   }));
 
-  /* Numbering comes from B1 rather than from placement order, because the
-     numbers a clue list prints are a function of the grid and nothing else. */
-  const entries = numberEntries(shifted, height, width);
+  /* Numbering comes from the shared helper rather than from placement order,
+     because the numbers a clue list prints are a function of the grid and
+     nothing else, and because two implementations of it is how the layout path
+     ended up with none. */
+  const entries = numberEntries(
+    shifted.map((p) => ({
+      number: 0,
+      dir: p.dir,
+      row: p.row,
+      col: p.col,
+      len: p.answer.length,
+      clue: p.clue,
+      answer: p.answer,
+    })),
+  );
 
   /* The packer is not the authority. If its own output does not validate, say
      so by returning nothing rather than shipping a grid the server will refuse:
@@ -261,36 +273,4 @@ export function pack(
   return validate(cells, entries).ok
     ? { rows: height, cols: width, entries, steps }
     : null;
-}
-
-/* Assign display numbers in reading order, sharing one number between an across
-   and a down that start at the same square. Mirrors detectRuns deliberately:
-   the renderer numbers what it sees, so the entries must agree with it. */
-function numberEntries(
-  placements: Placement[],
-  rows: number,
-  cols: number,
-): Entry[] {
-  const starts = new Map<string, number>();
-  let next = 1;
-  for (let row = 0; row < rows; row += 1) {
-    for (let col = 0; col < cols; col += 1) {
-      const key = `${row},${col}`;
-      if (placements.some((p) => p.row === row && p.col === col)) {
-        starts.set(key, next);
-        next += 1;
-      }
-    }
-  }
-  return placements
-    .map((p) => ({
-      number: starts.get(`${p.row},${p.col}`) ?? 0,
-      dir: p.dir,
-      row: p.row,
-      col: p.col,
-      len: p.answer.length,
-      clue: p.clue,
-      answer: p.answer,
-    }))
-    .sort((a, b) => a.number - b.number || a.dir.localeCompare(b.dir));
 }

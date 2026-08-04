@@ -9,7 +9,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { Cell, Entry } from "../types.ts";
-import { cellsFrom, solution, validate, type Rejection } from "./validate.ts";
+import {
+  cellsFrom,
+  numberEntries,
+  solution,
+  validate,
+  type Rejection,
+} from "./validate.ts";
 
 /* `#` is an answer cell, anything else is dead. Same convention as runs.test. */
 function grid(...rows: string[]): Cell[][] {
@@ -324,4 +330,54 @@ test("a zero-sized grid is empty rather than an error", () => {
 test("solution agrees with itself at a crossing", () => {
   const map = solution(okEntries);
   assert.equal(map["0,0"], "C", "both CAT and COT start at the shared square");
+});
+
+/* ---- numberEntries ----
+
+   The layout path had no numbering at all: `readEntries` stamps `number: 0` and
+   nothing ever replaced it, so the first model layout that validated would have
+   rendered 0 on every starting square and a clue list of nothing but zeros. It
+   never surfaced because no layout survived validation in production, which is
+   the kind of bug that waits for the day everything else starts working. */
+
+test("numbering starts at one and has no gaps", () => {
+  const out = numberEntries(okEntries);
+  const unique = [...new Set(out.map((e) => e.number))].sort((a, b) => a - b);
+  assert.deepEqual(
+    unique,
+    unique.map((_, i) => i + 1),
+  );
+});
+
+test("an across and a down starting on one square share a number", () => {
+  const out = numberEntries(okEntries);
+  assert.equal(out[0]?.number, out[1]?.number);
+});
+
+test("numbering follows reading order, not the order given", () => {
+  const out = numberEntries([
+    entry(0, "across", 2, 0, "TAP"),
+    entry(0, "across", 0, 0, "CAT"),
+  ]);
+  const first = out.find((e) => e.row === 0);
+  const second = out.find((e) => e.row === 2);
+  assert.equal(first?.number, 1);
+  assert.equal(second?.number, 2);
+});
+
+test("nothing keeps the zero readEntries stamps", () => {
+  const out = numberEntries([
+    entry(0, "across", 0, 0, "CAT"),
+    entry(0, "down", 0, 0, "COT"),
+    entry(0, "across", 2, 0, "TAP"),
+  ]);
+  assert.equal(
+    out.every((e) => e.number > 0),
+    true,
+    "an unnumbered entry survived",
+  );
+});
+
+test("numbering an empty list is an empty list", () => {
+  assert.deepEqual(numberEntries([]), []);
 });

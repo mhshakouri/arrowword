@@ -23,6 +23,7 @@ import { CrosswordBoard } from "../components/CrosswordBoard.tsx";
 import { ClueList } from "../components/ClueList.tsx";
 import { Crumbs } from "../components/Crumbs.tsx";
 import { mark, type Marked } from "../lib/check.ts";
+import { Trace } from "../components/Trace.tsx";
 import type { Entry } from "../../types";
 
 const MAX_NICKNAME = 24;
@@ -175,6 +176,7 @@ export function Play({ id }: { id: string }) {
             squares that disagreed.
           </p>
         )}
+        <Trace steps={session.trace} />
       </main>
     );
   }
@@ -207,6 +209,9 @@ export function Play({ id }: { id: string }) {
         <a class="button primary" href="/generate">
           {unreachable ? "Try again" : "Try another theme"}
         </a>
+        {/* The most useful thing on this screen. Somebody whose puzzle failed
+            wants to know why, and the app knows. */}
+        <Trace steps={session.trace} />
       </main>
     );
   }

@@ -19,6 +19,7 @@ import {
   type PeerInfo,
   type ServerMessage,
   type SessionDoc,
+  type TraceStep,
   type VoicePeer,
 } from "./types";
 
@@ -1243,7 +1244,11 @@ export class ArrowwordSession implements DurableObject {
         },
         false,
       );
-      this.ctx.waitUntil(this.runGeneration(theme, limiterKey));
+      /* Queued for the alarm rather than started here. See `alarm()`: work
+         started from a request handler is killed when the handler returns, and
+         a model call never finishes inside that window. */
+      await this.ctx.storage.put("pendingGeneration", { theme, limiterKey });
+      await this.ctx.storage.setAlarm(Date.now() + 100);
       return json({ ok: true });
     }
 
@@ -1347,6 +1352,17 @@ export class ArrowwordSession implements DurableObject {
          in storage rather than only on the wire. Replayed here so a client that
          arrives late is asked to pack exactly as one that was already
          connected would have been. */
+      /* The transcript, for any client that arrives at any point. */
+      const trace = await this.ctx.storage.get<TraceStep[]>("trace");
+      if (trace?.length) {
+        server.send(
+          JSON.stringify({
+            type: "trace",
+            steps: trace,
+          } satisfies ServerMessage),
+        );
+      }
+
       if (doc.status === "generating") {
         const pending = await this.ctx.storage.get<{
           candidates: Array<{ answer: string; clue: string }>;
@@ -1558,6 +1574,11 @@ export class ArrowwordSession implements DurableObject {
   private async runGeneration(theme: string, limiterKey = ""): Promise<void> {
     try {
       const provider = providerFor(this.env);
+      /* Kept as it happens and stored as it grows, so a client that connects
+         late, or reloads, or arrives after everything finished, still sees the
+         whole transcript. The same lesson as the pack request: a broadcast is
+         not delivery. */
+      const steps: TraceStep[] = [];
       const outcome = await generate(provider, theme, {
         onProgress: (p) =>
           this.broadcast({
@@ -1565,7 +1586,28 @@ export class ArrowwordSession implements DurableObject {
             step: p.step,
             attempt: p.attempt,
           }),
+        onTrace: (step) => {
+          steps.push(step);
+          /* Bounded. Three attempts plus a word list is at most eight steps,
+             and a runaway would otherwise put megabytes in storage. */
+          if (steps.length > 16) steps.shift();
+          void this.ctx.storage.put("trace", steps);
+          this.broadcast({ type: "trace", steps });
+        },
       });
+      console.log(
+        JSON.stringify({
+          at: "trace",
+          steps: steps.map((s) => ({
+            step: s.step,
+            parsed: s.parsed,
+            ms: s.ms,
+            detail: s.detail,
+            problems: s.problems,
+            replyChars: s.reply?.length,
+          })),
+        }),
+      );
 
       const doc = await this.doc();
       if (!doc) return;
@@ -1675,15 +1717,56 @@ export class ArrowwordSession implements DurableObject {
     }
   }
 
-  /* Expiry. At-least-once delivery with retries means this can run twice for
-     one session, so every step has to tolerate having already happened:
-     deleting an absent R2 object succeeds, and deleteAll on empty storage
-     succeeds. No deleteAlarm call: at this worker's compatibility date,
-     deleteAll clears the alarm too. */
+  /* One alarm slot per object, two jobs, so it dispatches.
+
+     Generation moved here 2026-08-04 after every production run silently did
+     nothing. It was started with `ctx.waitUntil` from the request handler; the
+     invocation ended in about 100 milliseconds, and the model call, which takes
+     seconds, was abandoned mid-flight. The neurons were spent, the answer was
+     thrown away, and the session sat in `generating` until it expired. Nothing
+     logged, because the code that logs never got to run.
+
+     It only looked fine in tests because the recorded provider resolves in a
+     microtask and finishes before the handler returns. The one case that
+     mattered was the one no test could reach.
+
+     An alarm is the documented way to do work in a Durable Object after a
+     response has gone out: the runtime schedules it as its own invocation with
+     its own lifetime, and retries it if it fails. */
   async alarm(): Promise<void> {
+    const pending = await this.ctx.storage.get<{
+      theme: string;
+      limiterKey: string;
+    }>("pendingGeneration");
+
+    if (pending) {
+      /* Cleared first. At-least-once delivery means an alarm can fire twice for
+         one schedule, and generating twice would spend the allowance twice and
+         race two writers onto one document. */
+      await this.ctx.storage.delete("pendingGeneration");
+      await this.runGeneration(pending.theme, pending.limiterKey);
+      /* Re-arm expiry, which this alarm displaced. Without it a generated
+         session would never expire, which is the one thing section 16 says
+         storage must never become. */
+      const doc = await this.doc();
+      if (doc && !doc.template) {
+        await this.ctx.storage.setAlarm(
+          doc.lastActiveAt + retentionMs(this.env),
+        );
+      }
+      return;
+    }
+
+    /* Expiry. At-least-once delivery with retries means this can run twice for
+       one session, so every step has to tolerate having already happened:
+       deleting an absent R2 object succeeds, and deleteAll on empty storage
+       succeeds. No deleteAlarm call: at this worker's compatibility date,
+       deleteAll clears the alarm too. */
     const doc = await this.doc();
     if (!doc) return;
     if (doc.template) return;
+    /* An expiry alarm that arrives while a generation is still queued would
+       delete a session somebody is waiting on. */
     const owned = this.ownedPhotoKey(doc);
     if (owned) await this.env.PHOTOS.delete(owned);
     await this.ctx.storage.deleteAll();
