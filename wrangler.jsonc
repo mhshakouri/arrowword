@@ -88,10 +88,15 @@
     // one with a different rate means re-deriving it.
     "GENERATION_MODEL": "",
     // "1" logs the model's raw output, truncated to 400 characters.
-    // **Diagnosis only, and it should go back to "" once a question is
-    // answered.** Spec section 16 forbids logging puzzle content, and this is
-    // the one switch that does. On now because the model could not produce a
-    // valid layout and nobody has seen what it actually replies with.
-    "GENERATION_DEBUG": "1",
+    // **Diagnosis only.** Spec section 16 forbids logging puzzle content, and
+    // this is the one switch that does.
+    //
+    // Turned back off 2026-08-04, the same day it went on, because the question
+    // it was turned on for is answered: max_tokens was unset, the salvage
+    // looked at the wrong nesting level, and the model migrates a colon inside
+    // a key. The app now shows the same transcript on its own pages, which is
+    // where somebody who needs it can actually reach it, so this switch should
+    // stay off unless a question needs the operator's log specifically.
+    "GENERATION_DEBUG": "",
   },
 }
