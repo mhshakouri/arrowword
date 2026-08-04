@@ -57,60 +57,70 @@ export function Landing() {
       </p>
 
       <div class="stack">
-        <section class="card">
-          <h2 style="margin-top:0;font-size:1.1rem">Play the demo</h2>
-          {demoId === "unknown" ? (
-            <p class="muted">Looking for today's puzzle…</p>
-          ) : demoId ? (
-            <>
-              <p class="muted">
-                A ready-made puzzle. Opening it makes your own copy, so you
-                cannot spoil anyone else's.
-              </p>
+        {/* Two ways in, not three.
+
+            It was three: play the demo, make one from a photo, make one with
+            AI. That reads as three unrelated products, and it buries the fact
+            that the demo and the photo wizard are the *same* puzzle form
+            arrived at from two directions. Grouped by what you end up with,
+            because that is the choice a visitor is actually making. */}
+        <section class="card stack">
+          <h2 style="margin-top:0;font-size:1.1rem">
+            A photographed arrowword
+          </h2>
+          <p class="muted" style="margin:0">
+            The Persian puzzle this app is named after: a photo of a printed
+            grid, with the clues in the picture. Play the ready-made one, or
+            photograph your own.
+          </p>
+          <div class="row">
+            {demoId === "unknown" ? (
+              <span class="muted">Looking for the demo…</span>
+            ) : demoId ? (
               <button
                 class="primary"
                 disabled={busy}
                 onClick={() => void openDemo()}
               >
-                {busy ? "Making your copy…" : "Open the demo"}
+                {busy ? "Making your copy…" : "Play the demo"}
               </button>
-              {error && (
-                <p class="notice error" role="alert" style="margin-top:0.75rem">
-                  {error}
-                </p>
-              )}
-            </>
-          ) : (
-            <p class="muted">
-              No demo puzzle is set up yet. Make one below, then name it in the
+            ) : null}
+            <button onClick={() => navigate("/new")}>
+              Make one from a photo
+            </button>
+          </div>
+          {demoId && (
+            <p class="muted" style="margin:0">
+              Playing the demo makes your own copy, so you cannot spoil anyone
+              else's.
+            </p>
+          )}
+          {demoId === null && (
+            <p class="muted" style="margin:0">
+              No demo is set up yet. Make one from a photo, then name it in the
               worker's configuration to publish it here.
+            </p>
+          )}
+          {error && (
+            <p class="notice error" role="alert" style="margin:0">
+              {error}
             </p>
           )}
         </section>
 
-        <section class="card">
-          <h2 style="margin-top:0;font-size:1.1rem">Make a puzzle</h2>
-          <p class="muted">
-            Photograph a printed arrowword, mark the grid over it, and share the
-            link. This takes a few minutes.
+        <section class="card stack">
+          <h2 style="margin-top:0;font-size:1.1rem">
+            A crossword written by AI
+          </h2>
+          <p class="muted" style="margin:0">
+            Give a theme and a language model writes an English crossword for
+            it: the grid, the words and the clues. Under a minute, no photo.
           </p>
-          <button onClick={() => navigate("/new")}>New puzzle</button>
-        </section>
-
-        {/* B3. Deliberately a separate card from the photo path rather than a
-            second button on it: they produce different puzzle forms in
-            different languages, and offering them as variants of one thing
-            would promise a Persian arrowword and deliver an English
-            crossword. */}
-        <section class="card">
-          <h2 style="margin-top:0;font-size:1.1rem">Or have one written</h2>
-          <p class="muted">
-            Give a theme and a small English crossword is generated for it, in
-            under a minute. No photo needed.
-          </p>
-          <button onClick={() => navigate("/generate")}>
-            Make from a theme
-          </button>
+          <div class="row">
+            <button class="primary" onClick={() => navigate("/generate")}>
+              Write one from a theme
+            </button>
+          </div>
         </section>
 
         {sessions.length === 0 ? (
@@ -131,17 +141,35 @@ export function Landing() {
                 <li
                   key={s.id}
                   class="card row"
-                  style="justify-content:space-between"
+                  style="justify-content:space-between;gap:0.75rem"
                 >
-                  <a
-                    href={`/s/${s.id}`}
-                    onClick={(e) => {
-                      e.preventDefault();
-                      navigate(`/s/${s.id}`);
-                    }}
+                  <span
+                    class="row"
+                    style="gap:0.5rem;align-items:baseline;min-width:0"
                   >
-                    {s.title || "Untitled"}
-                  </a>
+                    {/* A failed generation is not a link. It has no grid and
+                        never will, so offering to open it promises something
+                        that cannot happen. */}
+                    {s.failed ? (
+                      <span style="min-width:0">{s.title || "Untitled"}</span>
+                    ) : (
+                      <a
+                        href={`/s/${s.id}`}
+                        style="min-width:0"
+                        onClick={(e) => {
+                          e.preventDefault();
+                          navigate(`/s/${s.id}`);
+                        }}
+                      >
+                        {s.title || "Untitled"}
+                      </a>
+                    )}
+                    {s.failed ? (
+                      <span class="tag tag-failed">did not build</span>
+                    ) : s.kind === "generated" ? (
+                      <span class="tag">AI written</span>
+                    ) : null}
+                  </span>
                   <button
                     onClick={() => {
                       forget(s.id);
@@ -154,6 +182,14 @@ export function Landing() {
                 </li>
               ))}
             </ul>
+            {sessions.some((s) => s.failed) && (
+              <p class="muted">
+                A puzzle that did not build still gets a link, because the
+                session is created before anyone knows whether the model can
+                write it. Nothing was saved into it and it deletes itself.
+                Removing it here just tidies this list.
+              </p>
+            )}
           </section>
         )}
       </div>

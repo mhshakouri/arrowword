@@ -639,7 +639,7 @@ Same route, same socket, same letters. What differs is where clues come from and
 2. Clues render as a numbered list beside or below the grid, from `entries`. Tapping a clue selects its first cell and highlights its run.
 3. Entry numbers render in their starting cells, derived from `entries` rather than stored on cells, because they are a function of the layout and storing them twice invites disagreement.
 4. Tap a cell, type one letter. **No auto-advance**, decided 2026-08-03: ADR-5 stays intact even though B1 makes advance technically possible, because minimal and predictable beats clever here.
-5. **No correctness checking, no reveal, no solved detection.** ADR-1 holds for generated puzzles too. Writes are accepted without comment whether right or wrong, which also means the write path never becomes an oracle that tells a player they guessed correctly.
+5. **No reveal, and no unsolicited correctness checking.** Writes are accepted without comment whether right or wrong, so the write path never becomes an oracle. Changed 2026-08-04: a generated puzzle offers a **"Check my answers" button**, which compares against answers the client already holds (ADR-13) and marks the squares that are wrong without filling in what belongs there. Nothing runs unless it is pressed, and the photo path has no such button because it has no stored answers. See the ADR-1 amendment.
 6. `status: "generating"` renders labeled progress from the `progress` messages. `failed` renders a state offering a fresh attempt, never a raw error.
 
 The layout target for both puzzle kinds is minimal and playable: a readable grid, a way to select a cell, and one letter per keypress. Everything past that is A5 polish rather than a requirement.
@@ -873,6 +873,17 @@ Checks:
 - The renderer: `CrosswordBoard` and `ClueList`, a `/generate` route with the Turnstile widget, and the `generating` and `failed` states. Verified by generating a puzzle against fixtures and playing it in a browser
 
 **What remains:** the neuron measurement that sets the daily ceiling, and the human checks. Neither is blocked on a handoff; the measurement is blocked on deciding to spend neurons.
+
+**Six things found by a person using it, none of which a test would have raised.** Grouped because they share a cause: every one is the app knowing something and not saying it.
+
+- **A generated puzzle was called "Untitled" until it succeeded.** The title was written on success, so every generating and every failed session carried the placeholder, and the visitor's own list filled with identical unopenable entries. It takes its theme when the session is created now. The play screen was also writing "Untitled" back over the good name it had been given, which is why the list stayed wrong even after the server was fixed.
+- **Failed generations sat in that list looking like puzzles.** They are not links any more, they are labelled as having not built, and the list says why they exist at all: the session is created before anyone can know whether the model can write it, nothing was saved into it, and it deletes itself.
+- **Nothing said a puzzle was written by a machine** except the screen that made it, which the person following a shared link never saw. Said on the puzzle itself now, because "a model wrote this" changes how a loose clue reads.
+- **The progress screen was one line of prose for up to thirty seconds.** It is now the four real steps with the finished ones ticked, plus the attempt number when a layout is being repaired, because the difference between "working" and "stuck" is the only thing a person watching actually wants.
+- **Every screen was a dead end** unless it happened to offer a button, so the only reliable way home was the address bar. Back and Home on all of them.
+- **The Turnstile widget takes several seconds and the screen implied that was an error.** The button stayed enabled, a press answered "the check has not finished yet", and nothing on screen said anything was in progress. First diagnosed as a race in the explicit-render handshake and that was wrong: the widget appears, it is slow. The handshake was corrected anyway because it is the documented way, but **the fix a person notices is that the button now waits instead of accusing.** Worth recording as its own lesson: the bug was in what the screen said about a slow dependency, not in the dependency.
+
+**The three ways in became two.** Play the demo, make one from a photo, and make one with AI read as three unrelated products, and it hid that the first two are the same puzzle form reached from different directions. Grouped by what you end up with, which is the choice a visitor is actually making.
 
 **The clue rule was a substring match, and it starved the fallback.** `clean()` dropped any candidate whose clue contained its answer, which is a real rule and models break it constantly. It was written as `clue.includes(answer)`, so a three letter answer died whenever its letters appeared anywhere: `ART` killed by "departure", `ONE` by "money", `OAT` by "coat", `SET` by "sunset", `ACT` by "factual". Five of six realistic clues were dropped in a quick check, and short answers are exactly what a small grid needs most. The word list came back too thin to pack, so the fallback that exists so the button always works could not run. Matched as a whole word now.
 
@@ -1161,6 +1172,19 @@ One asymmetry to state plainly: the template photo is published forever by desig
 Decisions with real alternatives, kept so they are not relitigated in a later session.
 
 **ADR-1: No OCR.** Humans read the clues from the photo; the app knows only grid geometry and letters. Alternative was OCR of Persian clue text, which is unreliable and would have been the hardest part of the project. Consequence: setup requires manual tagging, which is slower but always correct.
+
+**Amended 2026-08-04: generated puzzles can be checked, if the player asks.** ADR-1 said the app never checks answers, and that stood for every puzzle until generation existed. It now has a boundary rather than being absolute, and the boundary is where its own reasoning runs out.
+
+What the record actually objects to is two things, and only one of them is affected. It says "the write path never becomes an oracle that tells a player they guessed correctly", which is about the **server**, and nothing here touches it: ADR-13 already puts every answer in the document on the player's own device, on the reasoning that a puzzle you generated for yourself has nothing to defend. Comparing two strings that are both already on that device grants nobody anything they did not have.
+
+The other objection is that being told you are right removes the point of thinking, and that one is answered by scope rather than by argument:
+
+- **Generated puzzles only.** A photographed arrowword has no `entries`, so there is no answer to compare against, and nobody is going to transcribe the solution of a printed puzzle to make this work. ADR-1 is unqualified for the photo path, which is the path this app is named after.
+- **Asked for, never volunteered.** Nothing runs while somebody types. A grid that colours itself as you go is the thing the record was written against; a button somebody pressed is not.
+- **Says what is wrong, never what is right.** Wrong squares are named. The correct letter is not filled in, because that is a reveal, and a reveal is a different feature that would need its own argument.
+- **The result carries no answers**, which a test asserts, so the marking cannot become a back door to the solution for a client that did not already have it. It did already have it, which is the point.
+
+Consequences: the checker is `src/ui/lib/check.ts`, pure and unit tested, and the most important case it covers is the false accusation. Telling somebody a correct letter is wrong is worse than not checking at all, because it sends them to undo the one square they had right, so the comparison ignores case and surrounding space, and a square shared by two entries is reported once rather than once per entry.
 
 **ADR-2: Capability links instead of accounts.** An unguessable session URL is the credential. Alternative was magic-link auth with a users table and access policies. Consequence: anyone with the link can edit, which is acceptable and intended for a deliberately shared puzzle. This deleted an entire auth system.
 

@@ -1224,6 +1224,12 @@ export class ArrowwordSession implements DurableObject {
           lang: "en",
           status: "generating",
           theme,
+          /* Named now, not on success. A session is addressable the moment it
+             exists, so a title assigned only when generation finishes leaves
+             every generating and every failed puzzle called "Untitled",
+             including in the visitor's own list of what they have opened. The
+             theme is known here and is the only name this puzzle will get. */
+          title: titleFor(theme, doc.title),
         },
         false,
       );

@@ -409,3 +409,101 @@ input[type="text"] {
   color: var(--muted-foreground);
   font-size: 0.85em;
 }
+
+/* Small labels on a list entry. Quiet on purpose: they say what a thing is,
+   which matters when a list mixes photographed puzzles, model-written ones, and
+   generations that never produced a grid. */
+.tag {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 0.1rem 0.4rem;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 16%, var(--background));
+  color: var(--foreground);
+  white-space: nowrap;
+}
+
+.tag-failed {
+  background: color-mix(in srgb, var(--danger) 16%, var(--background));
+}
+
+/* A square a check found wrong. Says which square, never what belongs in it:
+   revealing the letter is a different feature with a different argument. */
+.cw-wrong {
+  background: color-mix(in srgb, var(--danger) 22%, var(--background));
+}
+
+.cw-wrong .cw-letter {
+  color: var(--danger);
+  text-decoration: line-through;
+}
+
+/* The generation progress list. */
+.steps {
+  list-style: none;
+  padding: 0;
+  margin: var(--gap) 0;
+  display: grid;
+  gap: 0.6rem;
+}
+
+.step {
+  display: grid;
+  grid-template-columns: 1.5rem 1fr;
+  gap: 0.5rem;
+  align-items: start;
+}
+
+.step-todo {
+  opacity: 0.45;
+}
+
+.step-mark {
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.step-now .step-mark {
+  animation: pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  50% {
+    opacity: 0.25;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .step-now .step-mark {
+    animation: none;
+  }
+}
+
+.crumbs {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  margin-bottom: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.crumb {
+  background: transparent;
+  border: 0;
+  padding: 0.2rem 0.4rem;
+  min-height: 0;
+  font-size: 0.9rem;
+  color: var(--muted-foreground);
+  border-radius: var(--radius);
+}
+
+.crumb:hover {
+  background: var(--muted);
+  color: var(--foreground);
+}
+
+.crumb-label {
+  color: var(--muted-foreground);
+  font-size: 0.9rem;
+}
