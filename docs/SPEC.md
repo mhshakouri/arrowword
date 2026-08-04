@@ -1,4 +1,4 @@
-# Arrowword Co-op: Aligned Spec (v8)
+# Arrowword Co-op: Aligned Spec (v9)
 
 A cooperative web app for solving Persian arrowword puzzles together, from a photo, on any number of devices, without any OCR.
 
@@ -10,7 +10,9 @@ Changed 2026-08-03 (v7): AI generated crossword-style puzzles are scheduled as t
 
 Changed 2026-08-03 (v8): **players in a session can talk to each other.** The shaping rule is new and it is not the usual one: **the transport that survives the worst network wins.** Push to talk over the WebSocket that already carries the puzzle ships first and works anywhere the app itself works; live WebRTC voice is an enhancement for networks that permit it. The B series is postponed rather than cancelled. See ADR-14.
 
-**Build status: v1 complete 2026-08-03, A0 through A5. Next is the C series, voice, which runs ahead of the postponed B series.** The demo is playable and survives a dropped connection: letters typed offline are kept and sent when it returns. A puzzle can be made end to end and shared: photo, alignment, tagging, save, link. Deployed at `arrowword.mhshakouri.dev`. See section 12.
+Changed 2026-08-04 (v9): **the project is feature-complete.** C1 passed the check it was built for, a voice clip from a phone in Iran arriving audibly, and C2, live WebRTC, is declined rather than postponed: the network the feature exists for cannot use it, and nothing else needs it. See ADR-15.
+
+**Build status: complete 2026-08-04. v1 (A0 through A5), B1, B3 and C1 are built, deployed, and past their human checks; C2 is declined (ADR-15). No milestone remains.** The demo is playable and survives a dropped connection: letters typed offline are kept and sent when it returns. A puzzle can be made end to end and shared: photo, alignment, tagging, save, link. Deployed at `arrowword.mhshakouri.dev`. See section 12.
 
 ---
 
@@ -841,9 +843,9 @@ Checks:
 
 Scheduled 2026-08-03 (ADR-14), and it **runs before the B series** even though its letter is later. The letters record when each series was designed, not the order it ships in, which is why C is not renumbered: renaming B to C after ADR-12 already scheduled it would make every earlier reference wrong to save one letter of confusion here.
 
-Two milestones, and the first is complete on its own. If C2 is never built, nothing is missing.
+Two milestones, and the first is complete on its own. If C2 is never built, nothing is missing. That sentence was written before C1 shipped and turned out to be the conclusion: **C2 was declined on 2026-08-04** (ADR-15), so the C series is complete with C1 alone.
 
-#### C1 Push to talk, status: CODE COMPLETE 2026-08-03, awaiting the human check
+#### C1 Push to talk, status: DONE 2026-08-04, with one caveat on its human check
 
 Hold a button, speak, release. The clip goes over the WebSocket that already carries the puzzle and plays on every other device in the session. **This is the milestone that works for the people this feature exists for**, and it needs no new host, no new protocol, and nothing from Hossein.
 
@@ -858,14 +860,16 @@ Checks:
 - Automated: `npm test`, now 98 checks, of which 14 are voice. A clip reaches every other socket in voice and no one else; a spectating socket that never sent `hello` can neither join nor hear; a client-supplied `from` is replaced by the server's; an oversize clip is refused; a seventh clip in a minute is refused; the voice room caps at 4 while sockets stay at 10, and the fifth person refused voice can still solve
 - Human, done 2026-08-03: **a clip recorded in Safari played in Chrome and back**, which is the pair that would have caught the container problem, since Safari cannot play webm at all. The decision to send raw PCM in a WAV wrapper rather than a `MediaRecorder` container is therefore confirmed rather than argued
 - Human, done 2026-08-03: **Android Chrome to a laptop against production, including with the phone locked.** A real phone on a real network, and audio survives a locked screen
-- Human, outstanding: **a phone running iOS Safari.** Untested at every point so far. Desktop Safari is a different configuration, and mobile Safari is where the `AudioContext` suspension the fix above was written for actually lives, so that fix is unverified in the only case it exists for. Android keeping audio alive while locked says nothing about iOS
-- Human, outstanding, and it is the one that matters: **one clip from a phone in Iran arrives and is audible.** Everything done so far ran on networks that work. ADR-14 exists because the network this feature was built for does not, and no test on a healthy connection substitutes for it. Until this passes, C1 is verified as an audio feature and unverified as the thing it was built to be
+- Human, done 2026-08-04, and it is the one that mattered: **a clip from a phone in Iran arrived and was audible.** Everything verified before this ran on networks that work, and ADR-14 exists because the network this feature was built for does not. With this pass, C1 is verified as the thing it was built to be, not merely as an audio feature
+- Human, closed 2026-08-04 as not possible rather than as passed, and this is the caveat in the status line: **a phone running iOS Safari.** No such phone is reachable, so this stays untested at every point, accepted as a standing limitation rather than carried as debt. Desktop Safari is a different configuration, and mobile Safari is where the `AudioContext` suspension fix actually lives, so that fix remains unverified in the only case it exists for. If voice ever misbehaves on an iPhone, the `AudioContext` resume path is the first suspect, and this line is where to say the limitation was known
 
 **Security pass.** C1 adds no HTTP endpoint. It adds three WebSocket messages, all of which require `hello` first, and the question is what a stranger holding the link gains. Relaying audio is the one thing here that moves bytes on someone else's behalf, so it is bounded three ways: 350 KB per clip, six clips per minute per socket, and four people in the room. A stranger who joins can be heard, which is true of the grid as well and is what a capability link means; the mitigation is the same one the puzzle has, which is that the link is the credential and can be abandoned. Two things tighten rather than loosen: `from` is stamped by the server, so a joined stranger cannot attribute speech to somebody else, and a clip reaches only sockets that opted in, so a spectator cannot listen silently. Nothing is stored, so nothing accumulates and the expiry window does not slide on a clip: talking cannot keep a session alive past its 30 days.
 
 The one genuinely new exposure is that a person's voice, rather than their typing, now reaches strangers who hold the link. That is a property of the feature and not a defect in it, which is why joining is a deliberate act and the room shows who is in it before anyone speaks.
 
-#### C2 Live voice over WebRTC, status: TODO
+#### C2 Live voice over WebRTC, status: DECLINED 2026-08-04, see ADR-15
+
+Never built, and by decision rather than neglect. The design below stays as the record of what was considered, so that reopening it starts from here rather than from scratch.
 
 An enhancement, and only where the network permits. Signaling rides the existing WebSocket, media does not touch the server.
 
@@ -1134,13 +1138,13 @@ The Human line in section 12.
 
 Hossein reviews every diff. Claude proposes an approach before large multi-file changes and explains non-obvious decisions briefly.
 
-### Still owed by a person, as of 2026-08-04
+### Still owed by a person, as of 2026-08-04: nothing
 
-Three, and none of them is code. Listed together because they are what a session starting fresh cannot do for itself.
+The three items this section carried were all closed on 2026-08-04, in one sitting. Recorded here rather than deleted, because how each closed is the information.
 
-1. **One voice clip from a phone in Iran, arriving audibly.** C1's gate and the entire reason C1 was built before C2. Everything verified so far ran on networks that work, and ADR-14 exists because the network this feature is for does not. Blocked on somebody being online, not on anything in the repository.
-2. **Any test at all on a phone running iOS Safari.** Untested at every point. Desktop Safari is a different configuration, and mobile Safari is where the `AudioContext` suspension the C1 fix was written for actually lives, so that fix is unverified in the only case it exists for. Android keeping audio alive while locked says nothing about iOS.
-3. **A decision about C2**, which is the only unbuilt milestone. ADR-14 argued before C1 shipped that live WebRTC is the weaker of the two, and C1 working makes it weaker still: it cannot reach the person voice was built for, it costs a day, and it exposes player IP addresses to each other. Building it is a legitimate choice for the portfolio signal, which is a different reason from the product needing it, and worth saying out loud either way.
+1. **The voice clip from Iran arrived and was audible.** C1's gate, and the reason the whole C series exists, passed on the network it was built for. This was the last human check any shipped milestone was waiting on.
+2. **iOS Safari closed as not testable, not as tested.** No phone running iOS Safari is reachable, so the `AudioContext` suspension fix stays unverified in the only case it exists for. Accepted as a standing limitation rather than carried as debt; the C1 milestone entry says where to look first if voice ever misbehaves on an iPhone.
+3. **C2 is declined**, not postponed. ADR-15 records the decision and the reasons. The portfolio-signal argument was considered and turned down.
 
 ### What a fresh session should know that is not obvious from the code
 
@@ -1378,7 +1382,7 @@ The reasoning: this is a puzzle you generated for yourself and can regenerate in
 
 Consequences: `state` keeps its current shape, `{ type: "state", doc }`, which is one fewer protocol change and one fewer thing that can rot. Anyone reading the WebSocket frames in developer tools can see the answers, which is accepted. If a future feature ever does keep score, this decision is the first thing that has to be revisited, and the invariant list has no rule about solution secrecy precisely so that its absence is visible rather than assumed.
 
-**ADR-14: Voice is push to talk over the existing WebSocket, and WebRTC is the enhancement.** Decided 2026-08-03, scheduled as the C series in section 12. Players in a session can talk to each other. The default mechanism records a clip and relays it through the session's Durable Object; live peer to peer voice is added on top, for the networks that allow it.
+**ADR-14: Voice is push to talk over the existing WebSocket, and WebRTC is the enhancement.** Decided 2026-08-03, scheduled as the C series in section 12. Players in a session can talk to each other. The default mechanism records a clip and relays it through the session's Durable Object; live peer to peer voice is added on top, for the networks that allow it. **Closed 2026-08-04 by ADR-15:** the clip from Iran arrived, the bet this record made paid off, and the enhancement is declined.
 
 This inverts the ordering everyone reaches for first, so the reason matters more than the decision.
 
@@ -1403,6 +1407,19 @@ Consequences, including the ones that cost something:
 - **The room has one mode**, chosen by the weakest connection. Mixed rooms were rejected as broken rather than degraded: a push to talk player hears nothing from a pair on live audio, which is worse than everyone being on the same footing.
 - Sixteen kHz mono PCM is chosen over Opus for C1 because every browser decodes WAV and Safari decodes no webm at all. It costs roughly ten times the bytes. If that hurts on a slow connection, 8-bit µ-law halves it for almost no loss on speech and an Opus wasm encoder cuts it tenfold, in that order.
 - No credential, no vendor, and no handoff, for either milestone. That is unusual for v2 work here and section 14 says so explicitly.
+
+**ADR-15: C2 is not built, and the project is feature-complete.** Decided 2026-08-04 by Hossein, closing the question ADR-14 left open and the last open item in section 14.
+
+The decision needed evidence ADR-14 did not have, and 2026-08-04 supplied it: **a voice clip from a phone in Iran arrived and was audible.** That was C1's gate and the reason voice was built in this order. With it passed, the case for C2 collapses point by point:
+
+- **It cannot reach the person voice was built for.** ADR-14 chose push to talk precisely because WebRTC's requirements, UDP, a reachable STUN host, a path through carrier-grade NAT, each fail independently on that network. C1 working there does not soften that; it proves the transport that matters is already shipped.
+- **Nobody needs it.** Puzzle talk is turn-taking, and push to talk fits turn-taking by design. No user has asked for live audio, and the product this exists for is a puzzle, not a call.
+- **It has a real cost beyond the day of work.** A mesh exposes every player's IP address to every other player, in an app with no accounts where links get pasted into group chats. Declining C2 deletes that exposure instead of documenting it.
+- **The portfolio-signal argument**, the one legitimate reason left, was considered and turned down. The signal is already in the record: ADR-14's transport reasoning, verified against the network it was written for, says more than a WebRTC mesh demo would.
+
+Declined, not postponed, and the difference is deliberate: postponed invites every future session to re-ask. The C2 design in section 12 stays as written, as the starting point if this is ever reopened. What would reopen it is the trigger ADR-14 already named: voice becoming the reason people come, rather than a thing they do while solving. Short of that, a new decision record is required to build it, and "it would be fun" does not clear that bar.
+
+Consequences: the C series is complete with C1 alone. No STUN host is ever contacted, no signaling messages are added to the WebSocket protocol, and the per-socket message cap never meets ICE traffic. The project has no unbuilt milestone, so what remains is stewardship: dependencies, platform changes, and whatever real use turns up.
 
 ## 18. Open questions (non-blocking)
 
