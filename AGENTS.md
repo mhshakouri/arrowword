@@ -10,10 +10,14 @@ Parent project: the personal website, `github.com/mhshakouri/mhshakouri.dev`,
 local path `../mhshakouri`. It links to this project and describes it; it never
 hosts it. Design tokens are copied from there, never imported.
 
-**State: v1 complete 2026-08-03. C1, push to talk, is code complete and awaiting
-its human check in Iran. B1 is done: `SessionDoc` is at `v: 3` and run detection
-exists. Next is B3, AI generation, or C2, live WebRTC voice, and ADR-14 argues
-C2 is the weaker of the two.** There
+**State: v1, B1, B3 and C1 are all built and deployed as of 2026-08-04.
+Generating a crossword from a theme works end to end against the real model and
+has been used by hand several times.**
+
+Two things are outstanding and neither is code: **C1's human check** (one voice
+clip from Iran, the reason C1 exists) and **an iOS Safari phone**, which has
+never been tested at any point. C2, live WebRTC voice, is the only unbuilt
+milestone, and ADR-14 argues it is the weaker option now that C1 works. There
 are two ways in and both work end to end: clone the demo from the landing page
 and type into the grid, or make a puzzle from a photo through alignment,
 tagging, save, and share link. See spec section 12.
@@ -51,13 +55,13 @@ limits are load-bearing rather than nice to have.
 - `npm run dev:ui` - Vite with hot reload, proxying the API to :8787. Run both
 - `npm run build` - the UI into `dist/`, which the worker serves as assets
 - `npm run typecheck` - two configs: the worker has no DOM, the UI has no Workers
-- `npm test` - the CI suite: unit, acceptance, photo cap, expiry, generation. 288 checks
-- `npm run test:all` - the above plus the template run. 303 checks
+- `npm test` - the CI suite: unit, acceptance, photo cap, expiry, generation. 333 checks
+- `npm run test:all` - the above plus the template run. 348 checks
 - `npm run deploy` - deploy by hand. Normally a merge to `main` does it
 - `npm run format` / `format:check` - Prettier
 
 Each test file starts and stops its own `wrangler dev`, so they need no setup and
-must not be run in parallel. Four entry points, because three of them need a
+must not be run in parallel. Five entry points, because four of them need a
 worker configured differently:
 
 - `test:acceptance` - the main suite, default configuration
@@ -71,14 +75,28 @@ worker configured differently:
 
 ## Configuration
 
-Spec section 7 has the table. Two things worth knowing before changing anything:
-`RETENTION_MS` and `MAX_PHOTO_BYTES` exist for tests and are absent from
-`wrangler.jsonc` on purpose, and `TEMPLATE_SESSIONS` is how a demo puzzle is
-named, which is a config edit plus a deploy rather than an API call.
+Spec section 7 has the table. Things worth knowing before changing anything:
+
+- `RETENTION_MS`, `MAX_PHOTO_BYTES`, `GENERATION_FIXTURES` and
+  `GENERATION_POOL_KEY` exist for tests and are absent from `wrangler.jsonc` on
+  purpose.
+- `TEMPLATE_SESSIONS` is how a demo puzzle is named: a config edit plus a
+  deploy rather than an API call.
+- `GENERATION_MODEL` picks the Workers AI model, empty meaning the default in
+  `src/generate/provider.ts`. The daily ceiling in section 7 is derived from the
+  chosen model's output rate, so switching means re-deriving it.
+- `GENERATION_LAYOUT_FIRST` asks the model for a whole layout before asking for
+  words, which is how the pipeline ran until 2026-08-04 and does not work with
+  a small model. Off by default; kept so the comparison stays available.
+- `GENERATION_DEBUG` logs the model's raw reply and should stay off: the app
+  shows the same transcript on its own pages, which is where somebody who needs
+  it can reach it.
+- `TURNSTILE_SECRET` is a secret, set with `wrangler secret put`. Its public
+  partner `TURNSTILE_SITE_KEY` is a var and belongs in the file.
 
 ## Conventions
 
-- The ten invariants in spec section 4 must never break. Check changes against them.
+- The eighteen invariants in spec section 4 must never break. Check changes against them.
   `src/types.ts` and spec section 4 are in step at `v: 3` since B1. If they ever
   drift again, the spec is the source of truth and the code is the bug.
 - Every milestone passes the ready/done gate in spec section 13 before it counts

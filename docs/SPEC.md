@@ -902,7 +902,7 @@ Checks:
 
 **What B1 deliberately did not do.** Arrow rendering stays deferred, since generated puzzles are crossword-style. **Auto-advance stays out entirely (ADR-5, upheld),** and this is the milestone where upholding it took an actual decision rather than none: before run detection the app could not have advanced a cursor to the next cell of a word if it wanted to, and now it could. Knowing where a word ends is not permission to move the cursor there. The runs module says so at the top so that the next person to read it is told before they are tempted.
 
-#### B3 AI puzzle generation, status: CODE COMPLETE 2026-08-04, working against the real model
+#### B3 AI puzzle generation, status: DONE 2026-08-04
 
 **What exists**, all of it pure and none of it needing a key, a neuron, or a handoff:
 
@@ -1133,6 +1133,21 @@ The Human line in section 12.
 ### Standing
 
 Hossein reviews every diff. Claude proposes an approach before large multi-file changes and explains non-obvious decisions briefly.
+
+### Still owed by a person, as of 2026-08-04
+
+Three, and none of them is code. Listed together because they are what a session starting fresh cannot do for itself.
+
+1. **One voice clip from a phone in Iran, arriving audibly.** C1's gate and the entire reason C1 was built before C2. Everything verified so far ran on networks that work, and ADR-14 exists because the network this feature is for does not. Blocked on somebody being online, not on anything in the repository.
+2. **Any test at all on a phone running iOS Safari.** Untested at every point. Desktop Safari is a different configuration, and mobile Safari is where the `AudioContext` suspension the C1 fix was written for actually lives, so that fix is unverified in the only case it exists for. Android keeping audio alive while locked says nothing about iOS.
+3. **A decision about C2**, which is the only unbuilt milestone. ADR-14 argued before C1 shipped that live WebRTC is the weaker of the two, and C1 working makes it weaker still: it cannot reach the person voice was built for, it costs a day, and it exposes player IP addresses to each other. Building it is a legitimate choice for the portfolio signal, which is a different reason from the product needing it, and worth saying out loud either way.
+
+### What a fresh session should know that is not obvious from the code
+
+- **Generation works, and the order it works in is not the order the layout ADR describes.** Words first, packed deterministically in the browser; the model's own layout is the fallback. Section 7 has the reasoning and `GENERATION_LAYOUT_FIRST` restores the old order for comparison. Do not "fix" this back without reading the transcript that decided it.
+- **Two bugs today were invisible to a passing test suite**, and both had the same shape: the wrong model id, and generation started with `waitUntil` and killed before the model answered. In both cases every automated check passed because the recorded provider resolves instantly and CI holds no credential by design. **The first real call is the first real test of anything that touches the model**, and no amount of fixtures changes that.
+- **`GENERATION_DEBUG` should stay off.** The app shows the same transcript on its own pages now, which is where a person who needs it can reach it, and section 16 forbids logging puzzle content.
+- **The shared daily pool counter persists in `.wrangler` between local runs** and cannot be scoped the way per-IP keys are, which is what `GENERATION_POOL_KEY` exists for. A day of test runs will drain it and the suite will start failing on a limit rather than on anything it is checking.
 
 ## 15. Working model
 
