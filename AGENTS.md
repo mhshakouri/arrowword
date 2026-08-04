@@ -10,23 +10,23 @@ Parent project: the personal website, `github.com/mhshakouri/mhshakouri.dev`,
 local path `../mhshakouri`. It links to this project and describes it; it never
 hosts it. Design tokens are copied from there, never imported.
 
-**State: v1, B1, B3 and C1 are all built and deployed as of 2026-08-04.
-Generating a crossword from a theme works end to end against the real model and
-has been used by hand several times.**
+**State: feature-complete as of 2026-08-04.** v1, B1, B3 and C1 are built,
+deployed, and past their human checks. C2, live WebRTC voice, is declined
+rather than postponed (ADR-15); building it needs a new decision record. No
+milestone remains, so work from here is stewardship, not features.
 
-Two things are outstanding and neither is code: **C1's human check** (one voice
-clip from Iran, the reason C1 exists) and **an iOS Safari phone**, which has
-never been tested at any point. C2, live WebRTC voice, is the only unbuilt
-milestone, and ADR-14 argues it is the weaker option now that C1 works. There
-are two ways in and both work end to end: clone the demo from the landing page
-and type into the grid, or make a puzzle from a photo through alignment,
-tagging, save, and share link. See spec section 12.
+C1 passed the check it exists for on 2026-08-04: a voice clip from a phone in
+Iran arrived audibly. The one accepted gap is **iOS Safari, closed as not
+testable rather than as tested**; if voice ever misbehaves on an iPhone, the
+`AudioContext` resume path is the first suspect. Three ways in, all working end
+to end: clone the demo from the landing page, make a puzzle from a photo
+through alignment, tagging, save, and share link, or generate a crossword from
+a theme. See spec section 12.
 
-Voice ships push to talk first and live WebRTC second, which is the opposite of
-the obvious order. The reason is in ADR-14 and it is worth reading before
-touching it: on the network this feature exists for, WhatsApp and Telegram are
-unreachable, so a clip over the session WebSocket is the only transport that
-works. Do not reorder these two milestones without re-reading that record.
+Voice is push to talk over the session WebSocket, and that is deliberate: on
+the network this feature exists for, WhatsApp and Telegram are unreachable, so
+a clip over the WebSocket that already syncs letters is the only transport that
+works. ADR-14 chose that bet and the Iran clip settled it.
 
 **This is a public app** as of 2026-08-02 (spec v6): open to visitors with no
 credentials, linked from the playground series on mhshakouri.dev. There is no
