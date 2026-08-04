@@ -58,6 +58,9 @@ export interface Exchange {
   reply: string;
   parsed: boolean;
   ms: number;
+  /* "schema" or "plain": whether the model accepted a JSON schema. Surfaced in
+     the trace because a reply full of malformed JSON means one of those two
+     things, and guessing which wasted an afternoon. */
   mode: string;
 }
 
@@ -255,6 +258,45 @@ function prompt(theme: string, count: number): string {
 
 /* Models wrap JSON in prose and fences however they were feeling. Pulling out
    the first balanced object is more reliable than asking harder. */
+/* Pull out whatever well-formed objects are in a reply, even when the whole
+   thing is not valid JSON.
+
+   Added 2026-08-04 from a real reply. The model returned twelve candidates of
+   which the first was perfect and the rest were `{"answer":"Cloud","clue:"}`,
+   a key with no value. `JSON.parse` rejects the document, so all twelve were
+   discarded and the fallback that exists "so the button always works" had
+   nothing to work with.
+
+   Small models degrade like this: they start correct and come apart. Taking
+   what is intact is not being lenient about correctness, since every salvaged
+   object still goes through `clean` and the validator; it is refusing to let
+   one malformed sibling destroy its well-formed neighbours. */
+function salvageObjects(text: string): unknown[] {
+  const out: unknown[] = [];
+  let depth = 0;
+  let start = -1;
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i];
+    if (ch === "{") {
+      if (depth === 0) start = i;
+      depth += 1;
+    } else if (ch === "}") {
+      if (depth > 0) {
+        depth -= 1;
+        if (depth === 0 && start >= 0) {
+          try {
+            out.push(JSON.parse(text.slice(start, i + 1)));
+          } catch {
+            /* This one is broken; its neighbours may not be. */
+          }
+          start = -1;
+        }
+      }
+    }
+  }
+  return out;
+}
+
 function extractJson(text: string): unknown {
   /* Whichever bracket comes first. Looking only for `{` sliced a top-level
      array down to its first element, which reads as the model having sent one
@@ -330,7 +372,7 @@ function layoutPrompt(theme: string, rows: number, cols: number): string {
    deciding either, since length follows from the answer and numbering follows
    from the grid, and letting it propose them would create two more ways for it
    to contradict itself. */
-function readEntries(raw: unknown): Entry[] {
+function readEntries(raw: unknown, rawText = ""): Entry[] {
   /* The prompt asks for `{entries:[...]}`, and a model that felt like answering
      `{across:[...],down:[...]}` or a bare array meant just as well. Accepting
      the shapes it actually produces is cheaper than insisting, and an empty
@@ -352,9 +394,11 @@ function readEntries(raw: unknown): Entry[] {
             ? source.down.map((e) => ({ ...(e as object), dir: "down" }))
             : []),
         ];
-  if (!Array.isArray(list) || !list.length) return [];
+  const usable =
+    Array.isArray(list) && list.length ? list : salvageObjects(String(rawText));
+  if (!usable.length) return [];
   const out: Entry[] = [];
-  for (const item of list) {
+  for (const item of usable) {
     const e = item as Record<string, unknown>;
     const answer = String(e?.answer ?? "")
       .trim()
@@ -511,6 +555,7 @@ export function workersAiProvider(
         cols,
         entries: readEntries(
           await ask(layoutPrompt(theme, rows, cols), ENTRY_SCHEMA),
+          last?.reply ?? "",
         ),
       };
     },
@@ -529,6 +574,12 @@ export function workersAiProvider(
            told what the bounds were. */
         `row and col are zero-based. An across answer at (row, col) puts letter k at (row, col + k); a down answer puts letter k at (row + k, col).`,
         `No letter may go past row ${previous.rows - 1} or col ${previous.cols - 1}. Crossing answers must share the same letter on the shared square. Leave at least one empty square between parallel answers.`,
+        /* The arithmetic, done rather than implied. Told "reaches 11,6, outside
+           an 11 by 11 grid", the model moved a six letter answer from row 9 to
+           row 8 to row 8 col 5, never once computing that it must start at row
+           5 or less. Three attempts, no progress. Stating the legal range costs
+           a few tokens and removes the calculation entirely. */
+        `Longest legal start for a down answer of N letters is row ${previous.rows} minus N. For an across answer it is col ${previous.cols} minus N. A ${previous.rows}-row grid cannot hold a 6-letter down answer starting below row ${previous.rows - 6}.`,
         `Problems: ${problems.join("; ")}.`,
         /* "Fix only what is listed" forbade the cheapest valid repair, which is
            usually to drop the offending entry. A sparse puzzle is a puzzle; an
@@ -541,7 +592,10 @@ export function workersAiProvider(
         theme: previous.theme,
         rows: previous.rows,
         cols: previous.cols,
-        entries: readEntries(await ask(content, ENTRY_SCHEMA)),
+        entries: readEntries(
+          await ask(content, ENTRY_SCHEMA),
+          last?.reply ?? "",
+        ),
       };
     },
 
@@ -552,11 +606,16 @@ export function workersAiProvider(
       const parsed = (await ask(prompt(theme, count), WORD_SCHEMA)) as {
         candidates?: Candidate[];
       } | null;
+      /* Same salvage as the layout. A reply whose first candidate is perfect
+         and whose twelfth is malformed should yield one candidate, not none. */
+      const listed = parsed?.candidates?.length
+        ? parsed.candidates
+        : (salvageObjects(last?.reply ?? "") as Candidate[]);
       /* A response that parses to nothing is an empty proposal rather than an
          exception. The loop above already knows how to retry an unusable
          proposal and how to give up, and a throw here would need a second,
          parallel way of expressing the same outcome. */
-      return clean({ theme, candidates: parsed?.candidates ?? [] });
+      return clean({ theme, candidates: listed ?? [] });
     },
   };
 }

@@ -73,6 +73,10 @@ export interface Env {
   /* "1" logs the model's raw output, truncated. Diagnosis only: section 16
      forbids logging puzzle content, and this is the one thing that would. */
   GENERATION_DEBUG?: string;
+  /* "1" asks the model for a whole layout before asking for words, which was
+     the order until 2026-08-04. Kept so the two can be compared on real themes
+     rather than argued about. See the note above `generate`. */
+  GENERATION_LAYOUT_FIRST?: string;
   /* Which Workers AI model writes the puzzle. Empty means the default in
      provider.ts. Configurable because comparing two models on this task means
      running both against real themes, and that should not need a code change
@@ -1580,6 +1584,7 @@ export class ArrowwordSession implements DurableObject {
          not delivery. */
       const steps: TraceStep[] = [];
       const outcome = await generate(provider, theme, {
+        layoutFirst: this.env.GENERATION_LAYOUT_FIRST === "1",
         onProgress: (p) =>
           this.broadcast({
             type: "progress",

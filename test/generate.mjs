@@ -198,6 +198,10 @@ await restart({
   GENERATION_FIXTURES: "GOOD",
   RATE_LIMIT_GENERATE: "50",
   GENERATION_DAILY_LIMIT: "200",
+  /* The layout order, which is no longer the default. Asked for explicitly
+     because these checks are about a model that lays a puzzle out, and since
+     2026-08-04 the pipeline asks for words first. */
+  GENERATION_LAYOUT_FIRST: "1",
 });
 
 const noToken = await req(
