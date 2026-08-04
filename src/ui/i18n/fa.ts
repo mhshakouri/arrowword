@@ -184,8 +184,12 @@ export const fa: Messages = {
     templateLede:
       "این نمونهٔ مشترک است و نمی‌شود در آن نوشت. نسخهٔ خودتان را باز کنید و هر چه می‌خواهید بنویسید.",
     getMyCopy: "نسخهٔ خودم را بده",
+    /* «جدول» rather than «شبکه»: the English says "grid", and the literal
+       translation reads as a network or a mesh next to a theme name like
+       «movie names». «ضعیف» rather than «شل», which is not how a Persian
+       speaker describes a weak clue. */
     aiWrittenNote: (theme) =>
-      `این شبکه و تعریف‌هایش را یک مدل زبانی از روی موضوع «${theme}» نوشته است. تعریف‌ها ممکن است شل یا گاهی غلط باشند.`,
+      `این جدول و تعریف‌هایش را یک مدل زبانی از روی موضوع «${theme}» نوشته است. تعریف‌ها ممکن است ضعیف یا گاهی غلط باشند.`,
     nicknameLabel: "نامی انتخاب کنید",
     nicknamePlaceholder: "هر چه دوست دارید",
     nicknameNote:
