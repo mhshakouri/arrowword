@@ -139,19 +139,43 @@ const RATE_LIMIT_DEFAULTS = {
 const RATE_WINDOW_MS = 3_600_000;
 const DAY_MS = 86_400_000;
 
-/* Section 7. Two generations per IP per day, plus Turnstile, because IP alone
-   is a weak key: shared NAT punishes the innocent and rotation defeats it. It
-   is not trying to stop a determined attacker, it stops accidents and casual
-   repetition, which is most of what happens. */
-const GENERATE_PER_IP_PER_DAY = 2;
+/* Section 7. Per IP per day, plus Turnstile, because IP alone is a weak key:
+   shared NAT punishes the innocent and rotation defeats it. It is not trying to
+   stop a determined attacker, it stops accidents and casual repetition.
 
-/* **Provisional, not measured.** Section 7 says the real ceiling comes from
-   reading one generation's neuron cost against the 10,000 a day Workers AI
-   allows, and that it might be five a day or five hundred. This number is the
-   old invented one, kept only so the mechanism is exercised and the failure
-   mode is real; the measurement replaces it. Attempts count rather than
-   successes, since a failed generation spends the same neurons. */
-const GENERATE_PER_DAY = 30;
+   Raised 2026-08-04 from 2, by the first real use. Two was chosen when the
+   global pool was believed to be 30 a day, and it was wrong twice over: the
+   pool is roughly twenty times larger than that, and the first person it
+   actually blocked was the author testing his own app on the day it shipped,
+   who then routed around it with a VPN. A limit whose first effect is to stop
+   the one person who needs to iterate is set too low. Ten still means twelve
+   callers cannot drain the day between them. */
+const GENERATE_PER_IP_PER_DAY = 10;
+
+/* **Measured 2026-08-04, replacing the invented 30.** Section 7 said the real
+   ceiling comes from reading a generation's neuron cost against the 10,000 a
+   day Workers AI allows, and guessed it might be five a day or five hundred.
+
+   Observed: about 15 to 20 neurons for a generation whose first layout
+   validated, which is one model call. The derivation from there is deliberately
+   pessimistic rather than dividing by the happy path:
+
+   - Worst case in this code is four calls: one proposal, two repairs, and the
+     word list for the fallback. Call it 80 neurons.
+   - 10,000 / 80 is 125 generations even if every one of them takes the longest
+     road available.
+   - 120, so the app's own ceiling is reached before Cloudflare's. That matters:
+     past our limit a caller gets "out of budget for today", and past
+     Cloudflare's they get whatever an exhausted allocation produces, which the
+     loop can only report as unreachable. The clearer message should come first.
+
+   Four times the old number and still four times below the optimistic estimate,
+   which is the right side to be wrong on for a limit whose whole job is that
+   the failure is graceful. Raise it with real traffic, not in advance.
+
+   Attempts count rather than successes, since a failed generation spends the
+   same neurons as a successful one. */
+const GENERATE_PER_DAY = 120;
 
 /* Theme is user input travelling into a prompt, so it is length-capped and
    treated as data. Prompt injection here buys a strange puzzle rather than

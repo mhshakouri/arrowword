@@ -414,32 +414,32 @@ The fix is an allowlist: only `photo`, `puzzle`, `ws`, and `clone` are forwarded
 
 Values a coding agent would otherwise invent. All enforced server side.
 
-| Limit                          | Value             | Reason                                                             |
-| ------------------------------ | ----------------- | ------------------------------------------------------------------ |
-| Photo size                     | 8 MB              | Client downscales to 2000px first, so this is a generous ceiling   |
-| Photo `Content-Length`         | required          | Enforced by `FixedLengthStream`, not trusted; 411 when missing     |
-| Grid rows                      | 30                | See storage note below                                             |
-| Grid columns                   | 30                | See storage note below                                             |
-| Title length                   | 200 chars         | Display only                                                       |
-| WS messages per socket         | 20 per second     | One human typing cannot exceed this. Enforced since C1, not before |
-| Nickname length                | 24 graphemes      | Display only, and it is rendered to other people                   |
-| Concurrent sockets per session | 10                | Bounds broadcast fanout and DO memory                              |
-| Players recorded per session   | 50                | Stops `players` growing without bound on a popular clone           |
-| Session creations per IP       | 30 per hour       | `POST /session` is the cheapest way to make the worker do work     |
-| Photo uploads per IP           | 20 per hour       | The only endpoint that costs storage                               |
-| Clones per IP                  | 60 per hour       | Generous: this is the path visitors are meant to take              |
-| Session retention              | 30 days inactive  | Sliding, see self-expiry below                                     |
-| Generated grid size            | 11 x 11 max       | Smallest playable, see generation architecture below               |
-| Entries per generated puzzle   | 12 max            | Keeps packing tractable and the clue list scannable                |
-| Theme length                   | 60 chars          | User input, sent to a model and rendered back                      |
-| Clue length                    | 120 chars         | Model output, rendered to other people                             |
-| Generations per IP             | 2 per day         | Plus Turnstile, since IP alone is a weak key. See below            |
-| Generations per day, all users | **measure first** | Derived from the Workers AI neuron allocation, not chosen          |
-| Voice clip length              | 8 seconds         | Long enough for a clue, short enough to stay under the size cap    |
-| Voice clip size                | 256 KB            | 16 kHz mono 16-bit PCM for 8 seconds, with headroom                |
-| Voice clips per player         | 6 per minute      | Bounds a flood; the message cap counts messages, not bytes         |
-| Signaling payload size         | 16 KB             | An SDP blob fits; the server never parses or renders it            |
-| Players in voice per session   | 4                 | Sockets stay at 10. Voice is a smaller room than the puzzle        |
+| Limit                          | Value            | Reason                                                                   |
+| ------------------------------ | ---------------- | ------------------------------------------------------------------------ |
+| Photo size                     | 8 MB             | Client downscales to 2000px first, so this is a generous ceiling         |
+| Photo `Content-Length`         | required         | Enforced by `FixedLengthStream`, not trusted; 411 when missing           |
+| Grid rows                      | 30               | See storage note below                                                   |
+| Grid columns                   | 30               | See storage note below                                                   |
+| Title length                   | 200 chars        | Display only                                                             |
+| WS messages per socket         | 20 per second    | One human typing cannot exceed this. Enforced since C1, not before       |
+| Nickname length                | 24 graphemes     | Display only, and it is rendered to other people                         |
+| Concurrent sockets per session | 10               | Bounds broadcast fanout and DO memory                                    |
+| Players recorded per session   | 50               | Stops `players` growing without bound on a popular clone                 |
+| Session creations per IP       | 30 per hour      | `POST /session` is the cheapest way to make the worker do work           |
+| Photo uploads per IP           | 20 per hour      | The only endpoint that costs storage                                     |
+| Clones per IP                  | 60 per hour      | Generous: this is the path visitors are meant to take                    |
+| Session retention              | 30 days inactive | Sliding, see self-expiry below                                           |
+| Generated grid size            | 11 x 11 max      | Smallest playable, see generation architecture below                     |
+| Entries per generated puzzle   | 12 max           | Keeps packing tractable and the clue list scannable                      |
+| Theme length                   | 60 chars         | User input, sent to a model and rendered back                            |
+| Clue length                    | 120 chars        | Model output, rendered to other people                                   |
+| Generations per IP             | 10 per day       | Plus Turnstile, since IP alone is a weak key. Raised from 2 by first use |
+| Generations per day, all users | 120              | Measured 2026-08-04 from the neuron cost, not chosen. See below          |
+| Voice clip length              | 8 seconds        | Long enough for a clue, short enough to stay under the size cap          |
+| Voice clip size                | 256 KB           | 16 kHz mono 16-bit PCM for 8 seconds, with headroom                      |
+| Voice clips per player         | 6 per minute     | Bounds a flood; the message cap counts messages, not bytes               |
+| Signaling payload size         | 16 KB            | An SDP blob fits; the server never parses or renders it                  |
+| Players in voice per session   | 4                | Sockets stay at 10. Voice is a smaller room than the puzzle              |
 
 Added 2026-08-02: everything from nickname length down. Section 16 has required rate limiting since v5 and nothing implemented it, which was survivable while the app was private and is not now.
 
@@ -511,11 +511,19 @@ Two mechanisms, neither of which needs to know who anyone is:
 
 A determined attacker rotating addresses through Turnstile is not who this app has to survive. The worst outcome is a day of generation being unavailable while cloning and playing keep working.
 
-**The daily ceiling is a measurement, not a decision.** An earlier version of this section said 30, and that number was invented to bound an imaginary bill. The real ceiling comes from what 10,000 neurons buys, which depends on the model and is not something to guess: B3 starts by generating one puzzle, reading the neuron cost, and setting the limit from it. It might be five a day or five hundred.
+**The daily ceiling is a measurement, not a decision.** An earlier version of this section said 30, and that number was invented to bound an imaginary bill. The real ceiling comes from what 10,000 neurons buys, which depends on the model and is not something to guess.
+
+**Measured 2026-08-04: about 15 to 20 neurons for a generation whose first layout validates**, which is one model call. The guess above was "five a day or five hundred" and the answer is nearer five hundred, so the invented 30 was wrong by more than an order of magnitude.
+
+The ceiling is **120**, derived pessimistically rather than by dividing by the happy path. The worst case in the code is four calls, one proposal plus two repairs plus the word list for the fallback, so call it 80 neurons; 10,000 divided by 80 is 125 even if every generation takes the longest road available. 120 leaves the app's own ceiling reached before Cloudflare's, which matters because past ours a caller reads "out of budget for today" and past Cloudflare's they get an exhausted allocation that the loop can only report as unreachable. The clearer message should arrive first.
+
+Four times the old number and four times below the optimistic estimate, which is the right side to be wrong on for a limit whose entire job is that the failure is graceful.
 
 It must still **fail closed** with a user-facing state naming when it resets, which is rule 4 of the Done gate, and **attempts must count rather than successes**, since a failed generation spends the same neurons as a successful one.
 
 The per-IP limits above are a starting point, not a measurement. IP is a weak key: it punishes shared NAT and is trivially rotated. It is chosen because it needs no identity, which is the whole premise of the app. Revisit with real traffic rather than in advance.
+
+**Generations per IP raised 2026-08-04 from 2 to 10**, which is that revisiting happening on the first day. Two was chosen while the global pool was believed to be 30, and it was wrong twice over: the pool is roughly twenty times larger, and the first person the limit actually stopped was the author testing his own app hours after it shipped, who then routed around it with a VPN. **A limit whose first effect is to block the one person who needs to iterate is set too low**, and the VPN is evidence rather than the problem. Ten still means twelve callers cannot drain the day between them.
 
 **Raised 2026-08-03, from 10, 5 and 30, by the first real measurement.** Making the demo template meant retaking photos, and each attempt spends one session and one upload, because `/new` creates the session before the upload. So five uploads an hour was five attempts an hour for anyone framing a photo properly, and the person it stopped first was the author of the app.
 

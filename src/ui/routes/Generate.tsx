@@ -122,7 +122,7 @@ export function Generate() {
         res.status === 403
           ? "The check did not pass. Reload the page and try again."
           : body === "daily limit reached"
-            ? "You have used both of today's puzzles. They come back tomorrow."
+            ? "You have used today's puzzles. They come back tomorrow."
             : body === "out of budget for today"
               ? "Everyone's shared daily budget for new puzzles is spent. It resets tomorrow, and the demo puzzle is still there."
               : "Could not start. Try again in a moment.",
@@ -156,8 +156,9 @@ export function Generate() {
             }
           />
           <p class="muted" style="margin-bottom:0">
-            Two puzzles per person per day, because the model runs on a shared
-            free allowance.
+            Ten puzzles a day each, because the model runs on a shared free
+            allowance. A theme is a subject, not a list: "movies" gives a puzzle
+            about film, not a puzzle of film titles.
           </p>
         </div>
 
