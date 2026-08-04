@@ -991,6 +991,28 @@ Checks:
 
 - Published with the milestone, from a script run by hand against the real model: the measured rate at which first proposals validate, repair rescues them, and the fallback runs. ADR-12 treats that measurement as the deliverable, not a footnote
 
+### D series: the UI in the reader's language
+
+Scheduled 2026-08-05 (ADR-16), the first work after the 2026-08-04 close-out. One milestone.
+
+#### D1 Bilingual UI, Persian and English, status: CODE COMPLETE 2026-08-05, awaiting the human check
+
+Every visitor-facing sentence in the app exists in both languages, switchable from any screen, chosen automatically on first visit from the browser's language and remembered in `localStorage`. There are no accounts, so the choice is per browser, like everything else here.
+
+- A typed dictionary, not a framework (ADR-16). `src/ui/i18n/messages.ts` is the interface, `en.ts` and `fa.ts` both satisfy it, and a missing key or wrong parameter is a compile error
+- Parametrized messages are functions, so word order is per language and arguments are typed
+- **The document direction follows the UI language; the puzzle's direction follows the puzzle.** Persian chrome is `dir="rtl"`, and inside it a generated English crossword pins `dir="ltr"` on the grid and the clue list, as does the model transcript, which is English traffic whatever the UI. This separation is the one place a change can silently break the app for one language
+- Persian prose uses Persian-Indic digits via a helper in `fa.ts`; text a user typed is never reformatted
+- Server-authored strings stay English: the error contract's body text and WebSocket refusals are the worker's words, and the client translates the failure kinds it knows rather than second-guessing bodies it does not. The `"Untitled"` sentinel is stored verbatim and mapped to the reader's language at display time
+- The toggle is fixed to the page corner on every route, labeled in the language it switches to, because the person who needs it cannot read the current one
+
+Checks:
+
+- Automated: the compiler (key parity and argument types), plus `src/ui/i18n/i18n.test.ts` in `npm run test:unit`: no empty leaf, every `fa` string differs from its `en` counterpart, and no Latin digit appears in Persian prose
+- Human, outstanding: **Hossein reads every screen in Persian in an RTL window**, including the B3 failure states, whose English was tuned word by word and whose Persian deserves the same. The draft is Claude's; the taste call is his
+
+**Security pass.** D1 adds no endpoint, no message, no stored server field. The dictionary is bundled text; the one new persisted value is `arrowword:lang` in `localStorage`, which holds one of two constants and is validated on read. Model output and user text render exactly as before, as text, never as HTML.
+
 Out of v1: OCR, auto grid detection, perspective correction, correctness checking, accounts of any kind. Voice is the C series and AI puzzle generation is the B series, both above, both v2.
 
 Changed 2026-08-02: **per-player colors moved into v1** (A3 and A5). With an unbounded number of players and unverified nicknames, telling people apart stops being polish and becomes the only way the player list means anything.
@@ -1420,6 +1442,23 @@ The decision needed evidence ADR-14 did not have, and 2026-08-04 supplied it: **
 Declined, not postponed, and the difference is deliberate: postponed invites every future session to re-ask. The C2 design in section 12 stays as written, as the starting point if this is ever reopened. What would reopen it is the trigger ADR-14 already named: voice becoming the reason people come, rather than a thing they do while solving. Short of that, a new decision record is required to build it, and "it would be fun" does not clear that bar.
 
 Consequences: the C series is complete with C1 alone. No STUN host is ever contacted, no signaling messages are added to the WebSocket protocol, and the per-socket message cap never meets ICE traffic. The project has no unbuilt milestone, so what remains is stewardship: dependencies, platform changes, and whatever real use turns up.
+
+**ADR-16: The UI speaks Persian and English through a typed dictionary, not an i18n framework.** Decided 2026-08-05, scheduled as milestone D1. Every visitor-facing string lives in a dictionary keyed by a single TypeScript interface; `en.ts` and `fa.ts` both satisfy it, so a missing translation or a wrongly-typed parameter fails `tsc` rather than shipping. Parametrized messages are functions, which frees word order per language and types the arguments. There is no runtime framework, no locale files fetched, and no dependency.
+
+**What decided it is the size of the problem.** Two locales, four routes, and a string count in the low hundreds. An i18n framework earns its keep on plural rules across dozens of locales, ICU message syntax, and translator tooling; none of those exist here, and the one guarantee that matters, that no key is missing in either language, is exactly the one a runtime lookup cannot give and the compiler gives for free. The pattern matches the rest of this spec: ADR-7 declined auth, ADR-10 declined a framework, ADR-14 declined WebRTC-first, each time because the smaller thing did the whole job.
+
+Alternatives weighed:
+
+- **i18next with a Preact binding.** The industry default and the strongest alternative. Rejected: it is a new dependency (a section 15 trigger), its keys are runtime strings the compiler cannot check, and its features are sized for a problem two orders larger. Revisit only if a third language or outside translators ever appear, which for a family puzzle app they will not.
+- **Per-locale bundles or `/fa/` routes.** Rejected: complicates `run_worker_first` asset serving, and switching language would be a navigation rather than a re-render.
+- **Leaving the UI English.** The status quo, and rejected by the product itself: the person this app was built for reads Persian, and an app whose voice feature exists for Iran while its every sentence is English is half-translated by design.
+
+Consequences, including the ones that cost something:
+
+- **Every new user-facing string is now written twice**, and the compiler enforces it. That is the point, and it is also a tax on every future screen.
+- **The document direction flips with the language, and puzzle direction must not.** The grid, the clue list, and the model transcript pin their own `dir`. This is a standing rule for any future renderer: direction belongs to the content, not the chrome.
+- **Server-authored text stays English.** The error contract's bodies and WebSocket refusal messages are the worker's words; the client translates the kinds it knows and shows unknown bodies verbatim. Translating server prose client-side would couple the dictionary to the server's wording, which the contract deliberately leaves free.
+- The Persian draft is Claude's and the read-through is Hossein's, recorded as D1's human check. Machine-drafted copy in a language the reviewer is native in is a reasonable division of labor; the reverse would not be.
 
 ## 18. Open questions (non-blocking)
 

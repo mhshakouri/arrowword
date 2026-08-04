@@ -8,6 +8,7 @@ import { useEffect, useRef, useState } from "preact/hooks";
 import type { Cell, GridAlignment, LetterValue, PeerInfo } from "../../types";
 import { cellQuad } from "../lib/alignment.ts";
 import { firstGrapheme } from "../lib/grapheme.ts";
+import { useT } from "../i18n/index.ts";
 
 export interface BoardProps {
   photoSrc: string;
@@ -49,6 +50,7 @@ export function Board({
   onType,
   onClear,
 }: BoardProps) {
+  const t = useT();
   const captureRef = useRef<HTMLInputElement>(null);
   /* The photo is around 550 KB, so on a phone over 4G there is a real moment
      where the grid would otherwise be drawn over nothing. */
@@ -102,7 +104,7 @@ export function Board({
     <div class="board">
       <img
         src={photoSrc}
-        alt="The photographed puzzle you are solving."
+        alt={t.board.photoAlt}
         onLoad={() => setPhotoReady(true)}
       />
 
@@ -112,7 +114,7 @@ export function Board({
           role="status"
           style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;margin:0"
         >
-          Loading the photo…
+          {t.board.loadingPhoto}
         </p>
       )}
 
@@ -180,14 +182,12 @@ export function Board({
 
             const label =
               cell.type === "clue"
-                ? `Clue at row ${row + 1}, column ${col + 1}. Tap to read it.`
+                ? t.board.clueCellLabel(row, col)
                 : cell.type === "dead"
-                  ? `Row ${row + 1}, column ${col + 1}, not part of the puzzle`
+                  ? t.board.deadCellLabel(row, col)
                   : cell.type === "prefilled"
-                    ? `Row ${row + 1}, column ${col + 1}, given letter ${cell.letter}`
-                    : `Row ${row + 1}, column ${col + 1}${
-                        value ? `, contains ${value.ch}` : ", empty"
-                      }`;
+                    ? t.board.givenCellLabel(row, col, cell.letter ?? "")
+                    : t.board.answerCellLabel(row, col, value?.ch ?? null);
 
             const interactive = cell.type === "clue" || cell.type === "answer";
 

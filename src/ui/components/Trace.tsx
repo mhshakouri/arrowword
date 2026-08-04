@@ -13,50 +13,42 @@
    transcript, and somebody whose puzzle failed wants nothing else. */
 
 import { useState } from "preact/hooks";
+import { useT } from "../i18n/index.ts";
 import type { TraceStep } from "../../types";
 
-const LABEL: Record<TraceStep["step"], string> = {
-  layout: "Asked for a whole puzzle",
-  repair: "Sent the problems back to be fixed",
-  words: "Asked for a word list to pack",
-  validate: "Checked the grid",
-  pack: "Laid it out on this device",
-  done: "Finished",
-};
-
 export function Trace({ steps }: { steps: TraceStep[] }) {
+  const t = useT();
   const [open, setOpen] = useState(false);
   if (!steps.length) return null;
 
   return (
     <section style="margin-top:1.5rem">
       <button onClick={() => setOpen(!open)} aria-expanded={open}>
-        {open ? "Hide" : "Show"} what the model was asked and said (
-        {steps.length} step{steps.length === 1 ? "" : "s"})
+        {t.trace.toggle(open, steps.length)}
       </button>
 
       {open && (
         <div class="stack" style="margin-top:0.75rem">
           <p class="muted" style="margin:0">
-            Every exchange with the language model, in order. This is the whole
-            record; nothing is summarized.
+            {t.trace.wholeRecord}
           </p>
           {steps.map((step, i) => (
             <details key={i} class="card trace-step">
               <summary>
-                <strong>{LABEL[step.step] ?? step.step}</strong>
+                <strong>{t.trace.steps[step.step] ?? step.step}</strong>
                 {step.detail ? `: ${step.detail}` : ""}
                 {step.ms !== undefined
-                  ? ` (${(step.ms / 1000).toFixed(1)}s)`
+                  ? t.trace.seconds((step.ms / 1000).toFixed(1))
                   : ""}
-                {step.parsed === false ? " · reply could not be read" : ""}
+                {step.parsed === false ? t.trace.notRead : ""}
                 {step.mode ? ` · ${step.mode}` : ""}
               </summary>
 
               {step.problems?.length ? (
                 <>
-                  <h3 class="trace-heading">What was wrong</h3>
-                  <ul class="trace-problems">
+                  <h3 class="trace-heading">{t.trace.whatWasWrong}</h3>
+                  {/* Validator output is English regardless of the UI. */}
+                  <ul class="trace-problems" dir="ltr">
                     {step.problems.map((p, j) => (
                       <li key={j}>{p}</li>
                     ))}
@@ -68,22 +60,25 @@ export function Trace({ steps }: { steps: TraceStep[] }) {
                   carries a theme somebody typed and the reply is model output,
                   so both are exactly the untrusted strings invariant 8 is
                   about, and this is the screen that displays the most of
-                  them. */}
+                  them. The transcript itself is English model traffic, which
+                  is why the <pre> blocks pin dir="ltr" whatever the UI is. */}
               {step.prompt && (
                 <>
-                  <h3 class="trace-heading">Sent to the model</h3>
-                  <pre class="trace-text">{step.prompt}</pre>
+                  <h3 class="trace-heading">{t.trace.sent}</h3>
+                  <pre class="trace-text" dir="ltr">
+                    {step.prompt}
+                  </pre>
                 </>
               )}
               {step.reply && (
                 <>
-                  <h3 class="trace-heading">What it replied</h3>
-                  <pre class="trace-text">{step.reply}</pre>
+                  <h3 class="trace-heading">{t.trace.replied}</h3>
+                  <pre class="trace-text" dir="ltr">
+                    {step.reply}
+                  </pre>
                 </>
               )}
-              {step.reply === "" && (
-                <p class="muted">It replied with nothing at all.</p>
-              )}
+              {step.reply === "" && <p class="muted">{t.trace.emptyReply}</p>}
             </details>
           ))}
         </div>

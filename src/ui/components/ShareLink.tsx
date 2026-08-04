@@ -4,6 +4,7 @@
    someone is about to paste it somewhere. */
 
 import { useState } from "preact/hooks";
+import { useT } from "../i18n/index.ts";
 
 export interface ShareLinkProps {
   id: string;
@@ -14,6 +15,7 @@ export interface ShareLinkProps {
 }
 
 export function ShareLink({ id, showOpen = true }: ShareLinkProps) {
+  const t = useT();
   const url = `${location.origin}/s/${id}`;
   const [copied, setCopied] = useState(false);
   const [failed, setFailed] = useState(false);
@@ -35,11 +37,12 @@ export function ShareLink({ id, showOpen = true }: ShareLinkProps) {
   return (
     <div class="card stack">
       <div>
-        <label for="share">Share this link</label>
+        <label for="share">{t.share.label}</label>
         <input
           id="share"
           type="text"
           readOnly
+          dir="ltr"
           value={url}
           /* Selecting on focus is the fallback when the clipboard is
              unavailable: the reader can still copy it by hand. */
@@ -48,24 +51,21 @@ export function ShareLink({ id, showOpen = true }: ShareLinkProps) {
       </div>
       <div class="row">
         <button class="primary" onClick={() => void copy()}>
-          {copied ? "Copied" : "Copy link"}
+          {copied ? t.share.copied : t.share.copy}
         </button>
         {showOpen && (
           <a class="button" href={`/s/${id}`}>
-            Open the puzzle
+            {t.share.openPuzzle}
           </a>
         )}
       </div>
       {failed && (
         <p class="muted" role="status" style="margin:0">
-          Copying was blocked. Tap the box above to select the link, then copy
-          it.
+          {t.share.copyBlocked}
         </p>
       )}
       <p class="muted" style="margin:0">
-        Anyone with this link can play and can edit letters. There are no
-        accounts, so treat it like a key. The puzzle disappears after 30 days
-        without activity.
+        {t.share.keyNote}
       </p>
     </div>
   );

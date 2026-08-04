@@ -18,6 +18,7 @@
 import { useEffect, useRef } from "preact/hooks";
 import type { Cell, Entry, LetterValue, PeerInfo } from "../../types";
 import { firstGrapheme } from "../lib/grapheme.ts";
+import { useT } from "../i18n/index.ts";
 
 export interface CrosswordBoardProps {
   rows: number;
@@ -68,6 +69,7 @@ export function CrosswordBoard({
   onClear,
   wrong = [],
 }: CrosswordBoardProps) {
+  const t = useT();
   const captureRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -90,7 +92,11 @@ export function CrosswordBoard({
   const marked = new Set(wrong.map((c) => key(c.row, c.col)));
 
   return (
-    <div class="crossword" role="grid" aria-label="Puzzle grid">
+    /* dir is pinned, not inherited: generated puzzles are English (spec
+       section 12, B3), and an RTL Persian UI must not mirror the grid's cell
+       order or its numbering. Thread the puzzle's `lang` here if generation
+       ever writes Persian. */
+    <div class="crossword" role="grid" aria-label={t.board.gridLabel} dir="ltr">
       {/* One hidden input for the whole grid, same reasoning as the photo
           board: a per-cell input would be one more thing for a screen reader to
           walk past, times the number of squares. */}
@@ -163,9 +169,12 @@ export function CrosswordBoard({
                     ? undefined
                     : `--by-color: var(--player-${color % 10})`
                 }
-                aria-label={`Row ${row + 1}, column ${col + 1}${
-                  value ? `, ${value.ch}` : ", empty"
-                }${marked.has(at) ? ", marked wrong" : ""}`}
+                aria-label={t.board.cellLabel(
+                  row,
+                  col,
+                  value?.ch ?? null,
+                  marked.has(at),
+                )}
                 onClick={() => onSelect(row, col)}
               >
                 {number !== undefined && (

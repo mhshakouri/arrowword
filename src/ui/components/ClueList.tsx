@@ -10,6 +10,7 @@
    to go somewhere and went there. */
 
 import type { Entry } from "../../types";
+import { useT } from "../i18n/index.ts";
 
 export function ClueList({
   entries,
@@ -20,6 +21,7 @@ export function ClueList({
   selected: Entry | null;
   onPick: (entry: Entry) => void;
 }) {
+  const t = useT();
   const across = entries
     .filter((e) => e.dir === "across")
     .sort((a, b) => a.number - b.number);
@@ -27,10 +29,10 @@ export function ClueList({
     .filter((e) => e.dir === "down")
     .sort((a, b) => a.number - b.number);
 
-  const section = (title: string, list: Entry[]) =>
+  const section = (dir: "across" | "down", list: Entry[]) =>
     list.length === 0 ? null : (
       <div class="clue-group">
-        <h2 class="clue-heading">{title}</h2>
+        <h2 class="clue-heading">{t.clues[dir]}</h2>
         <ol class="clue-list">
           {list.map((entry) => {
             const isSelected =
@@ -49,7 +51,12 @@ export function ClueList({
                      nothing else. Section 16 requires state announced to
                      assistive tech, and this is the control that navigates the
                      puzzle. */
-                  aria-label={`${entry.number} ${title.toLowerCase()}, ${entry.clue}, ${entry.len} letters`}
+                  aria-label={t.clues.clueLabel(
+                    entry.number,
+                    dir,
+                    entry.clue,
+                    entry.len,
+                  )}
                   onClick={() => onPick(entry)}
                 >
                   <span class="clue-number">{entry.number}</span>
@@ -70,9 +77,11 @@ export function ClueList({
     );
 
   return (
-    <div class="clues">
-      {section("Across", across)}
-      {section("Down", down)}
+    /* Pinned LTR for the same reason as the grid: the clues are English text
+       with English numbering even when the chrome around them is Persian. */
+    <div class="clues" dir="ltr">
+      {section("across", across)}
+      {section("down", down)}
     </div>
   );
 }

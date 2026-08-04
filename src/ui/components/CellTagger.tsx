@@ -10,13 +10,9 @@ import { useRef, useState } from "preact/hooks";
 import type { Cell, CellType, GridAlignment } from "../../types";
 import { cellQuad } from "../lib/alignment.ts";
 import { firstGrapheme } from "../lib/grapheme.ts";
+import { t as messages, useT } from "../i18n/index.ts";
 
-const PAINTS: Array<{ type: CellType; label: string; hint: string }> = [
-  { type: "answer", label: "Answer", hint: "A letter goes here" },
-  { type: "clue", label: "Clue", hint: "Printed clue text" },
-  { type: "dead", label: "Dead", hint: "Not part of the puzzle" },
-  { type: "prefilled", label: "Given", hint: "A letter already printed" },
-];
+const PAINT_ORDER: CellType[] = ["answer", "clue", "dead", "prefilled"];
 
 /* Distinct without competing with the photo underneath, which players still
    have to read through the overlay. */
@@ -44,6 +40,7 @@ export function CellTagger({
   cells,
   onChange,
 }: CellTaggerProps) {
+  const t = useT();
   const [paint, setPaint] = useState<CellType>("clue");
   /* A ref for the same reason as the alignment editor: state has not flushed by
      the time the first pointermove arrives, and that cell would be skipped. */
@@ -55,10 +52,7 @@ export function CellTagger({
 
     if (paint === "prefilled") {
       /* Asking mid-drag would be hostile, so given letters are tap-only. */
-      const raw = prompt(
-        "Which letter is printed in this cell?",
-        current.letter ?? "",
-      );
+      const raw = prompt(messages().tagger.letterPrompt, current.letter ?? "");
       if (raw === null) return;
       const letter = firstGrapheme(raw);
       if (!letter) return;
@@ -89,31 +83,30 @@ export function CellTagger({
         }}
       >
         <legend class="muted" style="padding:0 0.35rem">
-          Tap a type, then tap or drag over the grid
+          {t.tagger.legend}
         </legend>
         <div class="row">
-          {PAINTS.map((p) => (
+          {PAINT_ORDER.map((type) => (
             <button
-              key={p.type}
+              key={type}
               type="button"
-              aria-pressed={paint === p.type}
-              onClick={() => setPaint(p.type)}
+              aria-pressed={paint === type}
+              onClick={() => setPaint(type)}
               style={`border-color:${
-                paint === p.type ? "var(--accent)" : "var(--border)"
-              };border-width:${paint === p.type ? "2px" : "1px"};
-                 font-weight:${paint === p.type ? "600" : "400"}`}
+                paint === type ? "var(--accent)" : "var(--border)"
+              };border-width:${paint === type ? "2px" : "1px"};
+                 font-weight:${paint === type ? "600" : "400"}`}
             >
-              {p.label}
+              {t.tagger.types[type].label}
               <span class="muted" style="display:block;font-weight:400">
-                {counts[p.type] ?? 0}
+                {counts[type] ?? 0}
               </span>
             </button>
           ))}
         </div>
         <p class="muted" style="margin:0.5rem 0 0">
-          {PAINTS.find((p) => p.type === paint)?.hint}
-          {paint === "prefilled" &&
-            ". Tap one cell at a time; it will ask for the letter."}
+          {t.tagger.types[paint].hint}
+          {paint === "prefilled" && t.tagger.prefilledExtra}
         </p>
       </fieldset>
 
@@ -128,7 +121,7 @@ export function CellTagger({
       >
         <img
           src={photoSrc}
-          alt="Your photographed puzzle, with the grid you aligned drawn over it."
+          alt={t.tagger.photoAlt}
           style="display:block;width:100%;height:auto;border-radius:var(--radius)"
         />
 
@@ -148,7 +141,11 @@ export function CellTagger({
               ]
                 .map((p) => `${p.x * 100},${p.y * 100}`)
                 .join(" ");
-              const label = `Row ${row + 1}, column ${col + 1}, currently ${cell.type}`;
+              const label = t.tagger.cellLabel(
+                row,
+                col,
+                t.tagger.types[cell.type].label,
+              );
               return (
                 <polygon
                   key={`${row},${col}`}
