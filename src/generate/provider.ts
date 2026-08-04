@@ -217,7 +217,18 @@ function prompt(theme: string, count: number): string {
   return [
     `Give ${count} English words for a small crossword on the theme "${theme}".`,
     `Rules: each answer is a single word, ${MIN_ANSWER} to ${MAX_ANSWER} letters, letters A-Z only.`,
-    `No proper nouns, no abbreviations, no plurals of the theme word itself.`,
+    /* Proper nouns allowed, decided 2026-08-04. This banned them while the
+       layout prompt did not, so a "rivers" theme that fell back to packing got
+       DELTA and BANK where the layout path would have offered THAMES: the same
+       theme produced a different kind of puzzle depending on which path ran,
+       which is the worst of both answers.
+
+       Allowed rather than banned in both, because the themes people actually
+       type are "movie names" and "rivers", and a puzzle about rivers with no
+       river in it is not what was asked for. The A-Z rule already excludes the
+       cases that break a grid, since "ST. LOUIS" has a space and a full stop
+       and is rejected on that ground rather than on being a name. */
+    `Proper nouns are fine. No abbreviations, and no plurals of the theme word itself.`,
     `Each clue is one short sentence under ${MAX_CLUE} characters and must not contain its answer.`,
     `Reply with JSON only, no prose: {"candidates":[{"answer":"...","clue":"..."}]}`,
   ].join(" ");
@@ -255,15 +266,44 @@ function extractJson(text: string): unknown {
 }
 
 function layoutPrompt(theme: string, rows: number, cols: number): string {
+  /* Rewritten 2026-08-04 after review, and every change aims at one failure: a
+     model with 4B active parameters deriving index arithmetic in its head and
+     getting a crossing wrong.
+
+     The rules were all present before. What was missing was the arithmetic they
+     imply and a worked example, which is the single biggest reliability lever
+     for a small model. Input costs 9,091 neurons per million against 27,273 for
+     output, so 150 extra input tokens is about 1.4 neurons. Nearly free, and
+     output is what we actually pay for.
+
+     Two deliberate omissions. Nothing invites step-by-step reasoning in the
+     reply, because `extractJson` takes the first balanced object and a stray
+     brace inside reasoning text would poison it. And "reply with JSON only"
+     stays last, because small models weight the end of a prompt. */
   return [
     `Design a small English crossword on the theme "${theme}" for a ${rows} by ${cols} grid.`,
+    `row and col are zero-based and mark the first letter.`,
+    /* Spelled out rather than implied. A disagreeing crossing is almost always
+       this derivation going wrong, not the rule being misunderstood. */
+    `An across answer starting at (row, col) puts letter k at (row, col + k).`,
+    `A down answer starting at (row, col) puts letter k at (row + k, col).`,
+    /* Off-theme on purpose, so the words are less likely to be copied. */
+    `Correct crossing example: PLANET across at row 5 col 2 and NOVEL down at row 5 col 5 share square (5, 5), and both have N there.`,
+    `Rules:`,
+    /* The density knob the layout ADR says to turn before blaming the model.
+       Nothing said how many answers to use, so it over-placed and trapped
+       itself. The validator allows 12; asking for 5 to 8 leaves room. */
+    `- 5 to 8 answers, each a single word, ${MIN_ANSWER} to ${MAX_ANSWER} letters, A-Z only, no spaces or hyphens.`,
+    /* Constructive rather than prohibitive. "No two answers may sit side by
+       side without crossing" is hard to parse, let alone satisfy. */
+    `- Place the first answer, then place every later answer so it shares a square with an already placed answer, with the same letter on that square.`,
+    `- Leave at least one empty square between parallel answers. Most of the grid stays empty; a sparse puzzle is correct.`,
+    `- No letter may go past row ${rows - 1} or col ${cols - 1}.`,
+    `- Each clue is one short sentence under ${MAX_CLUE} characters and must not contain its answer.`,
+    `Before replying, check every shared square: the across letter must equal the down letter.`,
     `Reply with JSON only, no prose:`,
-    `{"entries":[{"dir":"across","row":0,"col":0,"answer":"WORD","clue":"..."}]}`,
-    `row and col are zero-based and mark the first letter. Answers are A-Z only, ${MIN_ANSWER} to ${MAX_ANSWER} letters.`,
-    `Every answer after the first must cross an earlier one, and crossing answers must share the same letter at the shared square.`,
-    `No two answers may sit side by side without crossing, and nothing may run off the grid.`,
-    `Each clue is one short sentence under ${MAX_CLUE} characters and must not contain its answer.`,
-  ].join(" ");
+    `{"entries":[{"dir":"across","row":5,"col":2,"answer":"PLANET","clue":"..."},{"dir":"down","row":5,"col":5,"answer":"NOVEL","clue":"..."}]}`,
+  ].join("\n");
 }
 
 /* Model output for a layout, which arrives with whatever shape it felt like.
@@ -318,11 +358,92 @@ export function workersAiProvider(
   debug = false,
   model: string = GENERATION_MODEL,
 ): Provider {
-  const ask = async (content: string): Promise<unknown> => {
-    const result = await ai.run(model, {
-      messages: [{ role: "user", content }],
-    });
-    const raw = result?.response ?? "";
+  /* Low, because this is a constraint task rather than a creative one. Clues
+     suffer slightly at a low setting and crossings suffer a great deal more at a
+     high one, and a puzzle with charming clues that does not validate is not a
+     puzzle. */
+  const TEMPERATURE = 0.2;
+
+  /* The shapes the prompts ask for, expressed so the model is held to them
+     rather than merely asked. `len` and `number` are absent on purpose: both are
+     derived, and letting a model propose them creates two more ways for it to
+     contradict itself. */
+  const ENTRY_SCHEMA = {
+    type: "object",
+    properties: {
+      entries: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            dir: { type: "string", enum: ["across", "down"] },
+            row: { type: "integer" },
+            col: { type: "integer" },
+            answer: { type: "string" },
+            clue: { type: "string" },
+          },
+          required: ["dir", "row", "col", "answer", "clue"],
+        },
+      },
+    },
+    required: ["entries"],
+  };
+
+  const WORD_SCHEMA = {
+    type: "object",
+    properties: {
+      candidates: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            answer: { type: "string" },
+            clue: { type: "string" },
+          },
+          required: ["answer", "clue"],
+        },
+      },
+    },
+    required: ["candidates"],
+  };
+
+  /* Workers AI supports `response_format` with a JSON schema, which would end
+     the "returned no usable entries" path outright.
+
+     Attempted rather than relied on, for two reasons: the supported-model list
+     varies and Gemma 4 is not confirmed on it, and Cloudflare's own
+     documentation says a model that cannot satisfy a schema **returns an
+     error**. An error here would land in the loop's throw path and be reported
+     as the service being unreachable, which would be a lie about an outage.
+
+     So a schema failure falls back to a plain call within the same attempt.
+     Where it works we stop losing attempts to malformed JSON; where it does
+     not, we are exactly where we were. */
+  const ask = async (
+    content: string,
+    schema: Record<string, unknown>,
+  ): Promise<unknown> => {
+    const call = async (withSchema: boolean): Promise<string> => {
+      const input: Record<string, unknown> = {
+        messages: [{ role: "user", content }],
+        temperature: TEMPERATURE,
+      };
+      if (withSchema) {
+        input.response_format = { type: "json_schema", json_schema: schema };
+      }
+      const result = await ai.run(model, input);
+      return result?.response ?? "";
+    };
+
+    let raw = "";
+    let mode = "schema";
+    try {
+      raw = await call(true);
+    } catch {
+      mode = "plain";
+      raw = await call(false);
+    }
+
     const parsed = extractJson(raw);
     /* Off by default: model output is large and this is the one place that
        would put a whole puzzle in the logs, which section 16 forbids for
@@ -333,6 +454,7 @@ export function workersAiProvider(
         JSON.stringify({
           at: "model",
           model,
+          mode,
           chars: raw.length,
           parsed: parsed ? "yes" : "no",
           /* Truncated hard: enough to see the shape and whether it is JSON at
@@ -354,7 +476,9 @@ export function workersAiProvider(
         theme,
         rows,
         cols,
-        entries: readEntries(await ask(layoutPrompt(theme, rows, cols))),
+        entries: readEntries(
+          await ask(layoutPrompt(theme, rows, cols), ENTRY_SCHEMA),
+        ),
       };
     },
 
@@ -366,24 +490,33 @@ export function workersAiProvider(
       problems: string[],
     ): Promise<LayoutProposal> {
       const content = [
-        `This crossword layout was rejected. Fix only what is listed and keep everything else.`,
+        `A crossword layout for a ${previous.rows} by ${previous.cols} grid was rejected.`,
+        /* Restated. The original repair prompt carried neither the grid size
+           nor any rule, so the model was asked to fix coordinates without being
+           told what the bounds were. */
+        `row and col are zero-based. An across answer at (row, col) puts letter k at (row, col + k); a down answer puts letter k at (row + k, col).`,
+        `No letter may go past row ${previous.rows - 1} or col ${previous.cols - 1}. Crossing answers must share the same letter on the shared square. Leave at least one empty square between parallel answers.`,
         `Problems: ${problems.join("; ")}.`,
+        /* "Fix only what is listed" forbade the cheapest valid repair, which is
+           usually to drop the offending entry. A sparse puzzle is a puzzle; an
+           unfixable one is not. */
+        `You may move, shorten, replace, or delete an offending entry. Keep the entries that were not mentioned.`,
         `Previous: ${JSON.stringify({ entries: previous.entries.map((e) => ({ dir: e.dir, row: e.row, col: e.col, answer: e.answer, clue: e.clue })) })}`,
-        `Reply with the corrected JSON only, same shape, no prose.`,
-      ].join(" ");
+        `Reply with the corrected JSON only, no prose, same shape.`,
+      ].join("\n");
       return {
         theme: previous.theme,
         rows: previous.rows,
         cols: previous.cols,
-        entries: readEntries(await ask(content)),
+        entries: readEntries(await ask(content, ENTRY_SCHEMA)),
       };
     },
 
     async propose(theme: string, count: number): Promise<Proposal> {
-      const result = await ai.run(model, {
-        messages: [{ role: "user", content: prompt(theme, count) }],
-      });
-      const parsed = extractJson(result?.response ?? "") as {
+      /* Same schema treatment as the layout. This is the fallback that exists
+         so the button always works, so it is the last thing that should lose an
+         attempt to a stray sentence of prose. */
+      const parsed = (await ask(prompt(theme, count), WORD_SCHEMA)) as {
         candidates?: Candidate[];
       } | null;
       /* A response that parses to nothing is an empty proposal rather than an

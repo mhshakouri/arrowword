@@ -361,3 +361,117 @@ test("len is derived from the answer, never read from the model", async () => {
   const out = await workersAiProvider(ai).proposeLayout("t", 5, 5);
   assert.equal(out.entries[0]?.len, 3);
 });
+
+/* ---- JSON schema mode, and the fallback that keeps it honest ----
+
+   Cloudflare's documentation says a model that cannot satisfy a schema returns
+   an error. An error reaching the loop is counted as a throw and reported to
+   the player as the service being unreachable, so a model that simply does not
+   support schemas would have looked like an outage. */
+
+test("a schema is sent when the model accepts one", async () => {
+  let sawSchema = false;
+  const ai = {
+    async run(_model: string, input: Record<string, unknown>) {
+      sawSchema = "response_format" in input;
+      return { response: '{"entries":[]}' };
+    },
+  };
+  await workersAiProvider(ai).proposeLayout("t", 5, 5);
+  assert.equal(sawSchema, true);
+});
+
+test("a model that rejects the schema is retried without it, not reported as down", async () => {
+  const modes: boolean[] = [];
+  const ai = {
+    async run(_model: string, input: Record<string, unknown>) {
+      const withSchema = "response_format" in input;
+      modes.push(withSchema);
+      if (withSchema) throw new Error("json_schema not supported");
+      return {
+        response:
+          '{"entries":[{"dir":"across","row":0,"col":0,"answer":"CAT","clue":"It ignores you"}]}',
+      };
+    },
+  };
+  const out = await workersAiProvider(ai).proposeLayout("t", 5, 5);
+  assert.deepEqual(modes, [true, false], "should try schema then plain");
+  assert.equal(out.entries.length, 1, "the plain retry result is used");
+});
+
+test("a model that is genuinely down still throws, so an outage is still an outage", async () => {
+  const ai = {
+    async run() {
+      throw new Error("service unavailable");
+    },
+  };
+  await assert.rejects(() => workersAiProvider(ai).proposeLayout("t", 5, 5));
+});
+
+/* Constraint task, not a creative one: crossings suffer far more at a high
+   setting than clues gain. */
+test("a low temperature is sent", async () => {
+  let temp: unknown;
+  const ai = {
+    async run(_model: string, input: Record<string, unknown>) {
+      temp = input.temperature;
+      return { response: '{"entries":[]}' };
+    },
+  };
+  await workersAiProvider(ai).proposeLayout("t", 5, 5);
+  assert.equal(typeof temp, "number");
+  assert.ok((temp as number) <= 0.3, `temperature ${temp} is too high`);
+});
+
+/* ---- The prompt carries what the model needs to derive nothing ---- */
+
+test("the layout prompt spells out the coordinate arithmetic", async () => {
+  let sent = "";
+  const ai = {
+    async run(_model: string, input: Record<string, unknown>) {
+      sent = String(
+        (input.messages as Array<{ content: string }>)[0]?.content ?? "",
+      );
+      return { response: '{"entries":[]}' };
+    },
+  };
+  await workersAiProvider(ai).proposeLayout("rivers", 11, 11);
+  assert.match(sent, /\(row, col \+ k\)/, "across arithmetic missing");
+  assert.match(sent, /\(row \+ k, col\)/, "down arithmetic missing");
+  assert.match(sent, /Correct crossing example/, "worked example missing");
+});
+
+/* Hardcoding 10 would be wrong for any other grid size, and the packer already
+   accepts a size from the caller. */
+test("the layout prompt states the real bounds for the grid it was given", async () => {
+  let sent = "";
+  const ai = {
+    async run(_model: string, input: Record<string, unknown>) {
+      sent = String(
+        (input.messages as Array<{ content: string }>)[0]?.content ?? "",
+      );
+      return { response: '{"entries":[]}' };
+    },
+  };
+  await workersAiProvider(ai).proposeLayout("t", 7, 9);
+  assert.match(sent, /past row 6 or col 8/);
+});
+
+test("the repair prompt restates the bounds and allows deleting an entry", async () => {
+  let sent = "";
+  const ai = {
+    async run(_model: string, input: Record<string, unknown>) {
+      sent = String(
+        (input.messages as Array<{ content: string }>)[0]?.content ?? "",
+      );
+      return { response: '{"entries":[]}' };
+    },
+  };
+  await workersAiProvider(ai).repair(
+    { theme: "t", rows: 11, cols: 11, entries: [] },
+    ["0,0 is A in entry 0 and B here"],
+  );
+  assert.match(sent, /past row 10 or col 10/, "bounds not restated");
+  assert.match(sent, /delete an offending entry/, "deletion not permitted");
+  assert.match(sent, /0,0 is A in entry 0/, "the specific problem is missing");
+});
