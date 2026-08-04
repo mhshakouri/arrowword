@@ -39,6 +39,12 @@ const FAIL_SECRET = "2x0000000000000000000000000000000AA";
 const TOKEN = "dummy-token";
 
 const RUN = `g${Date.now().toString(36)}`;
+/* The shared daily pool is global by definition, so it cannot be scoped the way
+   the per-IP keys above are, and its counter lives in `.wrangler` between runs.
+   A day of test runs drained it and the suite started failing on "out of budget
+   for today" rather than on anything it was checking. Every scenario counts
+   against a key unique to this run instead. */
+const POOL = `${RUN}-pool`;
 const as = (ip, init = {}) => ({
   ...init,
   headers: {
@@ -198,6 +204,7 @@ await restart({
   GENERATION_FIXTURES: "GOOD",
   RATE_LIMIT_GENERATE: "50",
   GENERATION_DAILY_LIMIT: "200",
+  GENERATION_POOL_KEY: POOL,
   /* The layout order, which is no longer the default. Asked for explicitly
      because these checks are about a model that lays a puzzle out, and since
      2026-08-04 the pipeline asks for words first. */
@@ -275,6 +282,7 @@ await restart({
   GENERATION_FIXTURES: "FALLBACK",
   RATE_LIMIT_GENERATE: "50",
   GENERATION_DAILY_LIMIT: "200",
+  GENERATION_POOL_KEY: POOL,
 });
 
 const fb = await generate("short words", `${RUN}-c`);
@@ -444,6 +452,7 @@ await restart({
   GENERATION_FIXTURES: "HOPELESS",
   RATE_LIMIT_GENERATE: "50",
   GENERATION_DAILY_LIMIT: "200",
+  GENERATION_POOL_KEY: POOL,
 });
 
 const doomed = await generate("nonsense", `${RUN}-d`);
@@ -472,6 +481,7 @@ await restart({
   GENERATION_FIXTURES: "GOOD",
   RATE_LIMIT_GENERATE: "2",
   GENERATION_DAILY_LIMIT: "200",
+  GENERATION_POOL_KEY: POOL,
 });
 
 const limited = `${RUN}-e`;
@@ -498,6 +508,7 @@ await restart({
   GENERATION_FIXTURES: "GOOD",
   RATE_LIMIT_GENERATE: "50",
   GENERATION_DAILY_LIMIT: "2",
+  GENERATION_POOL_KEY: POOL,
 });
 
 await generate("one", `${RUN}-g`);
@@ -526,6 +537,7 @@ await restart({
      throws, which is exactly the unreachable case. */
   RATE_LIMIT_GENERATE: "2",
   GENERATION_DAILY_LIMIT: "200",
+  GENERATION_POOL_KEY: POOL,
 });
 
 const refunded = `${RUN}-refund`;
@@ -562,6 +574,7 @@ await restart({
   GENERATION_FIXTURES: "GOOD",
   RATE_LIMIT_GENERATE: "50",
   GENERATION_DAILY_LIMIT: "200",
+  GENERATION_POOL_KEY: POOL,
 });
 
 const rejected = await generate("rivers", `${RUN}-j`);
@@ -577,6 +590,7 @@ await restart({
   GENERATION_FIXTURES: "GOOD",
   RATE_LIMIT_GENERATE: "50",
   GENERATION_DAILY_LIMIT: "200",
+  GENERATION_POOL_KEY: POOL,
 });
 
 const unconfigured = await generate("rivers", `${RUN}-k`);

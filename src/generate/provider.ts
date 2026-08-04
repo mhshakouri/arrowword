@@ -272,24 +272,41 @@ function prompt(theme: string, count: number): string {
    object still goes through `clean` and the validator; it is refusing to let
    one malformed sibling destroy its well-formed neighbours. */
 function salvageObjects(text: string): unknown[] {
+  const repaired = repairJson(text);
   const out: unknown[] = [];
-  let depth = 0;
-  let start = -1;
-  for (let i = 0; i < text.length; i += 1) {
-    const ch = text[i];
-    if (ch === "{") {
-      if (depth === 0) start = i;
-      depth += 1;
-    } else if (ch === "}") {
-      if (depth > 0) {
+  /* Every `{`, not only the ones at depth zero.
+
+     The first version tracked depth and only captured top-level objects, which
+     found nothing at all in the reply that mattered: a layout arrives as
+     `{"entries":[{...},{...}` and every entry is nested one level in, so the
+     outer brace never closed on a truncated reply and the complete entries
+     inside it were never looked at. The whole point is to rescue the intact
+     parts of a broken document, and they are exactly the parts that are
+     nested. */
+  for (let i = 0; i < repaired.length; i += 1) {
+    if (repaired[i] !== "{") continue;
+    let depth = 0;
+    for (let j = i; j < repaired.length; j += 1) {
+      if (repaired[j] === "{") depth += 1;
+      else if (repaired[j] === "}") {
         depth -= 1;
-        if (depth === 0 && start >= 0) {
+        if (depth === 0) {
           try {
-            out.push(JSON.parse(text.slice(start, i + 1)));
+            const value = JSON.parse(repaired.slice(i, j + 1)) as Record<
+              string,
+              unknown
+            >;
+            /* Only leaves worth having. The outer wrapper parses too when the
+               document is intact, and keeping it would add a shapeless object
+               to the list for every good one. */
+            if (value && ("answer" in value || "dir" in value)) out.push(value);
           } catch {
-            /* This one is broken; its neighbours may not be. */
+            /* Broken; its neighbours may not be. */
           }
-          start = -1;
+          /* Continue from just after this object rather than inside it: a
+             nested object worth having would have been found by its own `{`. */
+          i = j;
+          break;
         }
       }
     }
@@ -297,7 +314,24 @@ function salvageObjects(text: string): unknown[] {
   return out;
 }
 
-function extractJson(text: string): unknown {
+/* Undo the malformations this model makes over and over.
+
+   Observed across whole replies rather than guessed: every candidate after the
+   first came back as `{"answer":"ORBIT","clue:"Path around a star"}`. The colon
+   migrates inside the key's closing quote, so the key becomes the string
+   `clue:` and the document is invalid from there on. Twelve candidates, eleven
+   lost, and the one that survived was the one the model wrote before it slipped
+   into the pattern.
+
+   Narrow on purpose. This rewrites `"word:"` into `"word":` and nothing else,
+   so it cannot turn a wrong answer into a plausible one; it only repairs a
+   punctuation slip that makes valid content unreadable. */
+function repairJson(text: string): string {
+  return text.replace(/"([A-Za-z_][A-Za-z0-9_]*):"/g, '"$1":"');
+}
+
+function extractJson(input: string): unknown {
+  const text = repairJson(input);
   /* Whichever bracket comes first. Looking only for `{` sliced a top-level
      array down to its first element, which reads as the model having sent one
      entry when it sent eight. */
@@ -493,6 +527,16 @@ export function workersAiProvider(
       const input: Record<string, unknown> = {
         messages: [{ role: "user", content }],
         temperature: TEMPERATURE,
+        /* Never set until 2026-08-04, and Workers AI defaults it low enough to
+           cut a reply off in the middle of a word. Three layout attempts in a
+           row stopped at `"answer": "COMET` and `"answer": "`, which read as the
+           model being incapable when it was being silenced.
+
+           A twelve entry layout with clues is roughly 700 tokens, so this is
+           generous rather than tight. Output is what we pay for, but a reply
+           truncated into invalid JSON costs the whole attempt and is spent
+           either way, which makes a low ceiling the more expensive choice. */
+        max_tokens: 2048,
       };
       if (withSchema) {
         input.response_format = { type: "json_schema", json_schema: schema };
