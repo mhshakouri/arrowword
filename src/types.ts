@@ -125,6 +125,10 @@ export interface TraceStep {
   parsed?: boolean;
   problems?: string[];
   ms?: number;
+  /* "schema" or "plain": whether the model accepted a JSON schema for this
+     call. A reply full of broken JSON means either the schema was refused or it
+     was not honoured, and those are different problems. */
+  mode?: string;
 }
 
 /* Who is in the voice room, which is a subset of who is in the session. `mode`

@@ -513,6 +513,16 @@ A determined attacker rotating addresses through Turnstile is not who this app h
 
 **The daily ceiling is a measurement, not a decision.** An earlier version of this section said 30, and that number was invented to bound an imaginary bill. The real ceiling comes from what 10,000 neurons buys, which depends on the model and is not something to guess.
 
+**The pipeline was inverted 2026-08-04: words first, layout second.** The layout ADR calls the layout "the interesting part" and it is right that it is the more ambitious claim. It also says, in advance, that a failing layout means lowering density or changing model before concluding the model cannot do it. Density was lowered to 5 to 8 answers, the model was changed and changed back, the prompt was rewritten with the arithmetic spelled out and a worked example, and a full transcript of a real attempt settled it.
+
+What the transcript showed: eight entries, a crossing where `SPACE` across put `C` on a square `PLACE` down called `P`, and a six letter down answer starting at row 9 of an eleven row grid. Two repairs followed, each told exactly what was wrong. The model moved the offending answer from row 9 to row 8 to column 5 and **never once fixed the crossing**, nor computed that a six letter down answer cannot start below row 5. Three calls, thirty seconds, no progress, and this is the shape every attempt took.
+
+So the order now matches what each side is good at. A language model is very good at listing words on a subject and writing clues for them; it is bad at constraint satisfaction on a coordinate grid. A backtracking packer is the opposite. Asking each for the thing it is good at costs **one** model call instead of four, takes about seven seconds instead of thirty, and produces a puzzle rather than an apology.
+
+The layout path is kept rather than deleted, runs when the word list comes back too thin to pack, and is still reachable first through `GENERATION_LAYOUT_FIRST` so the comparison stays available rather than becoming an opinion.
+
+**A malformed sibling was destroying its well-formed neighbours.** The same transcript showed the word list reply arriving as twelve candidates of which the first was perfect and the rest were `{"answer":"Cloud","clue:"}`, a key with no value. `JSON.parse` rejects the document, so all twelve were discarded and the fallback that exists "so the button always works" had nothing to work with. Replies are now salvaged object by object. That is not leniency about correctness, since every salvaged object still goes through `clean` and the validator; it is refusing to let one broken candidate take out eleven good ones. **Small models degrade like this**, correct at the start and coming apart later, and any parser that meets one should expect it.
+
 **Every production generation was killed before the model answered, and that was the whole problem.** The work was started with `ctx.waitUntil` from the Durable Object's request handler. The invocation ended in about 100 milliseconds; the model call, which takes seconds, was abandoned mid-flight. The neurons were spent, the answer was thrown away, the session sat in `generating` until it expired, and nothing logged because the code that logs never ran.
 
 Three things kept it hidden:

@@ -50,6 +50,7 @@ export function Trace({ steps }: { steps: TraceStep[] }) {
                   ? ` (${(step.ms / 1000).toFixed(1)}s)`
                   : ""}
                 {step.parsed === false ? " · reply could not be read" : ""}
+                {step.mode ? ` · ${step.mode}` : ""}
               </summary>
 
               {step.problems?.length ? (

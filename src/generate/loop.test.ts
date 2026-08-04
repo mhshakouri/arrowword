@@ -21,7 +21,19 @@ import {
 } from "./fixtures.ts";
 import { validate, cellsFrom } from "./validate.ts";
 
+/* The layout path, which is no longer the default. Every test below that is
+   about proposing, repairing and giving up asks for it explicitly, because
+   since 2026-08-04 the pipeline asks for words first: see the note above
+   `generate`. */
 const SMALL = {
+  rows: 3,
+  cols: 3,
+  limits: { maxRows: 11, maxCols: 11, maxEntries: 12 },
+  layoutFirst: true,
+};
+
+/* The default order. */
+const WORDS_FIRST = {
   rows: 3,
   cols: 3,
   limits: { maxRows: 11, maxCols: 11, maxEntries: 12 },
@@ -380,4 +392,73 @@ test("a proposal with entries is sent for repair, not re-proposed", async () => 
   assert.equal(out.status, "playable");
   assert.equal(proposals, 1);
   assert.equal(repairs, 1, "a broken layout is worth repairing");
+});
+
+/* ---- Words first, which is the default since 2026-08-04 ----
+
+   A transcript of a real failure settled this. An 8B model produced a layout
+   with a disagreeing crossing and a six-letter down answer four rows off the
+   grid, then spent two repairs moving that answer around without ever fixing
+   the crossing. Three calls, thirty seconds, nothing. It lists words about a
+   subject perfectly well; it cannot do constraint satisfaction on a grid. */
+
+test("a usable word list is packed without ever asking for a layout", async () => {
+  const provider = recordedProvider([RIVERS], [LAYOUT_VALID]);
+  const out = await generate(provider, "rivers", WORDS_FIRST);
+  assert.equal(out.status, "pack");
+  assert.equal(provider.layoutCalls, 0, "no layout should have been requested");
+  assert.equal(provider.calls, 1, "one call, not four");
+});
+
+test("the layout is tried only when the word list is too thin to pack", async () => {
+  const provider = recordedProvider(
+    [{ theme: "t", candidates: [{ answer: "CAT", clue: "It ignores you" }] }],
+    [LAYOUT_VALID],
+  );
+  const out = await generate(provider, "t", WORDS_FIRST);
+  assert.equal(out.status, "playable", "the layout should have rescued it");
+  assert.ok(provider.layoutCalls > 0);
+});
+
+test("a thin word list still beats nothing when the layout also fails", async () => {
+  const provider = recordedProvider(
+    [
+      {
+        theme: "t",
+        candidates: [
+          { answer: "CAT", clue: "It ignores you" },
+          { answer: "COT", clue: "A small bed" },
+        ],
+      },
+    ],
+    LAYOUT_NEVER_VALID,
+  );
+  const out = await generate(provider, "t", WORDS_FIRST);
+  assert.equal(out.status, "pack", "two words are worth handing to the packer");
+});
+
+test("nothing usable anywhere still fails", async () => {
+  const provider = recordedProvider([UNUSABLE], LAYOUT_NEVER_VALID);
+  const out = await generate(provider, "t", WORDS_FIRST);
+  assert.equal(out.status, "failed");
+});
+
+test("words first costs one model call on the happy path, not four", async () => {
+  let calls = 0;
+  const provider: Provider = {
+    async proposeLayout() {
+      calls += 1;
+      return LAYOUT_VALID;
+    },
+    async repair() {
+      calls += 1;
+      return LAYOUT_VALID;
+    },
+    async propose() {
+      calls += 1;
+      return RIVERS;
+    },
+  };
+  await generate(provider, "rivers", WORDS_FIRST);
+  assert.equal(calls, 1);
 });

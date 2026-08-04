@@ -62,6 +62,10 @@ export interface Options {
      work rather than only the verdict. Separate from `onProgress` because
      progress is four words for a spinner and this is the transcript. */
   onTrace?: (step: TraceStep) => void;
+  /* Ask the model for a whole layout before asking for words. Default false
+     since 2026-08-04: see the note above `generate`. Kept configurable so the
+     comparison stays available rather than becoming an opinion. */
+  layoutFirst?: boolean;
 }
 
 /* What goes back to the model on a repair. Deliberately the `detail` strings
@@ -78,6 +82,32 @@ export function problemsFrom(rejections: Rejection[]): string[] {
   return rejections.slice(0, MAX_PROBLEMS).map((r) => r.detail);
 }
 
+/* Words first, layout second.
+
+   **Inverted 2026-08-04, from a full transcript of a real failure.** The
+   pipeline used to ask for a whole layout, repair it twice, and only then ask
+   for a word list. Watching it, an 8B model produced eight entries with a
+   crossing that disagreed and a six-letter down answer running four rows off
+   the grid, then spent two repairs moving that answer from row 9 to row 8 to
+   column 5 without once fixing the crossing or computing that it had to start
+   at row 5 or less. Three calls, thirty seconds, no progress, every time.
+
+   The layout ADR calls the layout "the interesting part" and it is right that
+   it is the more ambitious claim. It also says, in advance, that a failing
+   layout means lowering density or changing model before concluding the model
+   cannot do it. Density was lowered to 5 to 8 answers and the model was
+   changed and changed back; it still cannot do it.
+
+   So the order now matches what each side is good at. A language model is very
+   good at listing words about a subject and writing clues for them. It is bad
+   at constraint satisfaction on a coordinate grid. A backtracking packer is the
+   opposite. Asking each for the thing it is good at costs **one** model call
+   instead of four, takes about seven seconds instead of thirty, and produces a
+   puzzle rather than an apology.
+
+   The layout path is kept, not deleted, and runs when the word list comes back
+   too thin to pack. It is also still reachable first by configuration, so the
+   comparison stays available rather than becoming an opinion. */
 export async function generate(
   provider: Provider,
   theme: string,
@@ -87,11 +117,11 @@ export async function generate(
   const cols = options.cols ?? DEFAULT_LIMITS.maxCols;
   const limits = options.limits ?? DEFAULT_LIMITS;
   const maxRepairs = options.maxRepairs ?? 2;
+  const layoutFirst = options.layoutFirst ?? false;
   const report = options.onProgress ?? (() => {});
   const trace = options.onTrace ?? (() => {});
   /* Truncated, because a prompt is about 2 KB and a reply can be far larger,
-     and this is stored and sent to every client on the socket. Enough to see
-     what was asked and what came back. */
+     and this is stored and sent to every client on the socket. */
   const CUT = 4000;
   const record = (step: TraceStep) => trace(step);
   const exchange = (step: TraceStep["step"], detail?: string) => {
@@ -104,125 +134,152 @@ export async function generate(
       reply: last?.reply?.slice(0, CUT),
       parsed: last?.parsed,
       ms: last?.ms,
+      mode: last?.mode,
     });
   };
 
-  let proposal: LayoutProposal | null = null;
-  let lastProblems: string[] = [];
-  /* Counted so the terminal state can tell "the model said nothing usable"
-     from "the model could not be reached at all". They look identical from
-     here and mean opposite things to whoever reads the message: one is a
-     theme worth changing, the other is an outage worth reporting. */
   let attempts = 0;
   let threw = 0;
+  let lastProblems: string[] = [];
 
-  for (let attempt = 0; attempt <= maxRepairs; attempt += 1) {
-    report({ step: attempt === 0 ? "words" : "clues", attempt });
+  /* One call, and the thing the model is actually good at. */
+  const askForWords = async (): Promise<Candidate[]> => {
+    report({ step: "words", attempt: 0 });
+    attempts += 1;
     try {
-      proposal = proposal
-        ? await provider.repair(proposal, lastProblems)
-        : await provider.proposeLayout(theme, rows, cols);
-      attempts += 1;
-      exchange(attempt === 0 ? "layout" : "repair");
+      const got = (await provider.propose(theme, limits.maxEntries)).candidates;
+      exchange("words", `${got.length} usable words after cleaning`);
+      return got;
     } catch {
-      /* A provider that throws is a failed attempt, not a failed generation.
-         The next iteration asks again, and running out of iterations is what
-         produces a terminal state, so one flaky call cannot end a request that
-         a retry would have satisfied. */
-      attempts += 1;
       threw += 1;
       record({
         at: Date.now(),
-        step: attempt === 0 ? "layout" : "repair",
+        step: "words",
         detail: "the call to the model failed",
       });
-      proposal = null;
-      lastProblems = [];
-      continue;
+      return [];
     }
+  };
 
-    report({ step: "validating", attempt });
-    const entries = proposal.entries ?? [];
-    if (!entries.length) {
-      /* Ask again rather than asking for a repair. `repair` sends the previous
-         proposal back for correction, and correcting nothing is a wasted call
-         that returns nothing to correct next time either: two of the three
-         attempts were being spent that way whenever the first answer failed to
-         parse, which was often. Clearing it makes the next iteration propose
-         from scratch. */
-      proposal = null;
-      lastProblems = ["the model returned no usable entries"];
+  /* Up to three tries at a whole layout, each repair told exactly what was
+     wrong. Kept because the ADR is right that it is the more interesting
+     claim, and because a model that can do it produces a better grid than the
+     packer will. */
+  const tryLayout = async (): Promise<Outcome | null> => {
+    let proposal: LayoutProposal | null = null;
+
+    for (let attempt = 0; attempt <= maxRepairs; attempt += 1) {
+      report({ step: attempt === 0 ? "words" : "clues", attempt });
+      try {
+        proposal = proposal
+          ? await provider.repair(proposal, lastProblems)
+          : await provider.proposeLayout(theme, rows, cols);
+        attempts += 1;
+        exchange(attempt === 0 ? "layout" : "repair");
+      } catch {
+        /* A provider that throws is a failed attempt, not a failed generation.
+           Only running out of attempts is terminal, so one flaky call cannot
+           end a request a retry would have satisfied. */
+        attempts += 1;
+        threw += 1;
+        record({
+          at: Date.now(),
+          step: attempt === 0 ? "layout" : "repair",
+          detail: "the call to the model failed",
+        });
+        proposal = null;
+        lastProblems = [];
+        continue;
+      }
+
+      report({ step: "validating", attempt });
+      const entries = proposal.entries ?? [];
+      if (!entries.length) {
+        /* Ask again rather than for a repair. Correcting nothing returns
+           nothing to correct, and two of three attempts were going that way. */
+        proposal = null;
+        lastProblems = ["the model returned no usable entries"];
+        record({
+          at: Date.now(),
+          step: "validate",
+          detail: "no entries could be read from the reply",
+          problems: lastProblems,
+        });
+        continue;
+      }
+
+      /* The grid is derived from the entries rather than proposed, so a model
+         cannot contradict its own placements. See cellsFrom. */
+      const cells = cellsFrom(
+        entries,
+        proposal.rows || rows,
+        proposal.cols || cols,
+      );
+      const result = validate(cells, entries, limits);
       record({
         at: Date.now(),
         step: "validate",
-        detail: "no entries could be read from the reply",
-        problems: lastProblems,
+        detail: result.ok
+          ? `${entries.length} entries, all crossings agree`
+          : `${entries.length} entries, ${result.rejections.length} problems`,
+        problems: result.ok ? undefined : problemsFrom(result.rejections),
       });
-      continue;
+      if (result.ok) {
+        return {
+          status: "playable",
+          rows: proposal.rows || rows,
+          cols: proposal.cols || cols,
+          /* Numbered here rather than by the model, and this is the only place
+             the layout path gets numbers at all. */
+          entries: numberEntries(entries),
+        };
+      }
+      lastProblems = problemsFrom(result.rejections);
     }
+    return null;
+  };
 
-    /* The grid is derived from the entries rather than proposed, so a model
-       cannot contradict its own placements. See cellsFrom. */
-    const cells = cellsFrom(
-      entries,
-      proposal.rows || rows,
-      proposal.cols || cols,
-    );
-    const result = validate(cells, entries, limits);
+  /* Two words cannot cross into a puzzle and the packer wants four, so this is
+     the line below which asking is pointless. */
+  const ENOUGH = 4;
+
+  if (!layoutFirst) {
+    const words = await askForWords();
+    if (words.length >= ENOUGH) {
+      report({ step: "packing", attempt: 0 });
+      return { status: "pack", candidates: words, rows, cols };
+    }
     record({
       at: Date.now(),
-      step: "validate",
-      detail: result.ok
-        ? `${entries.length} entries, all crossings agree`
-        : `${entries.length} entries, ${result.rejections.length} problems`,
-      problems: result.ok ? undefined : problemsFrom(result.rejections),
+      step: "words",
+      detail: `only ${words.length} usable words, trying a full layout instead`,
     });
-    if (result.ok) {
-      return {
-        status: "playable",
-        rows: proposal.rows || rows,
-        cols: proposal.cols || cols,
-        /* Numbered here rather than by the model, and this is the only place
-           the layout path gets numbers at all. Without it every entry keeps the
-           zero `readEntries` stamps. */
-        entries: numberEntries(entries),
-      };
+    const laid = await tryLayout();
+    if (laid) return laid;
+    /* Whatever words there were, in case the packer can still do something
+       with them: a smaller puzzle beats no puzzle. */
+    if (words.length >= 2) {
+      return { status: "pack", candidates: words, rows, cols };
     }
-    lastProblems = problemsFrom(result.rejections);
+  } else {
+    const laid = await tryLayout();
+    if (laid) return laid;
+    report({ step: "packing", attempt: maxRepairs + 1 });
+    record({
+      at: Date.now(),
+      step: "words",
+      detail:
+        "the layout could not be repaired, asking for a word list to pack",
+    });
+    const words = await askForWords();
+    if (words.length >= 2) {
+      return { status: "pack", candidates: words, rows, cols };
+    }
   }
 
-  /* Step 4. The model could not lay out a puzzle, so ask it for words only and
-     hand those outward to be packed. A separate call rather than reusing the
-     failed layout's words: a layout that never validated is not evidence its
-     word list was good, and `propose` is the call whose output `clean` is built
-     to filter. */
-  report({ step: "packing", attempt: maxRepairs + 1 });
-  record({
-    at: Date.now(),
-    step: "words",
-    detail: "the layout could not be repaired, asking for a word list to pack",
-  });
-  let candidates: Candidate[] = [];
-  attempts += 1;
-  try {
-    candidates = (await provider.propose(theme, limits.maxEntries)).candidates;
-    exchange("words", `${candidates.length} usable words after cleaning`);
-  } catch {
-    threw += 1;
-    candidates = [];
-  }
-
-  if (candidates.length >= 2) {
-    return { status: "pack", candidates, rows, cols };
-  }
-
-  /* Two words cannot cross each other into a puzzle, and one certainly cannot.
-     Failing here rather than handing an unpackable list outward keeps the
-     terminal state on this side, where the reason is known. */
   /* Every single call failing is not a theme problem, and saying it was sent
      the first real user of this feature away believing they had picked a bad
-     word when the model id was wrong. A message that blames the wrong party is
-     worse than a vague one. */
+     word when the model id was wrong. */
   if (threw === attempts) {
     return {
       status: "failed",
