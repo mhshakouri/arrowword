@@ -1036,6 +1036,30 @@ Checks:
 
 **Why this is worth its own milestone.** The heuristics were the largest source of subtle bugs in generation, and they had a way of being wrong in the same direction twice: the salvage that "rescued broken replies looked in the wrong place" in B3, and then the probe built to evaluate models reproduced three of the same mistakes while measuring them. Code that guesses what a reply meant is code that fails silently and plausibly. A schema replaces guessing with a contract, and a contract that is broken is visible.
 
+#### E2 Clue quality, status: DONE 2026-08-05
+
+Both languages played end to end, and the clues were the weak part: "London's river" at 14 characters, «پرنده کوچک» at 10, nine of twelve Persian clues opening with the theme word, and two clues identical.
+
+**Length moved when the ask changed from characters to form.** "One short sentence under 120 characters" was read as "short", and the cap was ignored because it is a ceiling rather than a target. Adding "aiming for about 60 characters" changed almost nothing, for a reason worth keeping: **a model cannot count characters**, so that is asking for something it has no way to check. What worked was naming a form it can recognise and a unit it can approximately count: "a full sentence of at least eight words, not a label or a noun phrase", plus "describe what the answer is, does, or is known for, the way a dictionary definition would". English went from about 17 characters to about 40, Persian from about 12 to about 30.
+
+**Fixing one formula produces another, so variety has to be asked for directly.** Banning the theme's words took away the model's crutch and it immediately found a new one: a set reading "Longest in Asia", "Longest in Europe", "Longest in United States", "Deepest in world". Every one distinct, so a duplicate check passes them all, and together they are one clue asked four times. The prompt now asks for varied openings and several different kinds of fact, which is what produced "Carves out Grand Canyon rock formations" beside "Considered sacred by Hindu populations".
+
+**Two rules were written, measured, and deleted, and the reasoning generalizes.** Both were attempts to enforce quality in `clean()`:
+
+- **A minimum clue length** rejects a good _word_ because its clue is thin. The word list is what packing runs on, so it trades a whole puzzle for a few characters. It also failed fifteen tests, which is the tell: fixtures are verbatim recordings, and a rule that requires editing them is being imposed on reality rather than read from it.
+- **Rejecting clues that name the theme** works on «پرندگان» and is wrong on "rivers", where "Where a river fans out to meet the sea" is a good clue because DELTA is not itself a river. Whether naming the category is empty depends on whether the answer is an instance of it, which is meaning rather than text.
+
+The rule: **`clean()` enforces what is checkable, the prompt asks for what is a matter of degree.** A rejected clue costs the word with it, so the bar for rejecting has to be "this carries no information", not "this could be better".
+
+**Two rules were kept, because both are checkable and both were real.** A clue repeated verbatim for two answers («پرنده شکاری» for both کبک and عقاب), and a clue naming **another answer in the same puzzle**: MISSOURI clued "Flows into the Mississippi River eventually" with MISSISSIPPI also an answer, so solving one handed over the other. The second needs a pass over the whole set, since no single-answer check can see it, and it drops the offender rather than the pair. The recorded Persian fixture contains the same defect independently, which is what a verbatim recording is for.
+
+**What none of this touches is whether a clue is _true_.** A run produced «شاخبلند» clued "has long horns", offered as a bird. Every mechanical check passes it. That limit was recorded at D2 and stands.
+
+Checks:
+
+- Automated: five tests over the kept rules, each built from output the model really produced
+- Human, done 2026-08-05: both languages read after the change
+
 #### D2 Persian AI generation, status: CODE COMPLETE 2026-08-05, awaiting its human check
 
 Built on E1, because a Persian answer is worth nothing if the reply it arrives in cannot be parsed.
