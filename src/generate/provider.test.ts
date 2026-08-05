@@ -333,6 +333,52 @@ test("prose around the JSON is no longer dug out, because a schema forbids it", 
   );
 });
 
+/* The bug that took generation down in production on 2026-08-05, both
+   languages, every call.
+
+   Under JSON Mode Workers AI returns `response` as the **parsed object**;
+   without it, as a string. The code assumed a string, called `.trim()` on an
+   object, and threw a TypeError on every single call. Cloudflare's JSON Mode
+   documentation shows the object form in its example, which is where this
+   should have been read rather than inferred.
+
+   Every existing test in this file returns a string, which is why 256 of them
+   passed while the live app could not generate anything at all. */
+test("a JSON Mode reply arrives as an object, not a string, and is read", async () => {
+  const ai = {
+    async run() {
+      return {
+        response: {
+          entries: [
+            { dir: "down", row: 1, col: 2, answer: "COT", clue: "A small bed" },
+          ],
+        },
+      };
+    },
+  };
+  const out = await workersAiProvider(ai).proposeLayout("t", 5, 5);
+  assert.equal(out.entries.length, 1);
+  assert.equal(out.entries[0]?.answer, "COT");
+});
+
+test("an object reply reaches the transcript as readable text", async () => {
+  const provider = workersAiProvider({
+    async run() {
+      return {
+        response: { candidates: [{ answer: "OVEN", clue: "It bakes" }] },
+      };
+    },
+  });
+  const out = await provider.propose("kitchen", 4);
+  assert.deepEqual(
+    out.candidates.map((c) => c.answer),
+    ["OVEN"],
+  );
+  /* The trace is shown on a page, so it has to be text whichever shape the
+     model answered in. */
+  assert.match(provider.lastExchange?.()?.reply ?? "", /OVEN/);
+});
+
 test("a schema-shaped reply is read, which is the path that now matters", async () => {
   const ai = {
     async run() {

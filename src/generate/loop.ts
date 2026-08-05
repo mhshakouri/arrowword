@@ -78,6 +78,27 @@ export interface Options {
    rewriting rather than repairing. */
 const MAX_PROBLEMS = 8;
 
+/* What the trace says when a call throws.
+
+   It said "the call to the model failed" and nothing else, which is exactly as
+   useful as it sounds: generation broke in production on 2026-08-05 and the
+   transcript, the one thing built so a person can see why, said only that
+   something had failed four times. Diagnosing it needed `wrangler tail` and a
+   volunteer clicking the button, which is the situation the trace exists to
+   prevent.
+
+   The message is bounded and prefixed rather than dumped: it is vendor text
+   shown to a visitor, so it must be short and must not pretend to be our
+   words. It cannot leak puzzle content, because it is an error from the model
+   host rather than a reply. */
+const MAX_REASON = 200;
+
+function whyItFailed(err: unknown): string {
+  const message = (err instanceof Error ? err.message : String(err)).trim();
+  if (!message) return "the call to the model failed";
+  return `the call to the model failed: ${message.slice(0, MAX_REASON)}`;
+}
+
 export function problemsFrom(rejections: Rejection[]): string[] {
   return rejections.slice(0, MAX_PROBLEMS).map((r) => r.detail);
 }
@@ -150,12 +171,12 @@ export async function generate(
       const got = (await provider.propose(theme, limits.maxEntries)).candidates;
       exchange("words", `${got.length} usable words after cleaning`);
       return got;
-    } catch {
+    } catch (err) {
       threw += 1;
       record({
         at: Date.now(),
         step: "words",
-        detail: "the call to the model failed",
+        detail: whyItFailed(err),
       });
       return [];
     }
@@ -176,7 +197,7 @@ export async function generate(
           : await provider.proposeLayout(theme, rows, cols);
         attempts += 1;
         exchange(attempt === 0 ? "layout" : "repair");
-      } catch {
+      } catch (err) {
         /* A provider that throws is a failed attempt, not a failed generation.
            Only running out of attempts is terminal, so one flaky call cannot
            end a request a retry would have satisfied. */
@@ -185,7 +206,7 @@ export async function generate(
         record({
           at: Date.now(),
           step: attempt === 0 ? "layout" : "repair",
-          detail: "the call to the model failed",
+          detail: whyItFailed(err),
         });
         proposal = null;
         lastProblems = [];

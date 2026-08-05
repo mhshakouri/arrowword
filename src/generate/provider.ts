@@ -255,10 +255,14 @@ export function recordedProvider(
    credential, and section 7 says the measurement ADR-12 asks for comes from a
    script run by hand against the real model rather than from the suite. */
 export interface AiBinding {
+  /* `response` is a **string in plain mode and a parsed object under JSON
+     Mode**, which is not a detail: typing it as `string` and calling a string
+     method on it is what broke generation in production on 2026-08-05. It is
+     `unknown` so the reader has to decide, which is the whole point. */
   run(
     model: string,
     input: Record<string, unknown>,
-  ): Promise<{ response?: string }>;
+  ): Promise<{ response?: unknown }>;
 }
 
 /* The default model. Overridable per deployment with `GENERATION_MODEL`, so
@@ -608,7 +612,7 @@ export function workersAiProvider(
     schema: Record<string, unknown>,
   ): Promise<unknown> => {
     const began = Date.now();
-    const call = async (withSchema: boolean): Promise<string> => {
+    const call = async (withSchema: boolean): Promise<unknown> => {
       const input: Record<string, unknown> = {
         messages: [{ role: "user", content }],
         temperature: TEMPERATURE,
@@ -630,6 +634,28 @@ export function workersAiProvider(
       return result?.response ?? "";
     };
 
+    /* Under JSON Mode `response` is already the parsed document; without it,
+       it is text that has to be parsed. Both arrive here, and conflating them
+       is what took generation down: `extractJson` called `.trim()` on an
+       object, every call threw a TypeError, and the trace said only "the call
+       to the model failed" four times over, in both languages.
+
+       Worth naming precisely, because the harness built to evaluate all this
+       did not catch it. `scripts/probe-worker.ts` reads the same field and
+       coerces a non-string with `JSON.stringify`, so it sailed through the
+       exact case the app died on. **Third time the probe has diverged from the
+       provider and reported the wrong thing**, and the first time the
+       divergence was defensive code the app lacked rather than a missing step.
+       If the probe is ever trusted again, it has to call the provider. */
+    const readReply = (value: unknown): { parsed: unknown; text: string } => {
+      if (typeof value === "string") {
+        return { parsed: extractJson(value), text: value };
+      }
+      /* An object is the schema being honoured, which is the good case. It is
+         stringified only for the transcript, which is text on a page. */
+      return { parsed: value ?? null, text: JSON.stringify(value ?? null) };
+    };
+
     /* The schema is the contract now, not an attempt.
 
        Until 2026-08-05 this tried a schema, fell back to a free-form call on
@@ -649,10 +675,10 @@ export function workersAiProvider(
        reports differently and refunds. Telling somebody their theme was bad
        when the model was down is the exact failure section 12 spent a lesson
        on. */
-    let raw = "";
+    let reply: unknown = "";
     const mode = "schema";
     try {
-      raw = await call(true);
+      reply = await call(true);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       if (!SCHEMA_NOT_MET.test(message)) throw err;
@@ -666,7 +692,7 @@ export function workersAiProvider(
       return null;
     }
 
-    const parsed = extractJson(raw);
+    const { parsed, text: raw } = readReply(reply);
     /* Kept whatever `debug` says. The log is for the operator and this is for
        the person waiting on the puzzle, and only one of them can read a tail. */
     last = {
