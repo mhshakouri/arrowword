@@ -1062,7 +1062,21 @@ Generated puzzles are English only (B3). This milestone would make the theme's l
 - **A reasoning model bills its thinking as output.** Gemma 4's headline rate is 27,273 neurons per million output tokens, a whisker above the 8B and an eighth of the 70B's, which made it the obvious cheap candidate. It never returns an answer here and pays full price for the attempt. **On this task the cheap-looking models are the expensive ones**, and no amount of reading the price list would have shown it.
 - **Verbosity matters as much as rate.** Llama 4 Scout charges 77,273 per million output tokens against the 70B's 204,805, and cost the same per call anyway, because it wrote 461 tokens where the 70B wrote 181.
 
-`llama-3.3-70b-instruct-fp8-fast` is the recommendation for Persian: best content, terse, and within a neuron or two of the only comparable alternative.
+`llama-3.3-70b-instruct-fp8-fast` is the recommendation for Persian: best content, terse, within a neuron or two of the only comparable alternative, and **the only candidate here that supports JSON Mode**, which matters more than the rest put together. See below.
+
+#### JSON Mode, which this project should have been using and cannot
+
+Read from the documentation on 2026-08-05, after too much of the work above was done by experiment where a page would have answered it.
+
+- **`max_tokens` defaults to 256.** That is the documented default on the model pages, and it is the whole reason the app sets it at all. Section 7 recorded the symptom in B3, three layout attempts stopping mid-string, without the number behind it.
+- **Workers AI has a JSON Mode**: `response_format: {type: "json_schema", json_schema: {...}}`, OpenAI-compatible, and the model is then held to the schema. Cloudflare's caveat is that a model which cannot satisfy the schema returns an error rather than prose, and that streaming is unsupported.
+- **The model this app runs on is not on the supported list, and the one recommended for Persian is.** `@cf/meta/llama-3.1-8b-instruct-fp8` is absent, which is exactly the `5025: This model doesn't support JSON Schema` seen in every probe run. `@cf/meta/llama-3.3-70b-instruct-fp8-fast` is on the list.
+
+**Measured with the real crossword prompt and a real schema:** the 70B returns a clean `{"candidates":[...]}` with no prose, no Markdown fence, and nothing to salvage: طاووس/Peacock، عقاب/Eagle، کبک/Partridge، بلبل/Nightingale، شاهین/Falcon، مرغابی/Duck.
+
+**This is the significant finding of the whole investigation, and it is architectural rather than linguistic.** `salvageObjects`, `repairJson`, and most of `extractJson` exist only because the current model cannot be held to a schema. Every one of them is a heuristic guessing at what a model meant, each was written in response to a real malformation, and they are the single largest source of subtle bugs in generation, including three separate wrong verdicts from the probe that was built to evaluate them. **Moving to a model that supports JSON Mode deletes the entire category.** That is worth more than the Persian feature that prompted the question, and it applies to English too.
+
+**The supported-model list is stale, so it is a floor rather than a ceiling.** `gemma-4-26b-a4b-it` is not on it and honours `response_format` correctly anyway, returning valid schema-shaped JSON on a small prompt. Test rather than assume a model is excluded; the list was last revised in April.
 
 #### Why the reasoning models fail here, which is not the reason it first looked like
 
@@ -1080,6 +1094,8 @@ The first reading of the table above was "they return nothing", and that was nev
 | 16000      | —                  | **504 Gateway Time-out at 60s** | —       |
 
 Raising the ceiling does not help, and past about 8k the gateway times out before the model finishes, so no budget both completes and is affordable. Stripping the prompt to its bare bones did not fix it either: the reasoning goes on verifying per-item constraints, counting letters in candidate words and checking each is really a bird, and those constraints are the task.
+
+**Nor does a schema rescue it**, which is the check that makes this conclusion safe rather than another harness artifact. With `response_format` set to the real crossword schema, Gemma 4 still finished on `length` with an empty answer at 2048 **and** at 8192, while the 70B answered cleanly with the same schema and the same prompt. Three independent controls now agree: a trivial prompt proves the model works, a schema proves the output format is not the obstacle, and a larger budget proves it is not merely tight. **Gemma 4 cannot do this particular task**, and that is a statement about the task's per-item verification rather than about the model's Persian, which is good.
 
 **The generalizable point: prompt technique for a reasoning model is the inverse of prompt technique for a small one.** Everything that made prompt E work on the 8B, six explicit constraints and "check each answer twice", is an instruction to deliberate. A reasoning model already does that natively and then does it harder because it was asked. The 8B has to be told to be careful; a reasoning model has to be told to stop. If one of these is ever revisited, start from the shortest prompt that states the output shape and add nothing.
 

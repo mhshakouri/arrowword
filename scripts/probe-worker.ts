@@ -92,6 +92,12 @@ export default {
            reasoning model expensive: thinking is billed as output. */
         shape: typeof response,
         finish: choice?.finish_reason ?? null,
+        /* The whole object, truncated. Extraction has hidden the answer more
+           than once here: a field read under the wrong name, and an empty
+           `content` that turned out to have the tokens somewhere else
+           entirely. When a reply looks empty, the raw object is the only thing
+           that settles what actually came back. */
+        raw: JSON.stringify(out).slice(0, 4000),
         /* The reasoning text itself, not merely its length. "It returned
            nothing" turned out to be "it thought for the whole budget and was
            cut off before answering", and the difference was invisible while
