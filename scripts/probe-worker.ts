@@ -24,6 +24,25 @@ export default {
     if (req.method !== "POST")
       return new Response("POST a prompt", { status: 405 });
 
+    /* `/raw` forwards an `env.AI.run` call verbatim and returns the result
+       **untouched**, including its type. `scripts/live.mjs` uses it as an AI
+       binding for the real provider, so anything this route normalizes is
+       something the harness would hide. The route above deliberately coerces
+       for readability; this one deliberately does not. */
+    if (new URL(req.url).pathname === "/raw") {
+      const { model, input } = (await req.json()) as {
+        model: string;
+        input: Record<string, unknown>;
+      };
+      try {
+        return Response.json({ result: await env.AI.run(model, input) });
+      } catch (err) {
+        return Response.json({
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+
     const body = (await req.json()) as {
       model: string;
       prompt: string;
