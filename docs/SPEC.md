@@ -1,4 +1,4 @@
-# Arrowword Co-op: Aligned Spec (v9)
+# Arrowword Co-op: Aligned Spec (v10)
 
 A cooperative web app for solving Persian arrowword puzzles together, from a photo, on any number of devices, without any OCR.
 
@@ -12,7 +12,9 @@ Changed 2026-08-03 (v8): **players in a session can talk to each other.** The sh
 
 Changed 2026-08-04 (v9): **the project is feature-complete.** C1 passed the check it was built for, a voice clip from a phone in Iran arriving audibly, and C2, live WebRTC, is declined rather than postponed: the network the feature exists for cannot use it, and nothing else needs it. See ADR-15.
 
-**Build status: complete 2026-08-04. v1 (A0 through A5), B1, B3 and C1 are built, deployed, and past their human checks; C2 is declined (ADR-15). No milestone remains.** The demo is playable and survives a dropped connection: letters typed offline are kept and sent when it returns. A puzzle can be made end to end and shared: photo, alignment, tagging, save, link. Deployed at `arrowword.mhshakouri.dev`. See section 12.
+Changed 2026-08-05 (v10): **the app speaks two languages and so do its puzzles.** The UI is Persian and English through a typed dictionary, switchable from every screen (D1, ADR-16), and generation takes a language of its own, because reading the app in Persian and solving in English is a normal thing to want (D2). Underneath, generation moved to a model that supports **JSON Mode**, which deleted the whole salvage layer: the schema is the contract and there is no free-form fallback (E1). Clues are sentences rather than labels (E2).
+
+**Build status: complete 2026-08-05. v1 (A0 through A5), B1, B3, C1, D1, D2, E1 and E2 are built, deployed, and past their human checks; C2 is declined (ADR-15). No milestone remains.** The demo is playable and survives a dropped connection: letters typed offline are kept and sent when it returns. A puzzle can be made end to end and shared: photo, alignment, tagging, save, link, or generated from a theme in either language. Deployed at `arrowword.mhshakouri.dev`. See section 12.
 
 ---
 
@@ -997,7 +999,7 @@ Checks:
 
 Scheduled 2026-08-05 (ADR-16), the first work after the 2026-08-04 close-out. One milestone.
 
-#### D1 Bilingual UI, Persian and English, status: CODE COMPLETE 2026-08-05, awaiting the human check
+#### D1 Bilingual UI, Persian and English, status: DONE 2026-08-05
 
 Every visitor-facing sentence in the app exists in both languages, switchable from any screen, chosen automatically on first visit from the browser's language and remembered in `localStorage`. There are no accounts, so the choice is per browser, like everything else here.
 
@@ -1011,7 +1013,16 @@ Every visitor-facing sentence in the app exists in both languages, switchable fr
 Checks:
 
 - Automated: the compiler (key parity and argument types), plus `src/ui/i18n/i18n.test.ts` in `npm run test:unit`: no empty leaf, every `fa` string differs from its `en` counterpart, and no Latin digit appears in Persian prose
-- Human, outstanding: **Hossein reads every screen in Persian in an RTL window**, including the B3 failure states, whose English was tuned word by word and whose Persian deserves the same. The draft is Claude's; the taste call is his
+- Human, done 2026-08-05: **Hossein read every screen in Persian.** Four corrections, and they share a shape worth writing down rather than filing as taste, because the next Persian draft will be Claude's too:
+
+| drafted              | corrected to                            | why                                                                                                                             |
+| -------------------- | --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| «نوشتن از روی موضوع» | «ایجاد جدول جدید با موضوع مورد نظر شما» | name the object being created                                                                                                   |
+| «ساختن از روی عکس»   | «ایجاد جدول جدید از روی عکس»            | same                                                                                                                            |
+| «شبکه» for the grid  | «جدول»                                  | the literal translation of "grid" reads as a network; «جدول» is the word for this kind of puzzle, and for the puzzle as a whole |
+| «شل» for a weak clue | «ضعیف»                                  | off-register in spoken Persian                                                                                                  |
+
+**The register: plain, explicit, ordinary product Persian.** Claude's drafts skew compact and literal-from-English; every correction was longer, plainer, and used the domain's own word. Prefer saying what a control does over gesturing at it, even at the cost of length. Two of these shipped in the same session as the read-through, in PRs #46 and the two before it.
 
 **Security pass.** D1 adds no endpoint, no message, no stored server field. The dictionary is bundled text; the one new persisted value is `arrowword:lang` in `localStorage`, which holds one of two constants and is validated on read. Model output and user text render exactly as before, as text, never as HTML.
 
@@ -1019,7 +1030,7 @@ Checks:
 
 Scheduled 2026-08-05. The D2 investigation set out to answer "can this model write Persian" and turned up something larger and unrelated to language, so it is its own milestone rather than a footnote to D2.
 
-#### E1 JSON Mode, and the model that supports it, status: CODE COMPLETE 2026-08-05
+#### E1 JSON Mode, and the model that supports it, status: DONE 2026-08-05, after breaking production first
 
 **Generation moves to `llama-3.3-70b-instruct-fp8-fast` and the schema becomes the contract.** English only; D2 adds Persian on top.
 
@@ -1032,7 +1043,21 @@ Scheduled 2026-08-05. The D2 investigation set out to answer "can this model wri
 Checks:
 
 - Automated: `npm run test:unit` and `npm run test:generate`. Seven tests changed and their old assertions are recorded in the diff, because several now assert the **opposite** of what they did: a bare array, an `{across,down}` split, prose around the JSON, a truncated document and the migrated colon all used to be rescued and must now yield nothing. Two new tests cover the schema-refusal path and that it is recorded as `schema-refused` rather than as an outage
-- Human, outstanding: one English puzzle generated against the real model and solved end to end, which is the only check that exercises the live schema
+- Human, done 2026-08-05: one English puzzle generated against the real model and solved end to end, which is the only check that exercises the live schema. **It failed the first time**, see below
+
+**E1 broke generation on the live site the moment it deployed, in both languages, for every theme.** Worth its own record because the suite was green, the review was clean, and it still shipped.
+
+**The fault: Workers AI returns `response` as a parsed object under JSON Mode, and as a string without it.** The code assumed a string, `extractJson` called `.trim()` on an object, and every call threw a `TypeError`. The loop counted four failed attempts and told the visitor their theme did not work out. **Cloudflare's JSON Mode page shows the object form in its own example**, which is where this should have been read rather than inferred from the one mode that happened to get tested.
+
+`AiBinding.response` is `unknown` now, so a reader has to decide what it is, and `readReply` handles both shapes: a string is parsed, an object already **is** the document and is stringified only for the transcript.
+
+**Why the tests missed it.** Every test in `provider.test.ts` returned a string, so 256 of them passed while the live app could not generate anything at all. Two tests now return an object.
+
+**Why the probe missed it, which is the part that generalizes.** `scripts/probe-worker.ts` reads the same field and coerces a non-string with `JSON.stringify`. That is **defensive code the app did not have**, so the harness sailed through the exact payload the app died on. It was the fourth time the probe had diverged from `provider.ts` and reported the wrong thing, and the first time the divergence _hid_ a failure rather than mismeasuring one. A harness that is more robust than the app is worse than one that is merely wrong.
+
+**The answer is `npm run probe:live`**, which reimplements nothing: it imports the real `workersAiProvider` and the real `generate` loop and shims only the AI binding, forwarding to the throwaway worker over a `/raw` route that returns the vendor's result untouched. If it passes, the code that ran is the code that ships. **Any change to the generation path runs it before merging**, and this milestone is why.
+
+**The trace was no help either.** It said "the call to the model failed" four times and nothing else, so diagnosing this needed `wrangler tail` and somebody clicking the button. The transcript exists precisely so a person can see why; it carries the model's message now, bounded to 200 characters.
 
 **Why this is worth its own milestone.** The heuristics were the largest source of subtle bugs in generation, and they had a way of being wrong in the same direction twice: the salvage that "rescued broken replies looked in the wrong place" in B3, and then the probe built to evaluate models reproduced three of the same mistakes while measuring them. Code that guesses what a reply meant is code that fails silently and plausibly. A schema replaces guessing with a contract, and a contract that is broken is visible.
 
@@ -1060,7 +1085,7 @@ Checks:
 - Automated: five tests over the kept rules, each built from output the model really produced
 - Human, done 2026-08-05: both languages read after the change
 
-#### D2 Persian AI generation, status: CODE COMPLETE 2026-08-05, awaiting its human check
+#### D2 Persian AI generation, status: DONE 2026-08-05
 
 Built on E1, because a Persian answer is worth nothing if the reply it arrives in cannot be parsed.
 
@@ -1074,7 +1099,7 @@ Built on E1, because a Persian answer is worth nothing if the reply it arrives i
 Checks:
 
 - Automated: `npm run test:unit`, with `persian.test.ts` covering the fold groups, the trust boundary, and the recorded Persian fixture; plus the full suite unchanged
-- Human, outstanding: **one Persian puzzle generated against the real model and solved end to end.** Fixtures prove the plumbing; only a real call proves the model, and section 12 has three lessons about that distinction
+- Human, done 2026-08-05: **one Persian puzzle generated against the real model and solved end to end**, alongside an English one. Fixtures proved the plumbing and only the real call proved the model, exactly as section 12's three lessons predicted: the first attempt failed on the E1 defect above, and both languages passed once it was fixed. The clues were the weak part of that first playthrough, which is E2
 
 **The bug that fixtures found and unit tests could not.** The first Persian run against recorded fixtures failed with "the model returned no usable entries". Nothing was wrong with the fixtures or the pipeline: `recordedProvider` called `clean()` without a language, defaulted to English, and rejected every Persian answer for not being A to Z. It was invisible to the unit tests because they call `clean` directly with a language, and invisible to the acceptance suite because every other fixture is English. **A default argument is a decision that hides**, and the two places that had one, `clean` and the recorded provider, are exactly where this went wrong.
 
@@ -1141,7 +1166,13 @@ Read from the documentation on 2026-08-05, after too much of the work above was 
 
 **This is the significant finding of the whole investigation, and it is architectural rather than linguistic.** `salvageObjects`, `repairJson`, and most of `extractJson` exist only because the current model cannot be held to a schema. Every one of them is a heuristic guessing at what a model meant, each was written in response to a real malformation, and they are the single largest source of subtle bugs in generation, including three separate wrong verdicts from the probe that was built to evaluate them. **Moving to a model that supports JSON Mode deletes the entire category.** That is worth more than the Persian feature that prompted the question, and it applies to English too.
 
-**The supported-model list is stale, so it is a floor rather than a ceiling.** `gemma-4-26b-a4b-it` is not on it and honours `response_format` correctly anyway, returning valid schema-shaped JSON on a small prompt. Test rather than assume a model is excluded; the list was last revised in April.
+**The supported-model list is stale in both directions, so it is neither a floor nor a ceiling.** Checked model by model on 2026-08-05:
+
+- **It omits models that work.** `gemma-4-26b-a4b-it` is absent and honours `response_format` correctly anyway, returning valid schema-shaped JSON on a small prompt.
+- **It lists models that no longer exist.** `@cf/meta/llama-3.1-8b-instruct`, the plain one, is on the page and absent from `wrangler ai models list`; calling it returns **error 1031**. It had looked like the cheap way to keep English on an 8B _and_ get JSON Mode, and it is simply gone.
+- **One of them needs a licence accepted on the account.** `@cf/meta/llama-3.2-11b-vision-instruct` answers **5016**, asking for the Meta community licence to be agreed by submitting the prompt `agree`. That is a decision for Hossein rather than something to route around, and it is why the option was left open rather than taken.
+
+What that leaves is one model this app can actually use with JSON Mode, which is why E1 is a switch rather than a choice. **Test rather than trust the list**, in either direction.
 
 #### Why the reasoning models fail here, which is not the reason it first looked like
 
@@ -1170,13 +1201,16 @@ Raising the ceiling does not help, and past about 8k the gateway times out befor
 
 **That was superseded the same day, and by a different argument.** Reading the documentation turned up JSON Mode: the 8B cannot be held to a schema at all and the 70B can, which is worth more than the neuron difference because it deletes the salvage layer for **both** languages. One model now serves both. See E1.
 
-**The probe was wrong three times, always in the same way, and this is the lesson worth keeping.** Each time it diverged from what `provider.ts` actually does, it reported on itself rather than on the model:
+**The probe was wrong four times in one day, always in the same way, and this is the lesson worth keeping.** Each time it diverged from what `provider.ts` actually does, it reported on itself rather than on the model:
 
 1. It salvaged loose objects without parsing the document first, so a **complete** reply was swallowed by its own outer brace and scored zero while a **truncated** one scored well. It was rewarding malformed JSON.
 2. It skipped `repairJson`, so the model's one repeatable malformation, the colon migrating inside a key's closing quote, destroyed candidates that production repairs and keeps.
 3. It called `JSON.parse` on the whole reply instead of `extractJson`, so "Here are 8 crossword clues:" and a Markdown fence hid eight perfectly good English candidates, and the incumbent model was measured at zero.
+4. It coerced a non-string reply with `JSON.stringify`, which the app did not, so it passed on the exact payload that took production down. See E1.
 
-The third one nearly became evidence in a decision to spend five times the neurons. **A harness that judges a model has to run the model's real code path, or it measures the harness.** The same applies to any future comparison in this project.
+A fifth, of the same family and about the probe's own options rather than its parsing: `PROBE_VARIANTS=E` matched on `startsWith`, so it also selected `EN`, and a whole sweep of candidate Persian models silently ran the **English** prompt and had its English answers rejected for not being Persian. And `max_tokens` sat at 1024 while the app uses 2048, so the first sweep measured a truncation the probe had invented.
+
+The third nearly became evidence in a decision to spend five times the neurons. The fourth reached production. **A harness that judges a model has to run the model's real code path, or it measures the harness**, and the fourth adds the sharper form: a harness that is _more robust_ than the app is worse than one that is merely wrong, because it hides the failure instead of mismeasuring it. `npm run probe:live` exists so the option is available; `npm run probe` remains fine for comparing prompts and models, where it never touches the app's shipped path anyway.
 
 Both questions this investigation left open were answered on 2026-08-05 and D2 is built on the answers: ة folds to ه always, and the model moves to the 70B for both languages rather than per language, because JSON Mode turned out to matter more than the neuron difference. See E1.
 
@@ -1329,9 +1363,16 @@ The Human line in section 12.
 
 Hossein reviews every diff. Claude proposes an approach before large multi-file changes and explains non-obvious decisions briefly.
 
-### Still owed by a person, as of 2026-08-04: nothing
+### Still owed by a person, as of 2026-08-05: nothing
 
-The three items this section carried were all closed on 2026-08-04, in one sitting. Recorded here rather than deleted, because how each closed is the information.
+**The D and E series closed their checks on 2026-08-05**, and each one found something a test could not:
+
+- **D1**, the Persian read-through. Four corrections, all in the same direction, now recorded as a register in D1's entry rather than as four one-off edits.
+- **E1**, one English puzzle generated for real. **It failed**, which is the point of the check: the object-versus-string reply took the whole feature down and no automated check could have seen it. `npm run probe:live` exists because of it.
+- **D2**, one Persian puzzle generated and solved. Passed once E1 was fixed.
+- **E2**, both languages read after the clue rewrite. The clues were what the first playthrough exposed.
+
+The three items below were closed on 2026-08-04, in one sitting. Recorded rather than deleted, because how each closed is the information.
 
 1. **The voice clip from Iran arrived and was audible.** C1's gate, and the reason the whole C series exists, passed on the network it was built for. This was the last human check any shipped milestone was waiting on.
 2. **iOS Safari closed as not testable, not as tested.** No phone running iOS Safari is reachable, so the `AudioContext` suspension fix stays unverified in the only case it exists for. Accepted as a standing limitation rather than carried as debt; the C1 milestone entry says where to look first if voice ever misbehaves on an iPhone.

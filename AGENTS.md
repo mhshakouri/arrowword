@@ -10,21 +10,30 @@ Parent project: the personal website, `github.com/mhshakouri/mhshakouri.dev`,
 local path `../mhshakouri`. It links to this project and describes it; it never
 hosts it. Design tokens are copied from there, never imported.
 
-**State: v2 closed out 2026-08-04; D1, the bilingual UI, is code complete as
-of 2026-08-05 and awaits its human check.** v1, B1, B3 and C1 are built,
-deployed, and past their human checks. C2, live WebRTC voice, is declined
-rather than postponed (ADR-15); building it needs a new decision record. The
-UI speaks Persian and English through a typed dictionary (ADR-16), switchable
-from every screen; the outstanding human check is a native read-through of the
-Persian copy.
+**State: complete as of 2026-08-05, spec v10.** v1, B1, B3, C1, D1, D2, E1 and
+E2 are built, deployed, and past their human checks. C2, live WebRTC voice, is
+declined rather than postponed (ADR-15); building it needs a new decision
+record. Nothing is owed by a person and no milestone remains.
+
+Three ways in, all working end to end: clone the demo, make a puzzle from a
+photo through alignment, tagging, save, and share link, or generate one from a
+theme **in Persian or English**. The UI speaks both through a typed dictionary
+(ADR-16) and the puzzle's language is chosen separately from the reader's.
+
+**Two things to know before touching generation.** The model must support JSON
+Mode, because the schema is the contract and the salvage layer is gone (E1); and
+**`npm run probe:live` before merging**, because E1 shipped green tests, a clean
+review, and a completely broken feature. Spec section 12 has both stories.
 
 C1 passed the check it exists for on 2026-08-04: a voice clip from a phone in
 Iran arrived audibly. The one accepted gap is **iOS Safari, closed as not
 testable rather than as tested**; if voice ever misbehaves on an iPhone, the
-`AudioContext` resume path is the first suspect. Three ways in, all working end
-to end: clone the demo from the landing page, make a puzzle from a photo
-through alignment, tagging, save, and share link, or generate a crossword from
-a theme. See spec section 12.
+`AudioContext` resume path is the first suspect.
+
+**Persian copy is drafted by Claude and corrected by Hossein**, and the register
+is recorded in D1's milestone entry: plain, explicit, ordinary product Persian.
+Drafts skew compact and literal-from-English; every correction so far was
+longer, plainer, and used the domain's own word («جدول», not «شبکه»).
 
 Voice is push to talk over the session WebSocket, and that is deliberate: on
 the network this feature exists for, WhatsApp and Telegram are unreachable, so
@@ -58,14 +67,31 @@ limits are load-bearing rather than nice to have.
 - `npm run dev:ui` - Vite with hot reload, proxying the API to :8787. Run both
 - `npm run build` - the UI into `dist/`, which the worker serves as assets
 - `npm run typecheck` - two configs: the worker has no DOM, the UI has no Workers
-- `npm test` - the CI suite: unit, acceptance, photo cap, expiry, generation. 360 checks
-- `npm run test:all` - the above plus the template run. 375 checks
+- `npm test` - the CI suite: unit, acceptance, photo cap, expiry, generation. 368 checks
+- `npm run test:all` - the above plus the template run. 383 checks
 - `npm run deploy` - deploy by hand. Normally a merge to `main` does it
-- `npm run probe` - put prompts in front of the **real** model and report what
-  came back, judged by the real modules. Needs `wrangler login` and spends
-  neurons, so it is local only and never in CI. `PROBE_MODEL`, `PROBE_VARIANTS`,
-  `PROBE_THEMES` and `PROBE_DUMP` narrow a run. This is the by-hand measurement
-  script ADR-12 asks for, and it reports neurons per call
+
+Three scripts talk to the **real** model. All need `wrangler login`, all spend
+neurons, none is ever in CI. **`wrangler dev` without `--local` is what reaches
+the real model**, using the OAuth session that login created; cloudflared has
+nothing to do with it and is the wrong tool, being a tunnel that points the
+other way.
+
+- `npm run probe:live` - **run this before merging anything on the generation
+  path.** One real generation through the real `workersAiProvider` and the real
+  `generate` loop, shimming only the AI binding. It exists because `npm run
+probe` passed while production was down: see E1 in spec section 12.
+  `PROBE_LANG=fa` and `PROBE_THEMES` pick the run
+- `npm run probe` - put prompts in front of the model and report what came
+  back. Good for comparing prompts and models, where it never touches the
+  app's shipped path; it is **not** a check that the app works. `PROBE_MODEL`,
+  `PROBE_VARIANTS`, `PROBE_THEMES`, `PROBE_LANG`, `PROBE_SCHEMA`,
+  `PROBE_MAXTOK` and `PROBE_DUMP` narrow a run, and it reports neurons per
+  call, which is the measurement ADR-12 asks for
+- `npm run probe:reasoning` - prints a reasoning model's thinking rather than
+  counting it, and tries the documented ways to reduce it. Written because
+  "these models return nothing" was not a credible finding and turned out to be
+  wrong
 - `npm run format` / `format:check` - Prettier
 
 Each test file starts and stops its own `wrangler dev`, so they need no setup and
