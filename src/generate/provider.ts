@@ -582,18 +582,25 @@ export function workersAiProvider(
     required: ["candidates"],
   };
 
-  /* Workers AI supports `response_format` with a JSON schema, which would end
-     the "returned no usable entries" path outright.
+  /* Two different errors wear the word "schema", and treating them alike would
+     repeat the mistake section 12 already has a lesson about: telling somebody
+     their theme was bad when the fault was ours.
 
-     Attempted rather than relied on, for two reasons: the supported-model list
-     varies and Gemma 4 is not confirmed on it, and Cloudflare's own
-     documentation says a model that cannot satisfy a schema **returns an
-     error**. An error here would land in the loop's throw path and be reported
-     as the service being unreachable, which would be a lie about an outage.
+     - **"JSON Mode couldn't be met"** is Cloudflare's documented answer when a
+       model that *can* do JSON Mode could not satisfy this particular schema
+       for this particular prompt. That is a failed attempt against the theme,
+       the loop retries, and the visitor is told the truth.
+     - **"5025: This model doesn't support JSON Schema"** is a misconfiguration.
+       It does not depend on the theme, it will fail every request identically,
+       and reporting it as a theme problem would send every visitor away
+       rewording a theme that was never the issue. It is thrown, so the loop
+       reports it as the service being unreachable and refunds the attempt.
 
-     So a schema failure falls back to a plain call within the same attempt.
-     Where it works we stop losing attempts to malformed JSON; where it does
-     not, we are exactly where we were. */
+     Anything unrecognised is thrown too. An unknown error is likelier to be an
+     outage than a comment on somebody's theme, and that is the safer side to
+     be wrong on. */
+  const SCHEMA_NOT_MET =
+    /json mode.*(could ?n[o']?t|cannot|failed)|schema.*not (met|satisfied)/i;
   let last: Exchange | null = null;
 
   const ask = async (
@@ -648,7 +655,7 @@ export function workersAiProvider(
       raw = await call(true);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      if (!/json mode|json schema|schema/i.test(message)) throw err;
+      if (!SCHEMA_NOT_MET.test(message)) throw err;
       last = {
         prompt: content,
         reply: "",

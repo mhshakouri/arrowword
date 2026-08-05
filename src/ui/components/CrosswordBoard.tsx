@@ -118,10 +118,16 @@ export function CrosswordBoard({
       <input
         ref={captureRef}
         class="capture"
+        /* `inset-inline-start`, not `left`. The grid mirrors in Persian, so a
+           physical `left` puts this at the mirror image of the selected square
+           and a browser scrolling the focused field into view scrolls to the
+           wrong side of the board. The logical property follows `dir` above.
+           A5 added this positioning precisely so focusing the field does not
+           jump the page away from where the player is. */
         style={
           selected
-            ? `left:${(selected.col / cols) * 100}%;top:${(selected.row / rows) * 100}%`
-            : "left:0;top:0"
+            ? `inset-inline-start:${(selected.col / cols) * 100}%;top:${(selected.row / rows) * 100}%`
+            : "inset-inline-start:0;top:0"
         }
         type="text"
         inputMode="text"

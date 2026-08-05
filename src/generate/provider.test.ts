@@ -413,6 +413,32 @@ test("a schema rejection is a failed attempt, not a retry without the schema", a
 /* The distinction that matters, and the one section 12 spent a lesson on:
    telling somebody their theme was bad when the model was down. A schema
    refusal is the theme's problem; anything else is an outage. */
+/* The distinction the regex has to get right, and the reason it is not simply
+   /schema/i: 5025 is a misconfiguration that fails every theme identically, so
+   reporting it as the theme's problem would send every visitor away rewording
+   something that was never the issue. */
+test("a model that cannot do JSON Mode at all is an outage, not a bad theme", async () => {
+  const ai = {
+    async run() {
+      throw new Error("5025: This model doesn't support JSON Schema");
+    },
+  };
+  await assert.rejects(
+    () => workersAiProvider(ai).proposeLayout("t", 5, 5),
+    /5025/,
+    "a misconfigured model must throw, so the loop calls it unreachable",
+  );
+});
+
+test("an unrecognised error is an outage too, which is the safer default", async () => {
+  const ai = {
+    async run() {
+      throw new Error("connection reset");
+    },
+  };
+  await assert.rejects(() => workersAiProvider(ai).proposeLayout("t", 5, 5));
+});
+
 test("a schema refusal is recorded as such, so the trace can tell them apart", async () => {
   const provider = workersAiProvider({
     async run() {
