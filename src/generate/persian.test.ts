@@ -175,10 +175,21 @@ test("the recorded Persian fixture survives cleaning the way it should", async (
     "a two-word answer cannot go in a run of squares",
   );
 
+  /* Dropped by the cross-answer rule, and this is the fixture earning its
+     keep. «عقاب» is clued «پرنده‌ای شکاری و بزرگ» while «شکاری» is itself an
+     answer in the same set, so solving one hands over the other. The model
+     really did this, here and again on an English "rivers" run where MISSOURI
+     was clued "Flows into the Mississippi River eventually" beside
+     MISSISSIPPI. */
+  assert.ok(
+    !answers.includes("عقاب"),
+    "a clue naming another answer must be dropped",
+  );
+
   /* Everything that survives is a placeable Persian word. */
   for (const a of answers) {
     assert.ok(isPersianAnswer(a), `${a} is not placeable`);
     assert.ok(persianLength(a) >= 3 && persianLength(a) <= 11);
   }
-  assert.equal(answers.length, 8);
+  assert.equal(answers.length, 7);
 });

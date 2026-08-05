@@ -686,3 +686,72 @@ test("a reply that is only prose still yields nothing rather than throwing", asy
   ).proposeLayout("t", 11, 11);
   assert.deepEqual(out.entries, []);
 });
+
+/* ---- Clue quality, added 2026-08-05 after playing a real generated puzzle ----
+
+   Each of these is a defect seen in real output rather than an invented case,
+   and each is a rule about information rather than taste: none of them is
+   "this clue could be better", all of them are "this clue tells you nothing,
+   or tells you something it should not". */
+
+test("two answers cannot share a clue", () => {
+  /* «پرنده شکاری» arrived for both کبک and عقاب in the first real Persian
+     puzzle. Distinct answers, one question, which reads as a mistake. */
+  const out = clean({
+    theme: "night",
+    candidates: [
+      { answer: "OWL", clue: "It hunts small animals after dark" },
+      { answer: "HAWK", clue: "It hunts small animals after dark" },
+    ],
+  });
+  assert.deepEqual(answers(out), ["OWL"]);
+});
+
+/* A clue naming the theme's own category is weak, and the prompt asks against
+   it, but it is deliberately **not** rejected here. This pins the decision
+   rather than the behaviour, because the rejecting version was written, was
+   measured, and cost good clues.
+
+   "Where a river fans out to meet the sea" names the theme on a puzzle about
+   rivers and is a perfectly good clue, because DELTA is not itself a river.
+   Whether naming the category is empty depends on whether the answer is an
+   instance of it, which is meaning rather than text, and no stem match can
+   tell those apart. Enforcing it threw away words, and words are what packing
+   runs on. */
+test("a clue naming the theme is kept, because the code cannot judge it", () => {
+  const out = clean({
+    theme: "rivers",
+    candidates: [
+      { answer: "DELTA", clue: "Where a river fans out to meet the sea" },
+    ],
+  });
+  assert.deepEqual(answers(out), ["DELTA"]);
+});
+
+test("a clue naming another answer in the same puzzle is dropped", () => {
+  /* Real output on a "rivers" run: MISSOURI clued "Flows into the Mississippi
+     River eventually", with MISSISSIPPI also an answer. Solving one hands over
+     the other, and no single-answer check can see it. */
+  const out = clean({
+    theme: "waterways",
+    candidates: [
+      { answer: "MISSISSIPPI", clue: "It flows south past New Orleans" },
+      { answer: "MISSOURI", clue: "It joins the MISSISSIPPI near St Louis" },
+      { answer: "DELTA", clue: "Where a channel fans out at its end" },
+    ],
+  });
+  assert.deepEqual(answers(out), ["MISSISSIPPI", "DELTA"]);
+});
+
+test("the cross-answer rule drops the offender, not its victim", () => {
+  /* Losing one word is affordable at about twelve returned and eight needed;
+     losing both would punish the answer that did nothing wrong. */
+  const out = clean({
+    theme: "waterways",
+    candidates: [
+      { answer: "MISSOURI", clue: "It joins the MISSISSIPPI near St Louis" },
+      { answer: "MISSISSIPPI", clue: "It flows south past New Orleans" },
+    ],
+  });
+  assert.deepEqual(answers(out), ["MISSISSIPPI"]);
+});

@@ -105,7 +105,25 @@ const ANSWER = /^[A-Z]+$/;
 
 /* Section 7 caps a clue at 120 characters. Model output is untrusted text and
    is sanitized on write like any other displayed string (invariant 8), which
-   happens where it is stored; here it is only bounded. */
+   happens where it is stored; here it is only bounded.
+
+   **Length is a target stated in the prompt and not a rule enforced here**,
+   and that distinction was worth getting wrong once to see. The prompt used to
+   say "one short sentence under 120 characters" and the model heard "short":
+   what shipped was "London's river" at 14 characters and «پرنده کوچک» at 10.
+   A cap is not a target.
+
+   The obvious fix, rejecting short clues in `clean`, is the wrong remedy for
+   the wrong problem. It throws away a perfectly good **word** because its
+   clue is thin, and the word list is what packing runs on, so it trades a
+   whole puzzle for a few characters. It also failed fifteen tests, which is
+   the tell: fixtures are verbatim recordings, and a rule that requires
+   editing them is a rule being imposed on reality rather than read from it.
+
+   Duplicates and cross-answer giveaways are different and *are*
+   enforced below, because neither is a degree of quality: a clue
+   repeated verbatim, or one naming another
+   answer in the same puzzle, carries no information or gives the game away. */
 const MAX_CLUE = 120;
 
 /* True when the clue contains the answer as a whole word. Answers are A to Z
@@ -163,6 +181,11 @@ export const RULES: Record<"en" | "fa", LangRules> = {
 export function clean(raw: Proposal, lang: "en" | "fa" = "en"): Proposal {
   const rules = RULES[lang];
   const seen = new Set<string>();
+  /* Clue text, not answers. Two entries sharing a clue is a puzzle with two
+     identical questions and two different right answers, which is worse than
+     either being terse: «پرنده شکاری» arrived for both کبک and عقاب in the
+     first real Persian puzzle. */
+  const clues = new Set<string>();
   const candidates: Candidate[] = [];
 
   for (const candidate of raw.candidates ?? []) {
@@ -175,6 +198,28 @@ export function clean(raw: Proposal, lang: "en" | "fa" = "en"): Proposal {
     const len = rules.length(answer);
     if (len < MIN_ANSWER || len > MAX_ANSWER) continue;
     if (!clue || clue.length > MAX_CLUE) continue;
+    if (clues.has(clue)) continue;
+    /* A clue built from the theme's own words says nothing, because **every**
+       answer in the puzzle is one of those. Nine of the twelve clues in the
+       first real Persian puzzle opened with «پرنده» on a theme of «پرندگان»,
+       which made them near-interchangeable and is why this rule exists.
+
+       Only words of four characters or more, so "the" and "of" in a theme like
+       "the kitchen" cannot reject everything, and matched with the same
+       per-language boundary as the answer rule. */
+    /* No theme-word rule here, and that is a decision rather than an omission.
+
+       A version of this rejected any clue sharing a four-character stem with
+       the theme, to stop «پرندگان» producing twelve clues that all opened
+       «پرنده‌ای». It worked, and it also rejected "Where a river fans out to
+       meet the sea" on a theme of rivers, which is a **good** clue: DELTA is
+       not itself a river, so naming one is informative rather than empty.
+
+       The rule cannot tell those apart, because the difference is whether the
+       answer is an instance of the theme or merely related to it, and that is
+       meaning rather than text. Enforcing it costs good words, and words are
+       what packing runs on. It is stated in the prompt instead, where being
+       ignored costs nothing. Same reasoning as clue length above. */
     /* A duplicated answer would produce two entries with the same solution and
        a puzzle that reads as a mistake even when it validates. */
     if (seen.has(answer)) continue;
@@ -194,10 +239,29 @@ export function clean(raw: Proposal, lang: "en" | "fa" = "en"): Proposal {
     if (rules.givesItAway(clue, answer)) continue;
 
     seen.add(answer);
+    clues.add(clue);
     candidates.push({ answer, clue });
   }
 
-  return { theme: String(raw.theme ?? ""), candidates };
+  /* A second pass, because this rule needs the whole set.
+
+     A clue must not name **another** answer in the same puzzle. Seen on a real
+     "rivers" generation: MISSOURI was clued "Flows into the Mississippi River
+     eventually" while MISSISSIPPI was itself an answer, so solving one handed
+     over the other. The single-answer rule above cannot see this, since the
+     other answer is not known when its neighbour is being checked.
+
+     The offender is dropped rather than the pair, and losing a word is
+     affordable: a run returns about twelve and packing wants eight. */
+  const placed = candidates.map((c) => c.answer);
+  const kept = candidates.filter(
+    (c) =>
+      !placed.some(
+        (other) => other !== c.answer && rules.givesItAway(c.clue, other),
+      ),
+  );
+
+  return { theme: String(raw.theme ?? ""), candidates: kept };
 }
 
 /* Replays recorded proposals in order, then repeats the last one forever.
@@ -318,6 +382,57 @@ export const GENERATION_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
    to a model; `persian.ts` owns the authoritative set. */
 const FA_LETTERS = "ابپتثجچحخدذرزژسشصضطظعغفقکگلمنوهی";
 
+/* What a clue has to be, in both prompts, so the two paths cannot drift.
+
+   **Rewritten 2026-08-05 after playing a real puzzle.** The rule used to read
+   "one short sentence under 120 characters and must not contain its answer",
+   and the model heard "short": clues came back at 10 to 20 characters, nine of
+   twelve Persian ones opened with the theme word «پرنده», and two were
+   identical. Three changes, each aimed at one of those:
+
+   - **A range, not a ceiling.** "Under 120" is not a target and was read as
+     permission to write two words. A floor is what moves the output.
+   - **"Identifies your answer and no other."** This is the actual job of a
+     clue, and stating it beats any number of adjectives about quality.
+   - **The theme's own words are banned**, because every answer belongs to the
+     theme, so naming it carries no information. This is the same argument as
+     not putting the answer in its own clue.
+
+   Input tokens cost about an eighth of output on this model, so these lines
+   are nearly free; the clue they buy is not. */
+const clueRuleFor = (lang: "en" | "fa", theme: string): string[] => [
+  `Each clue must:`,
+  /* A count of **words**, not characters, and a named form.
+
+     "Aiming for about 60 characters" was measured and did almost nothing: a
+     model cannot count characters, so it is being asked for something it has
+     no way to check. Clue length moved when the ask changed to a form it can
+     recognise, a full sentence, and a unit it can approximately count. */
+  `- be a full sentence of at least eight words, not a label or a noun phrase`,
+  `- describe what the answer is, does, or is known for, the way a dictionary`,
+  `  definition would, so the answer is guessable from the clue alone`,
+  `- identify your answer and no other word`,
+  /* Spelled out rather than implied, because the code rejects these and a
+     rejected clue costs the word with it. Naming the category is the failure
+     the model reaches for first: on «پرندگان» every clue opened «پرنده‌ای». */
+  `- not contain the answer`,
+  `- never name the category "${theme}" or any word built from it: every answer`,
+  `  is one of those, so saying it tells the solver nothing`,
+  ...(lang === "fa"
+    ? [`- be written in Persian script only: no English and no other script`]
+    : []),
+  `- stay under ${MAX_CLUE} characters`,
+  /* Variety of **form**, not merely of text, and this line was earned.
+     Banning the theme's words took away the model's crutch and it promptly
+     found another: a set of clues reading "Longest in Asia", "Longest in
+     Europe", "Longest in United States", "Deepest in world". Each was
+     distinct, so a duplicate check passes them all, and together they are one
+     clue asked four times. */
+  `Vary the clues. No two may open with the same word, and across the whole`,
+  `set use several different kinds of fact: what it looks like, what it does,`,
+  `where it is found, what it is used for, what it is famous for.`,
+];
+
 /* Persian words, measured 2026-08-05 against the real model. Every line here
    answers something an earlier draft got wrong, and spec section 12 has the
    transcripts:
@@ -344,9 +459,7 @@ function persianPrompt(theme: string, count: number): string {
     `- ${MIN_ANSWER} to ${MAX_ANSWER} Persian letters, from these only: ${FA_LETTERS}`,
     `- use ک and ی, never the Arabic ك or ي`,
     `- an everyday word, no proper nouns, no repeats`,
-    `Each clue is one short Persian sentence under ${MAX_CLUE} characters that`,
-    `describes its own answer well enough to guess it, and must not contain the answer.`,
-    `Write the clue in Persian only: no English, and no other script.`,
+    ...clueRuleFor("fa", theme),
     `Give "en" for each: the English meaning of your Persian answer, one word.`,
   ].join("\n");
 }
@@ -372,9 +485,9 @@ function prompt(
        cases that break a grid, since "ST. LOUIS" has a space and a full stop
        and is rejected on that ground rather than on being a name. */
     `Proper nouns are fine. No abbreviations, and no plurals of the theme word itself.`,
-    `Each clue is one short sentence under ${MAX_CLUE} characters and must not contain its answer.`,
+    ...clueRuleFor("en", theme),
     `Reply with JSON only, no prose: {"candidates":[{"answer":"...","clue":"..."}]}`,
-  ].join(" ");
+  ].join("\n");
 }
 
 /* Parse the reply, which is now a schema-shaped JSON document and nothing
@@ -420,10 +533,7 @@ function layoutPrompt(
     lang === "fa"
       ? `- 5 to 8 answers, each a single Persian word, ${MIN_ANSWER} to ${MAX_ANSWER} letters from ${FA_LETTERS}, no spaces, no ZWNJ, use ک and ی not ك ي.`
       : `- 5 to 8 answers, each a single word, ${MIN_ANSWER} to ${MAX_ANSWER} letters, A-Z only, no spaces or hyphens.`;
-  const clueRule =
-    lang === "fa"
-      ? `- Each clue is one short Persian sentence under ${MAX_CLUE} characters, in Persian script only, and must not contain its answer.`
-      : `- Each clue is one short sentence under ${MAX_CLUE} characters and must not contain its answer.`;
+  const clueRule = clueRuleFor(lang, theme).join("\n");
   /* Rewritten 2026-08-04 after review, and every change aims at one failure: a
      model with 4B active parameters deriving index arithmetic in its head and
      getting a crossing wrong.
