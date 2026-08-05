@@ -220,11 +220,6 @@ export interface AiBinding {
    generation demonstrably works, comparing the two is a `GENERATION_MODEL`
    change and a deploy, which is exactly what that variable is for.
 
-   Costs are near enough identical either way: the 8B is 13,778 neurons per
-   million input tokens and 26,128 output, Gemma 4 is 9,091 and 27,273, which at
-   our prompt size is about 15.8 against 15.5. The ceiling in section 7 does not
-   move for either.
-
    Output tokens dominate our cost, which is why reasoning models that emit long
    traces are the expensive ones here: `deepseek-r1-distill-qwen-32b` charges
    443,756 neurons per million output tokens against Gemma's 27,273. Any model
@@ -232,8 +227,30 @@ export interface AiBinding {
 
    An earlier value was `@cf/meta/llama-3.1-8b-instruct` with no `-fp8`, which
    Workers AI does not serve at all, so every call threw. Written from memory
-   rather than from `wrangler ai models list`, which takes ten seconds. */
-export const GENERATION_MODEL = "@cf/meta/llama-3.1-8b-instruct-fp8";
+   rather than from `wrangler ai models list`, which takes ten seconds.
+
+   **Changed to `@cf/meta/llama-3.3-70b-instruct-fp8-fast` on 2026-08-05, and
+   the reason is JSON Mode rather than quality.** Spec section 12 has the
+   measurements. The short version:
+
+   - The 8B **cannot be held to a schema at all.** Workers AI answers `5025:
+     This model doesn't support JSON Schema`, so every call fell back to
+     free-form text, and `salvageObjects`, `repairJson` and a tolerant
+     `readEntries` existed only to guess at what the reply meant. Each was
+     written against a real malformation and together they were the largest
+     source of subtle bugs in generation. The 70B is on Cloudflare's JSON Mode
+     list, honours the schema, and deletes that entire category of code.
+   - It is also the only model this app can actually use that does so. The
+     other names on Cloudflare's list are either no longer served (plain
+     `llama-3.1-8b-instruct` returns 1031) or behind a licence acceptance.
+   - Persian was the question that started this and is the smaller half of the
+     answer: the 8B offers a paw as a falcon while passing every mechanical
+     check, and the 70B returns real birds.
+
+   It costs about five times the 8B per call, 26,668 neurons per million input
+   tokens and 204,805 output against 13,778 and 26,128, **so section 7's daily
+   ceiling was re-derived rather than inherited.** */
+export const GENERATION_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
 
 function prompt(theme: string, count: number): string {
   return [
@@ -256,108 +273,32 @@ function prompt(theme: string, count: number): string {
   ].join(" ");
 }
 
-/* Models wrap JSON in prose and fences however they were feeling. Pulling out
-   the first balanced object is more reliable than asking harder. */
-/* Pull out whatever well-formed objects are in a reply, even when the whole
-   thing is not valid JSON.
+/* Parse the reply, which is now a schema-shaped JSON document and nothing
+   else.
 
-   Added 2026-08-04 from a real reply. The model returned twelve candidates of
-   which the first was perfect and the rest were `{"answer":"Cloud","clue:"}`,
-   a key with no value. `JSON.parse` rejects the document, so all twelve were
-   discarded and the fallback that exists "so the button always works" had
-   nothing to work with.
+   **Three functions used to live here and were deleted on 2026-08-05**:
+   `salvageObjects`, which pulled intact objects out of a broken document;
+   `repairJson`, which undid one specific punctuation slip the 8B made over and
+   over; and a balanced-bracket scanner that found the JSON inside prose and
+   Markdown fences. Each was written against a real reply and each was correct
+   for the model it was written for.
 
-   Small models degrade like this: they start correct and come apart. Taking
-   what is intact is not being lenient about correctness, since every salvaged
-   object still goes through `clean` and the validator; it is refusing to let
-   one malformed sibling destroy its well-formed neighbours. */
-function salvageObjects(text: string): unknown[] {
-  const repaired = repairJson(text);
-  const out: unknown[] = [];
-  /* Every `{`, not only the ones at depth zero.
+   They are gone because they were all compensating for the same missing
+   thing. The 8B cannot be held to a JSON schema, so every reply was free-form
+   text that might or might not contain the shape we asked for, and the only
+   options were to guess well or lose the attempt. With JSON Mode the model
+   returns the document or the call fails, and guessing at a reply that should
+   not need guessing is how a wrong answer gets silently accepted.
 
-     The first version tracked depth and only captured top-level objects, which
-     found nothing at all in the reply that mattered: a layout arrives as
-     `{"entries":[{...},{...}` and every entry is nested one level in, so the
-     outer brace never closed on a truncated reply and the complete entries
-     inside it were never looked at. The whole point is to rescue the intact
-     parts of a broken document, and they are exactly the parts that are
-     nested. */
-  for (let i = 0; i < repaired.length; i += 1) {
-    if (repaired[i] !== "{") continue;
-    let depth = 0;
-    for (let j = i; j < repaired.length; j += 1) {
-      if (repaired[j] === "{") depth += 1;
-      else if (repaired[j] === "}") {
-        depth -= 1;
-        if (depth === 0) {
-          try {
-            const value = JSON.parse(repaired.slice(i, j + 1)) as Record<
-              string,
-              unknown
-            >;
-            /* Only leaves worth having. The outer wrapper parses too when the
-               document is intact, and keeping it would add a shapeless object
-               to the list for every good one. */
-            if (value && ("answer" in value || "dir" in value)) out.push(value);
-          } catch {
-            /* Broken; its neighbours may not be. */
-          }
-          /* Continue from just after this object rather than inside it: a
-             nested object worth having would have been found by its own `{`. */
-          i = j;
-          break;
-        }
-      }
-    }
-  }
-  return out;
-}
-
-/* Undo the malformations this model makes over and over.
-
-   Observed across whole replies rather than guessed: every candidate after the
-   first came back as `{"answer":"ORBIT","clue:"Path around a star"}`. The colon
-   migrates inside the key's closing quote, so the key becomes the string
-   `clue:` and the document is invalid from there on. Twelve candidates, eleven
-   lost, and the one that survived was the one the model wrote before it slipped
-   into the pattern.
-
-   Narrow on purpose. This rewrites `"word:"` into `"word":` and nothing else,
-   so it cannot turn a wrong answer into a plausible one; it only repairs a
-   punctuation slip that makes valid content unreadable. */
-function repairJson(text: string): string {
-  return text.replace(/"([A-Za-z_][A-Za-z0-9_]*):"/g, '"$1":"');
-}
-
+   Deliberately unforgiving, and that is the point: if this ever starts
+   returning null in production, the model is not honouring the schema and the
+   right response is to notice, not to paper over it. */
 function extractJson(input: string): unknown {
-  const text = repairJson(input);
-  /* Whichever bracket comes first. Looking only for `{` sliced a top-level
-     array down to its first element, which reads as the model having sent one
-     entry when it sent eight. */
-  const curly = text.indexOf("{");
-  const square = text.indexOf("[");
-  const start =
-    curly < 0 ? square : square < 0 ? curly : Math.min(curly, square);
-  if (start < 0) return null;
-
-  const open = text[start] as "{" | "[";
-  const close = open === "{" ? "}" : "]";
-  let depth = 0;
-  for (let i = start; i < text.length; i += 1) {
-    if (text[i] === open) depth += 1;
-    else if (text[i] === close) {
-      depth -= 1;
-      if (!depth) {
-        try {
-          return JSON.parse(text.slice(start, i + 1));
-        } catch {
-          return null;
-        }
-      }
-    }
+  try {
+    return JSON.parse(input.trim());
+  } catch {
+    return null;
   }
-  return null;
 }
 
 function layoutPrompt(theme: string, rows: number, cols: number): string {
@@ -401,38 +342,29 @@ function layoutPrompt(theme: string, rows: number, cols: number): string {
   ].join("\n");
 }
 
-/* Model output for a layout, which arrives with whatever shape it felt like.
+/* Model output for a layout, in the one shape the schema permits.
    `len` and `number` are derived rather than read: the model has no business
    deciding either, since length follows from the answer and numbering follows
    from the grid, and letting it propose them would create two more ways for it
-   to contradict itself. */
-function readEntries(raw: unknown, rawText = ""): Entry[] {
-  /* The prompt asks for `{entries:[...]}`, and a model that felt like answering
-     `{across:[...],down:[...]}` or a bare array meant just as well. Accepting
-     the shapes it actually produces is cheaper than insisting, and an empty
-     result here costs a whole attempt. */
-  const source = raw as {
-    entries?: unknown;
-    across?: unknown;
-    down?: unknown;
-  } | null;
-  const list = Array.isArray(raw)
-    ? raw
-    : Array.isArray(source?.entries)
-      ? source.entries
-      : [
-          ...(Array.isArray(source?.across)
-            ? source.across.map((e) => ({ ...(e as object), dir: "across" }))
-            : []),
-          ...(Array.isArray(source?.down)
-            ? source.down.map((e) => ({ ...(e as object), dir: "down" }))
-            : []),
-        ];
-  const usable =
-    Array.isArray(list) && list.length ? list : salvageObjects(String(rawText));
-  if (!usable.length) return [];
+   to contradict itself.
+
+   This used to accept `{across:[...],down:[...]}` and a bare array as well,
+   and to fall back to salvaging loose objects out of the raw text. All of that
+   was tolerance for a model that could not be held to a shape. `ENTRY_SCHEMA`
+   requires `entries`, so anything else is the schema not being honoured, which
+   is worth failing on rather than absorbing.
+
+   What stays is the per-entry validation below, which is not tolerance: it is
+   the trust boundary. A schema guarantees the document's shape and says
+   nothing about whether `row` is inside the grid or `answer` is a word, and
+   invariant 10 is enforced downstream by the validator on exactly that
+   basis. */
+function readEntries(raw: unknown): Entry[] {
+  const source = raw as { entries?: unknown } | null;
+  const list = Array.isArray(source?.entries) ? source.entries : [];
+  if (!list.length) return [];
   const out: Entry[] = [];
-  for (const item of usable) {
+  for (const item of list) {
     const e = item as Record<string, unknown>;
     const answer = String(e?.answer ?? "")
       .trim()
@@ -545,13 +477,40 @@ export function workersAiProvider(
       return result?.response ?? "";
     };
 
+    /* The schema is the contract now, not an attempt.
+
+       Until 2026-08-05 this tried a schema, fell back to a free-form call on
+       any error, and then guessed at the result with three layers of salvage.
+       That was the right shape for a model that cannot do JSON Mode, which is
+       what the 8B was: every single call took the fallback.
+
+       With a model that honours the schema there is nothing to fall back to,
+       and falling back would be worse than failing, because it would quietly
+       reintroduce the malformed replies the schema exists to prevent.
+
+       Two kinds of error, and they must not be conflated. Cloudflare returns
+       an error when a model **cannot satisfy the schema**, which is a real
+       failed attempt: the theme produced nothing usable, the caller keeps
+       their quota's worth of honesty, and the loop retries. Anything else, a
+       timeout or a 5xx, is the service being unreachable, which the loop
+       reports differently and refunds. Telling somebody their theme was bad
+       when the model was down is the exact failure section 12 spent a lesson
+       on. */
     let raw = "";
-    let mode = "schema";
+    const mode = "schema";
     try {
       raw = await call(true);
-    } catch {
-      mode = "plain";
-      raw = await call(false);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (!/json mode|json schema|schema/i.test(message)) throw err;
+      last = {
+        prompt: content,
+        reply: "",
+        parsed: false,
+        ms: Date.now() - began,
+        mode: "schema-refused",
+      };
+      return null;
     }
 
     const parsed = extractJson(raw);
@@ -599,7 +558,6 @@ export function workersAiProvider(
         cols,
         entries: readEntries(
           await ask(layoutPrompt(theme, rows, cols), ENTRY_SCHEMA),
-          last?.reply ?? "",
         ),
       };
     },
@@ -636,25 +594,17 @@ export function workersAiProvider(
         theme: previous.theme,
         rows: previous.rows,
         cols: previous.cols,
-        entries: readEntries(
-          await ask(content, ENTRY_SCHEMA),
-          last?.reply ?? "",
-        ),
+        entries: readEntries(await ask(content, ENTRY_SCHEMA)),
       };
     },
 
     async propose(theme: string, count: number): Promise<Proposal> {
       /* Same schema treatment as the layout. This is the fallback that exists
-         so the button always works, so it is the last thing that should lose an
-         attempt to a stray sentence of prose. */
+         so the button always works. */
       const parsed = (await ask(prompt(theme, count), WORD_SCHEMA)) as {
         candidates?: Candidate[];
       } | null;
-      /* Same salvage as the layout. A reply whose first candidate is perfect
-         and whose twelfth is malformed should yield one candidate, not none. */
-      const listed = parsed?.candidates?.length
-        ? parsed.candidates
-        : (salvageObjects(last?.reply ?? "") as Candidate[]);
+      const listed = parsed?.candidates ?? [];
       /* A response that parses to nothing is an empty proposal rather than an
          exception. The loop above already knows how to retry an unusable
          proposal and how to give up, and a throw here would need a second,

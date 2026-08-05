@@ -436,7 +436,7 @@ Values a coding agent would otherwise invent. All enforced server side.
 | Theme length                   | 60 chars         | User input, sent to a model and rendered back                            |
 | Clue length                    | 120 chars        | Model output, rendered to other people                                   |
 | Generations per IP             | 10 per day       | Plus Turnstile, since IP alone is a weak key. Raised from 2 by first use |
-| Generations per day, all users | 120              | Measured 2026-08-04 from the neuron cost, not chosen. See below          |
+| Generations per day, all users | 55               | Re-measured 2026-08-05 for the 70B, not chosen. See below                |
 | Voice clip length              | 8 seconds        | Long enough for a clue, short enough to stay under the size cap          |
 | Voice clip size                | 256 KB           | 16 kHz mono 16-bit PCM for 8 seconds, with headroom                      |
 | Voice clips per player         | 6 per minute     | Bounds a flood; the message cap counts messages, not bytes               |
@@ -514,6 +514,8 @@ Two mechanisms, neither of which needs to know who anyone is:
 A determined attacker rotating addresses through Turnstile is not who this app has to survive. The worst outcome is a day of generation being unavailable while cloning and playing keep working.
 
 **The daily ceiling is a measurement, not a decision.** An earlier version of this section said 30, and that number was invented to bound an imaginary bill. The real ceiling comes from what 10,000 neurons buys, which depends on the model and is not something to guess.
+
+**Re-derived 2026-08-05, from 120 to 55, because the model changed.** E1 moved generation to `llama-3.3-70b-instruct-fp8-fast` for JSON Mode, and its output rate is 204,805 neurons per million tokens against the 8B's 26,128. Measured per call with `npm run probe` against the real model: about 27 neurons for an English word list, about 45 for a Persian one. Same pessimism as the old derivation and the same worst case, four calls: Persian at 4 x 45 is about 178 neurons, 10,000 / 178 is 56, so 55. Persian sets the number because the counter is a single global tally that cannot know which language a request was, and pricing the cheaper one would put Cloudflare's raw exhausted-allocation error in front of a visitor instead of "out of budget for today". The happy path is one call, so an English-heavy day will barely touch the pool; that is the documented trade, and the instruction stands: raise it with real traffic rather than in advance.
 
 **`max_tokens` was never set, and Workers AI defaults it low enough to cut a reply in half.** Three layout attempts in a row stopped mid-string, at `"answer": "COMET` and `"answer": "`, which read as a model incapable of finishing a puzzle when it was being silenced part way through one. Set to 2048. Output is what we pay for, but a reply truncated into invalid JSON costs the whole attempt and is spent either way, which makes a low ceiling the more expensive choice.
 
@@ -1012,6 +1014,27 @@ Checks:
 - Human, outstanding: **Hossein reads every screen in Persian in an RTL window**, including the B3 failure states, whose English was tuned word by word and whose Persian deserves the same. The draft is Claude's; the taste call is his
 
 **Security pass.** D1 adds no endpoint, no message, no stored server field. The dictionary is bundled text; the one new persisted value is `arrowword:lang` in `localStorage`, which holds one of two constants and is validated on read. Model output and user text render exactly as before, as text, never as HTML.
+
+### E series: what the Persian investigation actually found
+
+Scheduled 2026-08-05. The D2 investigation set out to answer "can this model write Persian" and turned up something larger and unrelated to language, so it is its own milestone rather than a footnote to D2.
+
+#### E1 JSON Mode, and the model that supports it, status: CODE COMPLETE 2026-08-05
+
+**Generation moves to `llama-3.3-70b-instruct-fp8-fast` and the schema becomes the contract.** English only; D2 adds Persian on top.
+
+- `GENERATION_MODEL` defaults to the 70B. Configuration still overrides it, so a comparison remains a deploy rather than a pull request
+- `response_format` with a JSON schema is now the path, not an attempt. There is no free-form fallback, because on a model that honours schemas a fallback would quietly reintroduce the malformed replies the schema prevents
+- **A schema refusal and an outage are different things and are now reported differently.** Cloudflare returns an error when a model cannot satisfy a schema; that is a failed attempt against the theme. Anything else is the service being unreachable, which the loop refunds. Conflating them is how somebody gets told their theme was bad while the model was down, which section 12 already has a lesson about
+- **`salvageObjects` and `repairJson` are deleted, `extractJson` is a plain `JSON.parse`, and `readEntries` accepts one shape.** About 120 lines of heuristics, each written against a real malformation, all of them compensating for a model that could not be held to a schema
+- The daily ceiling is re-derived above, 120 to 55
+
+Checks:
+
+- Automated: `npm run test:unit` and `npm run test:generate`. Seven tests changed and their old assertions are recorded in the diff, because several now assert the **opposite** of what they did: a bare array, an `{across,down}` split, prose around the JSON, a truncated document and the migrated colon all used to be rescued and must now yield nothing. Two new tests cover the schema-refusal path and that it is recorded as `schema-refused` rather than as an outage
+- Human, outstanding: one English puzzle generated against the real model and solved end to end, which is the only check that exercises the live schema
+
+**Why this is worth its own milestone.** The heuristics were the largest source of subtle bugs in generation, and they had a way of being wrong in the same direction twice: the salvage that "rescued broken replies looked in the wrong place" in B3, and then the probe built to evaluate models reproduced three of the same mistakes while measuring them. Code that guesses what a reply meant is code that fails silently and plausibly. A schema replaces guessing with a contract, and a contract that is broken is visible.
 
 #### D2 Persian AI generation, status: INVESTIGATED 2026-08-05, not started, blocked on one decision
 

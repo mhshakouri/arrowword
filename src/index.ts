@@ -192,8 +192,30 @@ const GENERATE_PER_IP_PER_DAY = 10;
    the failure is graceful. Raise it with real traffic, not in advance.
 
    Attempts count rather than successes, since a failed generation spends the
-   same neurons as a successful one. */
-const GENERATE_PER_DAY = 120;
+   same neurons as a successful one.
+
+   **Re-derived 2026-08-05 for `llama-3.3-70b-instruct-fp8-fast`.** The model
+   changed for JSON Mode (see `provider.ts`), the output rate went from 26,128
+   neurons per million tokens to 204,805, and this number derives from that
+   rate, so it could not be inherited.
+
+   Measured per call, with the probe, against the real model: about 27 neurons
+   for an English word list and about 45 for a Persian one. The same pessimism
+   as before, and the same worst case, which is still four calls: one proposal,
+   two repairs, and the word list for the fallback.
+
+   - Persian worst case is 4 x 45, about 178 neurons.
+   - 10,000 / 178 is 56 generations even if every one takes the longest road in
+     the more expensive language.
+   - **55**, so the app's own ceiling is still reached before Cloudflare's.
+
+   Persian sets it because the counter is one global tally and cannot know
+   which language a request was, and pricing the cheaper one would put the raw
+   exhausted-allocation error in front of a visitor instead of "out of budget
+   for today". On an English-heavy day this leaves the pool barely touched,
+   which is the documented trade: pessimistic, graceful, and raised with real
+   traffic rather than in advance. */
+const GENERATE_PER_DAY = 55;
 
 /* Theme is user input travelling into a prompt, so it is length-capped and
    treated as data. Prompt injection here buys a strange puzzle rather than
