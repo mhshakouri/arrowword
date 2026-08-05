@@ -13,10 +13,14 @@ import type { Entry } from "../../types";
 import { useT } from "../i18n/index.ts";
 
 export function ClueList({
+  lang,
   entries,
   selected,
   onPick,
 }: {
+  /* The puzzle's language, like the board's. The clues are the puzzle's text,
+     so they read in the puzzle's direction whatever the chrome is doing. */
+  lang: "en" | "fa";
   entries: Entry[];
   selected: Entry | null;
   onPick: (entry: Entry) => void;
@@ -77,9 +81,9 @@ export function ClueList({
     );
 
   return (
-    /* Pinned LTR for the same reason as the grid: the clues are English text
-       with English numbering even when the chrome around them is Persian. */
-    <div class="clues" dir="ltr">
+    /* From the puzzle for the same reason as the grid, and pinned to "ltr"
+       until D2 for the same reason too. */
+    <div class="clues" dir={lang === "fa" ? "rtl" : "ltr"}>
       {section("across", across)}
       {section("down", down)}
     </div>

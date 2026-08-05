@@ -185,3 +185,33 @@ export const FALLBACK_LAYOUTS: LayoutProposal[] = [LAYOUT_DISAGREES];
 /* Nothing works anywhere, so the session ends in `failed`. */
 export const HOPELESS: Proposal[] = [UNUSABLE];
 export const HOPELESS_LAYOUTS: LayoutProposal[] = [LAYOUT_DISAGREES];
+
+/* Persian, D2. Recorded from `llama-3.3-70b-instruct-fp8-fast` on 2026-08-05,
+   theme «پرندگان», and kept with the flaws it actually had rather than tidied:
+   two of these must not survive `clean()`.
+
+   The point of a Persian fixture is that it exercises the fold. `شكاري` here
+   carries the **Arabic** kaf and yeh, which is what the model really sent, and
+   an app that compares unfolded strings will happily place it and then fail
+   every crossing that touches it. */
+export const BIRDS_FA: Proposal = {
+  theme: "پرندگان",
+  candidates: [
+    { answer: "بلبل", clue: "پرنده‌ای که آواز می‌خواند" },
+    { answer: "عقاب", clue: "پرنده‌ای شکاری و بزرگ" },
+    { answer: "کبک", clue: "پرنده‌ای کوهی با راه رفتن زیبا" },
+    /* Arabic kaf and yeh, folded on the way in. */
+    { answer: "شكاري", clue: "پرنده‌ای که شکار می‌کند" },
+    { answer: "طاووس", clue: "پرهای رنگارنگ و بادبزنی دارد" },
+    { answer: "گنجشک", clue: "پرنده‌ای کوچک و شهری" },
+    { answer: "مرغابی", clue: "روی آب شنا می‌کند" },
+    { answer: "پرستو", clue: "با آمدنش بهار می‌رسد" },
+    /* The clue contains its own answer: caught by the Persian boundary rule,
+       which the ASCII `\b` version silently never would have. */
+    { answer: "کلاغ", clue: "کلاغ سیاه است" },
+    /* Two words, which no run of squares can hold. */
+    { answer: "مرغ خانگی", clue: "در حیاط نگه می‌دارند" },
+  ],
+};
+
+export const BIRDS_FA_SET: Proposal[] = [BIRDS_FA];

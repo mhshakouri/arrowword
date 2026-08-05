@@ -65,6 +65,13 @@ export interface Messages {
     starting: string;
     makeIt: string;
     waitingForCheck: string;
+    /* The puzzle's language, which is deliberately not the UI's: reading the
+       app in Persian and wanting an English crossword is a normal thing to
+       want, and D1 made the two independent on purpose. */
+    puzzleLangLabel: string;
+    puzzleLangEnglish: string;
+    puzzleLangPersian: string;
+    puzzleLangNote: string;
   };
   wizard: {
     title: string;

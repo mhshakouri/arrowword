@@ -22,6 +22,7 @@
      is a different feature with a different argument. */
 
 import type { Entry, LetterValue } from "../../types";
+import { normalizePersian } from "../../generate/persian.ts";
 
 export interface Marked {
   /* Every square an entry covers that has a letter in it and should not. */
@@ -51,9 +52,19 @@ function cellsOf(entry: Entry): Array<{ row: number; col: number }> {
 /* Compared case-insensitively and after trimming, because the grid uppercases
    what is typed but a letter that arrived from a paste, another device, or an
    older client may not have. A player being told a correct letter is wrong
-   because of its case would be the worst possible version of this feature. */
+   because of its case would be the worst possible version of this feature.
+
+   **Persian folds as well, and for exactly the same reason one step further
+   along.** Answers are already canonical: `provider.ts` folds them at the
+   trust boundary, so ي and ك and a stray ZWNJ never reach the document. What
+   is typed has been through no such thing. A phone keyboard, an older Android
+   layout, or a paste from a website can all produce the Arabic yeh, and the
+   solver would be told a correct letter is wrong on a distinction the grid
+   cannot even draw. Folding both sides costs nothing in English, where the
+   fold is the identity. */
 const same = (a: string, b: string) =>
-  a.trim().toLocaleUpperCase() === b.trim().toLocaleUpperCase();
+  normalizePersian(a).trim().toLocaleUpperCase() ===
+  normalizePersian(b).trim().toLocaleUpperCase();
 
 export function mark(
   entries: Entry[],

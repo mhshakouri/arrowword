@@ -224,7 +224,7 @@ test("a recorded provider with no proposals is a programming error", () => {
    the ten seconds that would have caught it. */
 
 test("the default generation model id is pinned, and changing it is deliberate", () => {
-  assert.equal(GENERATION_MODEL, "@cf/meta/llama-3.1-8b-instruct-fp8");
+  assert.equal(GENERATION_MODEL, "@cf/meta/llama-3.3-70b-instruct-fp8-fast");
 });
 
 /* Configurable, so a comparison is a deploy rather than a pull request, and the
@@ -286,51 +286,59 @@ test("the word match ignores case and punctuation around the word", () => {
   assert.equal(kept("SET", "Where filming happens (the SET)"), false);
 });
 
-/* ---- readEntries accepts the shapes a model actually produces ---- */
+/* ---- readEntries reads the one shape the schema permits ----
 
-test("a layout split into across and down arrays is read", async () => {
-  const ai = {
-    async run() {
-      return {
-        response: JSON.stringify({
-          across: [{ row: 0, col: 0, answer: "CAT", clue: "It ignores you" }],
-          down: [{ row: 0, col: 0, answer: "COT", clue: "A small bed" }],
-        }),
-      };
-    },
-  };
-  const out = await workersAiProvider(ai).proposeLayout("t", 5, 5);
-  assert.equal(out.entries.length, 2);
-  assert.equal(out.entries[0]?.dir, "across");
-  assert.equal(out.entries[1]?.dir, "down");
+   Three tests were deleted here on 2026-08-05, and what they asserted is worth
+   recording because it is now forbidden rather than merely unused: a layout
+   split into `across` and `down` arrays was accepted, a bare top-level array
+   was accepted, and JSON buried in prose and a Markdown fence was dug out.
+
+   All three were tolerance for a model that could not be held to a schema. On
+   a JSON Mode model those replies mean the schema was not honoured, and
+   quietly accepting them would hide exactly the fault the schema exists to
+   surface. The tests below assert the opposite of what those did. */
+
+test("a shape other than {entries:[...]} yields nothing rather than being coerced", async () => {
+  for (const response of [
+    JSON.stringify({
+      across: [{ row: 0, col: 0, answer: "CAT", clue: "It ignores you" }],
+    }),
+    JSON.stringify([
+      { dir: "across", row: 0, col: 0, answer: "CAT", clue: "It ignores you" },
+    ]),
+  ]) {
+    const out = await workersAiProvider({
+      async run() {
+        return { response };
+      },
+    }).proposeLayout("t", 5, 5);
+    assert.deepEqual(out.entries, [], `should not coerce: ${response}`);
+  }
 });
 
-test("a bare array of entries is read", async () => {
-  const ai = {
-    async run() {
-      return {
-        response: JSON.stringify([
-          {
-            dir: "across",
-            row: 0,
-            col: 0,
-            answer: "CAT",
-            clue: "It ignores you",
-          },
-        ]),
-      };
-    },
-  };
-  const out = await workersAiProvider(ai).proposeLayout("t", 5, 5);
-  assert.equal(out.entries.length, 1);
-});
-
-test("prose around the JSON does not stop it being read", async () => {
+test("prose around the JSON is no longer dug out, because a schema forbids it", async () => {
   const ai = {
     async run() {
       return {
         response:
           'Sure! Here is your crossword:\n```json\n{"entries":[{"dir":"down","row":1,"col":2,"answer":"COT","clue":"A small bed"}]}\n```\nHope that helps.',
+      };
+    },
+  };
+  const out = await workersAiProvider(ai).proposeLayout("t", 5, 5);
+  assert.deepEqual(
+    out.entries,
+    [],
+    "prose means the schema was not honoured, which is a failure worth seeing",
+  );
+});
+
+test("a schema-shaped reply is read, which is the path that now matters", async () => {
+  const ai = {
+    async run() {
+      return {
+        response:
+          '{"entries":[{"dir":"down","row":1,"col":2,"answer":"COT","clue":"A small bed"}]}',
       };
     },
   };
@@ -381,22 +389,65 @@ test("a schema is sent when the model accepts one", async () => {
   assert.equal(sawSchema, true);
 });
 
-test("a model that rejects the schema is retried without it, not reported as down", async () => {
-  const modes: boolean[] = [];
+/* The inverse of what this asserted until 2026-08-05, when the answer to a
+   schema rejection was to retry free-form and salvage whatever came back.
+
+   That made sense when the model could not do JSON Mode, because the fallback
+   was the only path that ever ran. On a model that can, a schema rejection
+   means the model could not satisfy the schema for this particular theme,
+   which is a failed attempt and not a reason to go back to guessing. */
+test("a schema rejection is a failed attempt, not a retry without the schema", async () => {
+  let calls = 0;
   const ai = {
     async run(_model: string, input: Record<string, unknown>) {
-      const withSchema = "response_format" in input;
-      modes.push(withSchema);
-      if (withSchema) throw new Error("json_schema not supported");
-      return {
-        response:
-          '{"entries":[{"dir":"across","row":0,"col":0,"answer":"CAT","clue":"It ignores you"}]}',
-      };
+      calls += 1;
+      assert.ok("response_format" in input, "the schema is always sent");
+      throw new Error("JSON Mode couldn't be met");
     },
   };
   const out = await workersAiProvider(ai).proposeLayout("t", 5, 5);
-  assert.deepEqual(modes, [true, false], "should try schema then plain");
-  assert.equal(out.entries.length, 1, "the plain retry result is used");
+  assert.equal(calls, 1, "no free-form retry");
+  assert.deepEqual(out.entries, []);
+});
+
+/* The distinction that matters, and the one section 12 spent a lesson on:
+   telling somebody their theme was bad when the model was down. A schema
+   refusal is the theme's problem; anything else is an outage. */
+/* The distinction the regex has to get right, and the reason it is not simply
+   /schema/i: 5025 is a misconfiguration that fails every theme identically, so
+   reporting it as the theme's problem would send every visitor away rewording
+   something that was never the issue. */
+test("a model that cannot do JSON Mode at all is an outage, not a bad theme", async () => {
+  const ai = {
+    async run() {
+      throw new Error("5025: This model doesn't support JSON Schema");
+    },
+  };
+  await assert.rejects(
+    () => workersAiProvider(ai).proposeLayout("t", 5, 5),
+    /5025/,
+    "a misconfigured model must throw, so the loop calls it unreachable",
+  );
+});
+
+test("an unrecognised error is an outage too, which is the safer default", async () => {
+  const ai = {
+    async run() {
+      throw new Error("connection reset");
+    },
+  };
+  await assert.rejects(() => workersAiProvider(ai).proposeLayout("t", 5, 5));
+});
+
+test("a schema refusal is recorded as such, so the trace can tell them apart", async () => {
+  const provider = workersAiProvider({
+    async run() {
+      throw new Error("JSON Mode couldn't be met");
+    },
+  });
+  await provider.proposeLayout("t", 5, 5);
+  assert.equal(provider.lastExchange?.()?.mode, "schema-refused");
+  assert.equal(provider.lastExchange?.()?.parsed, false);
 });
 
 test("a model that is genuinely down still throws, so an outage is still an outage", async () => {
@@ -537,44 +588,34 @@ const replying = (response: string) => ({
   },
 });
 
-test("a truncated layout still yields the entries that arrived intact", async () => {
+/* These two replies are kept verbatim because they are what the 8B really
+   sent, and they are now regression material of a different kind: they are
+   what the app must **stop** trying to rescue.
+
+   Until 2026-08-05, `REAL_TRUNCATED_LAYOUT` was mined for the three complete
+   entries inside a document whose outer brace never closed, and
+   `REAL_WORD_REPLY` had a migrated colon repaired so that eleven candidates
+   were not lost to one. Both behaviours were correct for a model that could
+   not be held to a schema, and both are now the wrong answer: on a JSON Mode
+   model a reply in this state means the schema was not honoured, and salvaging
+   it would turn a visible fault into a puzzle built from whatever survived. */
+test("a truncated reply yields nothing, because a schema should not truncate", async () => {
   const out = await workersAiProvider(
     replying(REAL_TRUNCATED_LAYOUT),
   ).proposeLayout("space", 11, 11);
-  assert.equal(out.entries.length, 3, "SPACE, EARTH and MOON are complete");
   assert.deepEqual(
-    out.entries.map((e) => e.answer),
-    ["SPACE", "EARTH", "MOON"],
-  );
-  assert.equal(
-    out.entries.some((e) => e.answer === "COMET"),
-    false,
-    "the entry cut off mid-word must not be salvaged",
+    out.entries,
+    [],
+    "salvage is gone: an unparseable document is a failed attempt",
   );
 });
 
-test("the migrated colon is repaired, so eleven candidates are not lost", async () => {
+test("a reply with the migrated colon yields nothing, rather than being repaired", async () => {
   const out = await workersAiProvider(replying(REAL_WORD_REPLY)).propose(
     "space",
     12,
   );
-  assert.ok(
-    out.candidates.length >= 7,
-    `only ${out.candidates.length} survived: ${JSON.stringify(out.candidates)}`,
-  );
-  assert.ok(out.candidates.some((c) => c.answer === "MARS"));
-  assert.ok(out.candidates.some((c) => c.answer === "NEBULA"));
-});
-
-test("repairing punctuation never invents or alters an answer", async () => {
-  const out = await workersAiProvider(replying(REAL_WORD_REPLY)).propose(
-    "space",
-    12,
-  );
-  for (const c of out.candidates) {
-    assert.match(c.answer, /^[A-Z]+$/);
-    assert.ok(REAL_WORD_REPLY.includes(c.answer), `${c.answer} was invented`);
-  }
+  assert.deepEqual(out.candidates, []);
 });
 
 test("max_tokens is set, because the default cut replies in half", async () => {

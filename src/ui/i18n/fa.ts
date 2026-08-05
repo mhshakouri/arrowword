@@ -79,6 +79,11 @@ export const fa: Messages = {
     starting: "در حال شروع…",
     makeIt: "بساز",
     waitingForCheck: "در انتظار بررسی…",
+    puzzleLangLabel: "زبان جدول",
+    puzzleLangEnglish: "انگلیسی",
+    puzzleLangPersian: "فارسی",
+    puzzleLangNote:
+      "زبان خودِ جدول، نه زبان این برنامه. می‌توانید برنامه را به یک زبان بخوانید و جدول را به زبان دیگر حل کنید.",
   },
   wizard: {
     title: "جدول تازه",

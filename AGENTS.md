@@ -58,9 +58,14 @@ limits are load-bearing rather than nice to have.
 - `npm run dev:ui` - Vite with hot reload, proxying the API to :8787. Run both
 - `npm run build` - the UI into `dist/`, which the worker serves as assets
 - `npm run typecheck` - two configs: the worker has no DOM, the UI has no Workers
-- `npm test` - the CI suite: unit, acceptance, photo cap, expiry, generation. 333 checks
-- `npm run test:all` - the above plus the template run. 348 checks
+- `npm test` - the CI suite: unit, acceptance, photo cap, expiry, generation. 360 checks
+- `npm run test:all` - the above plus the template run. 375 checks
 - `npm run deploy` - deploy by hand. Normally a merge to `main` does it
+- `npm run probe` - put prompts in front of the **real** model and report what
+  came back, judged by the real modules. Needs `wrangler login` and spends
+  neurons, so it is local only and never in CI. `PROBE_MODEL`, `PROBE_VARIANTS`,
+  `PROBE_THEMES` and `PROBE_DUMP` narrow a run. This is the by-hand measurement
+  script ADR-12 asks for, and it reports neurons per call
 - `npm run format` / `format:check` - Prettier
 
 Each test file starts and stops its own `wrangler dev`, so they need no setup and
@@ -86,8 +91,12 @@ Spec section 7 has the table. Things worth knowing before changing anything:
 - `TEMPLATE_SESSIONS` is how a demo puzzle is named: a config edit plus a
   deploy rather than an API call.
 - `GENERATION_MODEL` picks the Workers AI model, empty meaning the default in
-  `src/generate/provider.ts`. The daily ceiling in section 7 is derived from the
-  chosen model's output rate, so switching means re-deriving it.
+  `src/generate/provider.ts`, which is `llama-3.3-70b-instruct-fp8-fast` since
+  E1. **Pick a model that supports JSON Mode or generation breaks**: the schema
+  is the contract now and there is no free-form fallback. Cloudflare's
+  supported list is stale in both directions, so test rather than trust it. The
+  daily ceiling in section 7 derives from the chosen model's output rate, so
+  switching means re-deriving it.
 - `GENERATION_LAYOUT_FIRST` asks the model for a whole layout before asking for
   words, which is how the pipeline ran until 2026-08-04 and does not work with
   a small model. Off by default; kept so the comparison stays available.

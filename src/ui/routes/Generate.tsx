@@ -8,7 +8,7 @@ import { useEffect, useRef, useState } from "preact/hooks";
 import { navigate } from "../lib/router.ts";
 import { remember } from "../lib/local.ts";
 import { Crumbs } from "../components/Crumbs.tsx";
-import { t as messages, useT } from "../i18n/index.ts";
+import { lang, t as messages, useT } from "../i18n/index.ts";
 
 const MAX_THEME = 60;
 const WIDGET_SRC = "https://challenges.cloudflare.com/turnstile/v0/api.js";
@@ -30,6 +30,11 @@ declare global {
 export function Generate() {
   const t = useT();
   const [theme, setTheme] = useState("");
+  /* Seeded from the UI language because that is the better guess, and left
+     free because it is a different question. Somebody reading in Persian may
+     want an English puzzle, which is why this is a control and not an
+     inference. */
+  const [puzzleLang, setPuzzleLang] = useState<"en" | "fa">(lang);
   const [state, setState] = useState<State>("idle");
   const [refusal, setRefusal] = useState<string | null>(null);
   const [siteKey, setSiteKey] = useState<string | null>(null);
@@ -137,7 +142,11 @@ export function Generate() {
       const res = await fetch("/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ theme: cleaned, token: tokenRef.current }),
+        body: JSON.stringify({
+          theme: cleaned,
+          token: tokenRef.current,
+          lang: puzzleLang,
+        }),
       });
       /* Spent whether it worked or not: a Turnstile token is single use, so
          holding on to it would guarantee the next attempt fails. */
@@ -199,6 +208,35 @@ export function Generate() {
             {t.generate.limitNote}
           </p>
         </div>
+
+        <fieldset style="border:1px solid var(--border);border-radius:var(--radius);padding:0.75rem">
+          <legend class="muted" style="padding:0 0.35rem">
+            {t.generate.puzzleLangLabel}
+          </legend>
+          <div class="row">
+            {(["en", "fa"] as const).map((code) => (
+              <button
+                key={code}
+                type="button"
+                aria-pressed={puzzleLang === code}
+                disabled={state === "starting"}
+                onClick={() => setPuzzleLang(code)}
+                style={`border-color:${
+                  puzzleLang === code ? "var(--accent)" : "var(--border)"
+                };border-width:${puzzleLang === code ? "2px" : "1px"};font-weight:${
+                  puzzleLang === code ? "600" : "400"
+                }`}
+              >
+                {code === "en"
+                  ? t.generate.puzzleLangEnglish
+                  : t.generate.puzzleLangPersian}
+              </button>
+            ))}
+          </div>
+          <p class="muted" style="margin:0.5rem 0 0">
+            {t.generate.puzzleLangNote}
+          </p>
+        </fieldset>
 
         {/* Rendered even before the key arrives, so the layout does not jump
             when it does. */}

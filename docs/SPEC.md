@@ -436,7 +436,7 @@ Values a coding agent would otherwise invent. All enforced server side.
 | Theme length                   | 60 chars         | User input, sent to a model and rendered back                            |
 | Clue length                    | 120 chars        | Model output, rendered to other people                                   |
 | Generations per IP             | 10 per day       | Plus Turnstile, since IP alone is a weak key. Raised from 2 by first use |
-| Generations per day, all users | 120              | Measured 2026-08-04 from the neuron cost, not chosen. See below          |
+| Generations per day, all users | 55               | Re-measured 2026-08-05 for the 70B, not chosen. See below                |
 | Voice clip length              | 8 seconds        | Long enough for a clue, short enough to stay under the size cap          |
 | Voice clip size                | 256 KB           | 16 kHz mono 16-bit PCM for 8 seconds, with headroom                      |
 | Voice clips per player         | 6 per minute     | Bounds a flood; the message cap counts messages, not bytes               |
@@ -514,6 +514,8 @@ Two mechanisms, neither of which needs to know who anyone is:
 A determined attacker rotating addresses through Turnstile is not who this app has to survive. The worst outcome is a day of generation being unavailable while cloning and playing keep working.
 
 **The daily ceiling is a measurement, not a decision.** An earlier version of this section said 30, and that number was invented to bound an imaginary bill. The real ceiling comes from what 10,000 neurons buys, which depends on the model and is not something to guess.
+
+**Re-derived 2026-08-05, from 120 to 55, because the model changed.** E1 moved generation to `llama-3.3-70b-instruct-fp8-fast` for JSON Mode, and its output rate is 204,805 neurons per million tokens against the 8B's 26,128. Measured per call with `npm run probe` against the real model: about 27 neurons for an English word list, about 45 for a Persian one. Same pessimism as the old derivation and the same worst case, four calls: Persian at 4 x 45 is about 178 neurons, 10,000 / 178 is 56, so 55. Persian sets the number because the counter is a single global tally that cannot know which language a request was, and pricing the cheaper one would put Cloudflare's raw exhausted-allocation error in front of a visitor instead of "out of budget for today". The happy path is one call, so an English-heavy day will barely touch the pool; that is the documented trade, and the instruction stands: raise it with real traffic rather than in advance.
 
 **`max_tokens` was never set, and Workers AI defaults it low enough to cut a reply in half.** Three layout attempts in a row stopped mid-string, at `"answer": "COMET` and `"answer": "`, which read as a model incapable of finishing a puzzle when it was being silenced part way through one. Set to 2048. Output is what we pay for, but a reply truncated into invalid JSON costs the whole attempt and is spent either way, which makes a low ceiling the more expensive choice.
 
@@ -1012,6 +1014,149 @@ Checks:
 - Human, outstanding: **Hossein reads every screen in Persian in an RTL window**, including the B3 failure states, whose English was tuned word by word and whose Persian deserves the same. The draft is Claude's; the taste call is his
 
 **Security pass.** D1 adds no endpoint, no message, no stored server field. The dictionary is bundled text; the one new persisted value is `arrowword:lang` in `localStorage`, which holds one of two constants and is validated on read. Model output and user text render exactly as before, as text, never as HTML.
+
+### E series: what the Persian investigation actually found
+
+Scheduled 2026-08-05. The D2 investigation set out to answer "can this model write Persian" and turned up something larger and unrelated to language, so it is its own milestone rather than a footnote to D2.
+
+#### E1 JSON Mode, and the model that supports it, status: CODE COMPLETE 2026-08-05
+
+**Generation moves to `llama-3.3-70b-instruct-fp8-fast` and the schema becomes the contract.** English only; D2 adds Persian on top.
+
+- `GENERATION_MODEL` defaults to the 70B. Configuration still overrides it, so a comparison remains a deploy rather than a pull request
+- `response_format` with a JSON schema is now the path, not an attempt. There is no free-form fallback, because on a model that honours schemas a fallback would quietly reintroduce the malformed replies the schema prevents
+- **A schema refusal and an outage are different things and are now reported differently.** Cloudflare returns an error when a model cannot satisfy a schema; that is a failed attempt against the theme. Anything else is the service being unreachable, which the loop refunds. Conflating them is how somebody gets told their theme was bad while the model was down, which section 12 already has a lesson about
+- **`salvageObjects` and `repairJson` are deleted, `extractJson` is a plain `JSON.parse`, and `readEntries` accepts one shape.** About 120 lines of heuristics, each written against a real malformation, all of them compensating for a model that could not be held to a schema
+- The daily ceiling is re-derived above, 120 to 55
+
+Checks:
+
+- Automated: `npm run test:unit` and `npm run test:generate`. Seven tests changed and their old assertions are recorded in the diff, because several now assert the **opposite** of what they did: a bare array, an `{across,down}` split, prose around the JSON, a truncated document and the migrated colon all used to be rescued and must now yield nothing. Two new tests cover the schema-refusal path and that it is recorded as `schema-refused` rather than as an outage
+- Human, outstanding: one English puzzle generated against the real model and solved end to end, which is the only check that exercises the live schema
+
+**Why this is worth its own milestone.** The heuristics were the largest source of subtle bugs in generation, and they had a way of being wrong in the same direction twice: the salvage that "rescued broken replies looked in the wrong place" in B3, and then the probe built to evaluate models reproduced three of the same mistakes while measuring them. Code that guesses what a reply meant is code that fails silently and plausibly. A schema replaces guessing with a contract, and a contract that is broken is visible.
+
+#### D2 Persian AI generation, status: CODE COMPLETE 2026-08-05, awaiting its human check
+
+Built on E1, because a Persian answer is worth nothing if the reply it arrives in cannot be parsed.
+
+- **`src/generate/persian.ts` is the fold**, and `RULES` in `provider.ts` is where a language becomes a policy: normalize, is-this-an-answer, how-many-squares, does-the-clue-give-it-away. English keeps exactly the behaviour it had
+- **Folding happens at the trust boundary and nowhere else.** `clean()` and `readEntries()` fold on the way in, so `validate.ts`, `pack.ts` and the grid compare plain strings and never learn that Persian exists. The one place that also needs it is `check.ts`, because what a person types has been through no boundary at all: a phone keyboard can emit the Arabic yeh, and a solver told a correct letter is wrong on a distinction the grid cannot draw is the worst version of that feature
+- **`lang` on `POST /generate`**, narrowed to `"en" | "fa"` at the edge and again inside the object, carried through `pendingGeneration` so an alarm retry keeps it, and stored on the document. It replaces a hardcoded `lang: "en"`
+- **Persian prompts**, measured rather than drafted. Instructions in English because the same prompt in Persian produced repeated JSON keys and a 45 second call; no worked example, because one put «کتاب» in a puzzle about birds; an English gloss per word, thrown away, because it measurably improves theme adherence
+- **Direction comes from the puzzle, never the chrome.** The board and the clue list take the puzzle's `lang`, and the square numbers use `inset-inline-start` so they mirror with it. Verified in a browser: an English UI hosting a Persian puzzle renders `document.dir = ltr` with the grid and clues at `rtl`, and clue 1 sits in the top-right
+- **A puzzle-language choice on `/generate`**, seeded from the UI language and free to differ, because reading the app in Persian and wanting an English crossword is a normal thing to want
+
+Checks:
+
+- Automated: `npm run test:unit`, with `persian.test.ts` covering the fold groups, the trust boundary, and the recorded Persian fixture; plus the full suite unchanged
+- Human, outstanding: **one Persian puzzle generated against the real model and solved end to end.** Fixtures prove the plumbing; only a real call proves the model, and section 12 has three lessons about that distinction
+
+**The bug that fixtures found and unit tests could not.** The first Persian run against recorded fixtures failed with "the model returned no usable entries". Nothing was wrong with the fixtures or the pipeline: `recordedProvider` called `clean()` without a language, defaulted to English, and rejected every Persian answer for not being A to Z. It was invisible to the unit tests because they call `clean` directly with a language, and invisible to the acceptance suite because every other fixture is English. **A default argument is a decision that hides**, and the two places that had one, `clean` and the recorded provider, are exactly where this went wrong.
+
+#### D2 investigation, 2026-08-05: what it took to answer "can this model write Persian"
+
+Generated puzzles are English only (B3). This milestone would make the theme's language a choice. **It is not started, and the investigation below is the reason it should not start yet:** one decision belongs to Hossein and it is the kind section 15 says to stop and ask about, because it changes the cost reasoning in ADR-12.
+
+**What already exists**, built during the investigation because it is needed whatever gets decided:
+
+- `src/generate/persian.ts`: folding, length, and the giveaway rule, with tests. Every comparison in generation is a letter comparison, and in Persian the same word has several spellings, so nothing else can be trusted until this exists
+- `scripts/probe.mjs` and its worker: prompts in front of the real model, judged by the real module. **This is also the by-hand measurement script ADR-12 has asked for since B3** and section 7 says the ceiling depends on
+
+**The prompt matters and the model matters more, measured rather than argued.** The same prompt, one call, theme «پرندگان» (birds):
+
+- `llama-3.1-8b-instruct-fp8`, the model in production: مرغابی (duck) four times over with the glosses duck, goose, swan and pigeon; پنجه (paw) offered as a falcon; شکاری (an adjective, "hunting") offered as a sparrow. Earlier runs called a squirrel, a jackal, a leopard and a fly birds, each with a clue confidently describing it as one. **8.2 neurons.**
+- `llama-3.3-70b-instruct-fp8-fast`, same prompt: بلبل، کبک، عقاب، شاهین، طاووس، گنجشک، حمام. Real birds, distinct, with clues that describe them. **42.2 neurons**, and about twice as fast in wall time.
+
+**Every mechanical check passed on both.** Script, length, one-word-ness, no Arabic letters, no ZWNJ: the 8B scored 8 out of 8 while proposing a paw as a bird. That is the finding that matters most, and it generalizes past Persian: **the validator can only see whether a puzzle is well formed, never whether it is any good.** A wrong word that crosses correctly is invisible to every automated check this project has, and there is no cheap way to change that. Persian only makes it obvious, because the failure stops being a subtly odd clue and becomes a leopard.
+
+**What the prompt fixed and what it could not.** Three prompt variants were compared. Instructions in English beat the same instructions in Persian decisively: the all-Persian prompt produced repeated JSON keys, duplicate answers, and one 45 second call. A worked example with real words got the example words copied into the answer, so «کتاب» arrived in a puzzle about birds; placeholders fixed that. Asking for a throwaway English gloss per word measurably improved theme adherence on both models and is the single most useful line in the prompt. None of it made the 8B's vocabulary reliable.
+
+**The normalizer earns its place, and one of its decisions has a visible consequence.** Real replies contained `شکاري` with an Arabic yeh, folded to `شکاری`. But `آبگوشت` folds to `ابگوشت`, and if the folded form is what gets stored and drawn, a Persian solver is shown a misspelling. Folding is right for _comparison_ and wrong for _display_, which the module does not currently separate. Whether آ and ا share a square at all is a convention question for a native speaker, and it is the first thing D2 must settle.
+
+**Two vendor facts, both read rather than remembered**, which is the standing lesson from the wrong model id in B3:
+
+- `llama-3.1-8b-instruct-fp8` does not support JSON schema at all: Workers AI answers `5025: This model doesn't support JSON Schema`. The provider's try-schema-then-plain fallback is therefore not a precaution, it is the path production takes every time
+- Neurons per million tokens, from the pricing page on 2026-08-05: the 8B is 13,778 in and 26,128 out; the 70B is 26,668 in and **204,805 out**. Output dominates, so the 70B costs about five times as much per call and a longer prompt is nearly free
+
+**The model should be chosen per language, and that conclusion replaces an earlier one in this section.** The first reading of these runs was that the 70B is simply better and should become the default for everything. That was wrong, and it was wrong because of a defect in the probe rather than anything a model did. Measured properly, on the shipped English word prompt:
+
+|                                   | English, 8/8 themes     | neurons | Persian                               | neurons |
+| --------------------------------- | ----------------------- | ------- | ------------------------------------- | ------- |
+| `llama-3.1-8b-instruct-fp8`       | 8/8 and 7/8, good words | ~5.5    | unusable, a paw offered as a falcon   | 8.2     |
+| `llama-3.3-70b-instruct-fp8-fast` | 8/8 and 8/8             | ~27     | real, distinct, correctly clued birds | 42.2    |
+
+**Which model for Persian: all plausible candidates measured 2026-08-05**, one call each, theme «پرندگان», prompt E. Workers AI serves 26 text-generation models; the ones excluded from this table are code, safety, vision, translation or LoRA-adapter models, or too small to be candidates.
+
+| model                             | usable | neurons  | what happened                                                                                                      |
+| --------------------------------- | ------ | -------- | ------------------------------------------------------------------------------------------------------------------ |
+| `llama-3.3-70b-instruct-fp8-fast` | 6/8    | **44.6** | real, distinct birds; terse. One Chinese character leaked into a clue                                              |
+| `llama-4-scout-17b-16e-instruct`  | 8/9    | 42.0     | good birds, but self-corrects inside its own output: an entry glossed «غلط، جواب نیست»                             |
+| `mistral-small-3.1-24b-instruct`  | 7/8    | **24.6** | cheapest that answers, and the worst content: a butterfly offered as a bird, one invented word repeated four times |
+| `gemma-4-26b-a4b-it`              | 0      | 58.4     | reasoning model: thinks past the budget and never answers, see below                                               |
+| `qwen3-30b-a3b-fp8`               | 0      | 63.7     | same                                                                                                               |
+| `gpt-oss-20b`                     | 0      | 61.7     | same                                                                                                               |
+| `nemotron-3-120b-a12b`            | 0      | 291.8    | same, and by far the most expensive way to receive nothing                                                         |
+
+**Two things in that table are not visible on the pricing page, and both invert its ranking.**
+
+- **A reasoning model bills its thinking as output.** Gemma 4's headline rate is 27,273 neurons per million output tokens, a whisker above the 8B and an eighth of the 70B's, which made it the obvious cheap candidate. It never returns an answer here and pays full price for the attempt. **On this task the cheap-looking models are the expensive ones**, and no amount of reading the price list would have shown it.
+- **Verbosity matters as much as rate.** Llama 4 Scout charges 77,273 per million output tokens against the 70B's 204,805, and cost the same per call anyway, because it wrote 461 tokens where the 70B wrote 181.
+
+`llama-3.3-70b-instruct-fp8-fast` is the recommendation for Persian: best content, terse, within a neuron or two of the only comparable alternative, and **the only candidate here that supports JSON Mode**, which matters more than the rest put together. See below.
+
+#### JSON Mode, which this project should have been using and cannot
+
+Read from the documentation on 2026-08-05, after too much of the work above was done by experiment where a page would have answered it.
+
+- **`max_tokens` defaults to 256.** That is the documented default on the model pages, and it is the whole reason the app sets it at all. Section 7 recorded the symptom in B3, three layout attempts stopping mid-string, without the number behind it.
+- **Workers AI has a JSON Mode**: `response_format: {type: "json_schema", json_schema: {...}}`, OpenAI-compatible, and the model is then held to the schema. Cloudflare's caveat is that a model which cannot satisfy the schema returns an error rather than prose, and that streaming is unsupported.
+- **The model this app runs on is not on the supported list, and the one recommended for Persian is.** `@cf/meta/llama-3.1-8b-instruct-fp8` is absent, which is exactly the `5025: This model doesn't support JSON Schema` seen in every probe run. `@cf/meta/llama-3.3-70b-instruct-fp8-fast` is on the list.
+
+**Measured with the real crossword prompt and a real schema:** the 70B returns a clean `{"candidates":[...]}` with no prose, no Markdown fence, and nothing to salvage: طاووس/Peacock، عقاب/Eagle، کبک/Partridge، بلبل/Nightingale، شاهین/Falcon، مرغابی/Duck.
+
+**This is the significant finding of the whole investigation, and it is architectural rather than linguistic.** `salvageObjects`, `repairJson`, and most of `extractJson` exist only because the current model cannot be held to a schema. Every one of them is a heuristic guessing at what a model meant, each was written in response to a real malformation, and they are the single largest source of subtle bugs in generation, including three separate wrong verdicts from the probe that was built to evaluate them. **Moving to a model that supports JSON Mode deletes the entire category.** That is worth more than the Persian feature that prompted the question, and it applies to English too.
+
+**The supported-model list is stale, so it is a floor rather than a ceiling.** `gemma-4-26b-a4b-it` is not on it and honours `response_format` correctly anyway, returning valid schema-shaped JSON on a small prompt. Test rather than assume a model is excluded; the list was last revised in April.
+
+#### Why the reasoning models fail here, which is not the reason it first looked like
+
+The first reading of the table above was "they return nothing", and that was never a credible finding: Cloudflare does not serve four models that answer with an empty string. When a result implies the vendor is broken, the harness is the likelier suspect. Investigated with `npm run probe:reasoning`, which prints the thinking rather than counting it.
+
+**They answer perfectly well.** Asked `Name three birds in Persian`, Gemma 4 replies in **2.0 seconds** with `finish_reason: stop`, 415 characters of reasoning, and گنجشک، عقاب، طوطی. **5.3 neurons.** Nothing is wrong with the model, the binding, or the account.
+
+**What breaks is this task's prompt, and the fix runs opposite to the usual one.** Given the generation prompt, Gemma 4 expands its reasoning to fill whatever budget it is handed and never reaches an answer:
+
+| max_tokens | reasoning produced | answer                          | neurons |
+| ---------- | ------------------ | ------------------------------- | ------- |
+| 2048       | 3,762 chars        | empty                           | 56.7    |
+| 4096       | 7,177 chars        | empty                           | 112.5   |
+| 8192       | 20,385 chars       | empty                           | 225.1   |
+| 16000      | —                  | **504 Gateway Time-out at 60s** | —       |
+
+Raising the ceiling does not help, and past about 8k the gateway times out before the model finishes, so no budget both completes and is affordable. Stripping the prompt to its bare bones did not fix it either: the reasoning goes on verifying per-item constraints, counting letters in candidate words and checking each is really a bird, and those constraints are the task.
+
+**Nor does a schema rescue it**, which is the check that makes this conclusion safe rather than another harness artifact. With `response_format` set to the real crossword schema, Gemma 4 still finished on `length` with an empty answer at 2048 **and** at 8192, while the 70B answered cleanly with the same schema and the same prompt. Three independent controls now agree: a trivial prompt proves the model works, a schema proves the output format is not the obstacle, and a larger budget proves it is not merely tight. **Gemma 4 cannot do this particular task**, and that is a statement about the task's per-item verification rather than about the model's Persian, which is good.
+
+**The generalizable point: prompt technique for a reasoning model is the inverse of prompt technique for a small one.** Everything that made prompt E work on the 8B, six explicit constraints and "check each answer twice", is an instruction to deliberate. A reasoning model already does that natively and then does it harder because it was asked. The 8B has to be told to be careful; a reasoning model has to be told to stop. If one of these is ever revisited, start from the shortest prompt that states the output shape and add nothing.
+
+**Reasoning mostly cannot be turned off on Workers AI, and that was read off each model's documented parameter list rather than assumed.** Only `gemma-4-26b-a4b-it` documents `reasoning_effort` and `chat_template_kwargs`. `qwen3-30b-a3b-fp8` and `gpt-oss-20b` document neither; their parameters are the ordinary sampling set. Measured on Gemma 4, `reasoning_effort: "low"` does shorten the thinking, 3,821 characters against 4,810, and still never produces an answer; `chat_template_kwargs: {thinking:false}` changes nothing. An earlier attempt sent `enable_thinking: false` to Qwen3 at the top level, where it was silently ignored, and that was read as "the switch does not work" when the truth is that Workers AI exposes no switch for that model. **Read the model's own parameter list before concluding a parameter failed.**
+
+**English on the 8B is fine, which is why B3 shipped and works.** Purely on content, paying five times the neurons to replace a path that already produces good puzzles buys nothing, and the conclusion here was that `GENERATION_MODEL` should stay as it was for English while D2 added a second setting for Persian.
+
+**That was superseded the same day, and by a different argument.** Reading the documentation turned up JSON Mode: the 8B cannot be held to a schema at all and the 70B can, which is worth more than the neuron difference because it deletes the salvage layer for **both** languages. One model now serves both. See E1.
+
+**The probe was wrong three times, always in the same way, and this is the lesson worth keeping.** Each time it diverged from what `provider.ts` actually does, it reported on itself rather than on the model:
+
+1. It salvaged loose objects without parsing the document first, so a **complete** reply was swallowed by its own outer brace and scored zero while a **truncated** one scored well. It was rewarding malformed JSON.
+2. It skipped `repairJson`, so the model's one repeatable malformation, the colon migrating inside a key's closing quote, destroyed candidates that production repairs and keeps.
+3. It called `JSON.parse` on the whole reply instead of `extractJson`, so "Here are 8 crossword clues:" and a Markdown fence hid eight perfectly good English candidates, and the incumbent model was measured at zero.
+
+The third one nearly became evidence in a decision to spend five times the neurons. **A harness that judges a model has to run the model's real code path, or it measures the harness.** The same applies to any future comparison in this project.
+
+Both questions this investigation left open were answered on 2026-08-05 and D2 is built on the answers: ة folds to ه always, and the model moves to the 70B for both languages rather than per language, because JSON Mode turned out to matter more than the neuron difference. See E1.
+
+**The letter groups are settled.** Hossein ruled on 2026-08-05 that آ ا أ إ ء are one letter, ی ئ ي are one, و ؤ are one, and ه هٔ are one, which closes the آ question this investigation opened. One conflict came with it: ة was listed both with ت and with ه, and it can only fold one way, since folding both would make ت equal ه by transitivity. It folds to ه, the ordinary treatment of Arabic loanwords in Persian, and that is one line in `persian.ts` to change if the intent was ت.
 
 Out of v1: OCR, auto grid detection, perspective correction, correctness checking, accounts of any kind. Voice is the C series and AI puzzle generation is the B series, both above, both v2.
 

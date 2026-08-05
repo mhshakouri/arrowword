@@ -69,6 +69,11 @@ export const en: Messages = {
     starting: "Starting…",
     makeIt: "Make it",
     waitingForCheck: "Waiting for the check…",
+    puzzleLangLabel: "Puzzle language",
+    puzzleLangEnglish: "English",
+    puzzleLangPersian: "Persian",
+    puzzleLangNote:
+      "The language of the puzzle itself, not of this app. You can read the app in one and solve in the other.",
   },
   wizard: {
     title: "New puzzle",

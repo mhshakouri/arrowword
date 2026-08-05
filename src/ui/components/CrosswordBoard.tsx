@@ -21,6 +21,11 @@ import { firstGrapheme } from "../lib/grapheme.ts";
 import { useT } from "../i18n/index.ts";
 
 export interface CrosswordBoardProps {
+  /* The **puzzle's** language, not the reader's. A Persian solver may be
+     reading the app in Persian and solving an English crossword, and the grid
+     must follow the puzzle either way. D1's rule, now that there is something
+     to apply it to. */
+  lang: "en" | "fa";
   rows: number;
   cols: number;
   cells: Cell[][];
@@ -56,6 +61,7 @@ function cellsOf(entry: Entry): Array<{ row: number; col: number }> {
 }
 
 export function CrosswordBoard({
+  lang,
   rows,
   cols,
   cells,
@@ -92,21 +98,36 @@ export function CrosswordBoard({
   const marked = new Set(wrong.map((c) => key(c.row, c.col)));
 
   return (
-    /* dir is pinned, not inherited: generated puzzles are English (spec
-       section 12, B3), and an RTL Persian UI must not mirror the grid's cell
-       order or its numbering. Thread the puzzle's `lang` here if generation
-       ever writes Persian. */
-    <div class="crossword" role="grid" aria-label={t.board.gridLabel} dir="ltr">
+    /* dir comes from the puzzle, never inherited from the chrome. It was
+       pinned to "ltr" until D2, with a comment saying to thread `lang` here
+       once generation could write Persian; this is that.
+
+       A Persian grid is genuinely mirrored: `col 0` is the **rightmost**
+       square, and the browser does that for free once the flow direction is
+       right. The model is told coordinates are unaffected by writing
+       direction, so the data means the same thing in both. */
+    <div
+      class="crossword"
+      role="grid"
+      aria-label={t.board.gridLabel}
+      dir={lang === "fa" ? "rtl" : "ltr"}
+    >
       {/* One hidden input for the whole grid, same reasoning as the photo
           board: a per-cell input would be one more thing for a screen reader to
           walk past, times the number of squares. */}
       <input
         ref={captureRef}
         class="capture"
+        /* `inset-inline-start`, not `left`. The grid mirrors in Persian, so a
+           physical `left` puts this at the mirror image of the selected square
+           and a browser scrolling the focused field into view scrolls to the
+           wrong side of the board. The logical property follows `dir` above.
+           A5 added this positioning precisely so focusing the field does not
+           jump the page away from where the player is. */
         style={
           selected
-            ? `left:${(selected.col / cols) * 100}%;top:${(selected.row / rows) * 100}%`
-            : "left:0;top:0"
+            ? `inset-inline-start:${(selected.col / cols) * 100}%;top:${(selected.row / rows) * 100}%`
+            : "inset-inline-start:0;top:0"
         }
         type="text"
         inputMode="text"
