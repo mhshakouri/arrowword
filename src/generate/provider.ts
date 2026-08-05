@@ -17,6 +17,12 @@
    layout cannot be repaired, so the button always works. */
 
 import type { Entry } from "../types.ts";
+import {
+  isPersianAnswer,
+  normalizePersian,
+  persianGivesItAway,
+  persianLength,
+} from "./persian.ts";
 
 /* One word with its clue, before anything knows where it will sit. `answer` is
    uppercase A to Z: generated puzzles are English only in B3, and normalizing
@@ -110,24 +116,64 @@ function givesItAway(clue: string, answer: string): boolean {
 const MIN_ANSWER = 3;
 const MAX_ANSWER = 11;
 
+/* What "a letter" means, per language, in one place.
+
+   **This is the trust boundary for Persian, and putting it anywhere else would
+   have meant putting it in four places.** Every comparison downstream is a
+   letter comparison: the validator checks a crossing's across letter against
+   its down letter, the packer looks for shared letters, and `check.ts`
+   compares typed input against the answer. In English a letter is a letter. In
+   Persian the same word has several spellings, so unless answers are folded to
+   one form *on the way in*, each of those comparisons is a coin toss. Folding
+   here means validate, pack and check need to know nothing about Persian.
+
+   `normalize` runs before every other rule, so length and the giveaway check
+   both see canonical text. See `persian.ts` for what folds into what and for
+   Hossein's ruling on the letter groups. */
+export interface LangRules {
+  normalize(value: string): string;
+  isAnswer(normalized: string): boolean;
+  length(normalized: string): number;
+  givesItAway(clue: string, answer: string): boolean;
+}
+
+export const RULES: Record<"en" | "fa", LangRules> = {
+  en: {
+    /* Uppercase so the packer and validator never think about case. */
+    normalize: (value) => value.trim().toUpperCase(),
+    isAnswer: (normalized) => ANSWER.test(normalized),
+    length: (normalized) => normalized.length,
+    givesItAway,
+  },
+  fa: {
+    normalize: normalizePersian,
+    isAnswer: isPersianAnswer,
+    /* Not `.length`: a code point count is only right *after* folding has
+       removed the combining marks and the ZWNJ, which is why this goes
+       through the module rather than reading the string directly. */
+    length: persianLength,
+    givesItAway: persianGivesItAway,
+  },
+};
+
 /* Everything a provider returns passes through here, including the recorded
    one. A fixture is a recording of something a model actually said, so it has
    no more right to be well formed than the model did, and a test suite running
    against pre-cleaned data proves nothing about the path that matters. */
-export function clean(raw: Proposal): Proposal {
+export function clean(raw: Proposal, lang: "en" | "fa" = "en"): Proposal {
+  const rules = RULES[lang];
   const seen = new Set<string>();
   const candidates: Candidate[] = [];
 
   for (const candidate of raw.candidates ?? []) {
-    const answer = String(candidate?.answer ?? "")
-      .trim()
-      .toUpperCase();
+    const answer = rules.normalize(String(candidate?.answer ?? ""));
     const clue = String(candidate?.clue ?? "")
       .replace(/\s+/g, " ")
       .trim();
 
-    if (!ANSWER.test(answer)) continue;
-    if (answer.length < MIN_ANSWER || answer.length > MAX_ANSWER) continue;
+    if (!rules.isAnswer(answer)) continue;
+    const len = rules.length(answer);
+    if (len < MIN_ANSWER || len > MAX_ANSWER) continue;
     if (!clue || clue.length > MAX_CLUE) continue;
     /* A duplicated answer would produce two entries with the same solution and
        a puzzle that reads as a mistake even when it validates. */
@@ -140,8 +186,12 @@ export function clean(raw: Proposal): Proposal {
        killed by any clue containing it anywhere: ART by "departure", ONE by
        "money", OAT by "coat", SET by "sunset", ACT by "factual". Short answers
        are exactly the ones a small grid needs most, and the word list came back
-       empty often enough that the fallback could not run. */
-    if (givesItAway(clue, answer)) continue;
+       empty often enough that the fallback could not run.
+
+       Per language, because `\b` is defined in terms of `\w`, which is ASCII:
+       `\bکتاب\b` matches nothing at all, so in Persian this rule would have
+       silently become "never rejects". */
+    if (rules.givesItAway(clue, answer)) continue;
 
     seen.add(answer);
     candidates.push({ answer, clue });
@@ -159,6 +209,13 @@ export function clean(raw: Proposal): Proposal {
 export function recordedProvider(
   proposals: Proposal[],
   layouts: LayoutProposal[] = [],
+  /* The fixture set's language, and it has to be here rather than defaulted
+     away. The first Persian run against fixtures failed with "the model
+     returned no usable entries", because this cleaned Persian answers under
+     the English rules and rejected every one of them for not being A to Z.
+     The fixtures were fine and the pipeline was fine; the recorded provider
+     was quietly speaking the wrong language. */
+  lang: "en" | "fa" = "en",
 ): Provider & { calls: number; layoutCalls: number } {
   if (!proposals.length) throw new Error("a recorded provider needs proposals");
   const provider = {
@@ -167,7 +224,7 @@ export function recordedProvider(
     async propose(theme: string): Promise<Proposal> {
       const index = Math.min(provider.calls, proposals.length - 1);
       provider.calls += 1;
-      return clean({ ...proposals[index]!, theme });
+      return clean({ ...proposals[index]!, theme }, lang);
     },
     async proposeLayout(
       theme: string,
@@ -252,7 +309,50 @@ export interface AiBinding {
    ceiling was re-derived rather than inherited.** */
 export const GENERATION_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
 
-function prompt(theme: string, count: number): string {
+/* The Persian letters a square may hold, stated in the prompt so the model is
+   told rather than corrected. Kept as one string because that is how it reads
+   to a model; `persian.ts` owns the authoritative set. */
+const FA_LETTERS = "ابپتثجچحخدذرزژسشصضطظعغفقکگلمنوهی";
+
+/* Persian words, measured 2026-08-05 against the real model. Every line here
+   answers something an earlier draft got wrong, and spec section 12 has the
+   transcripts:
+
+   - **The instructions are in English on purpose.** The same prompt written in
+     Persian produced repeated JSON keys, duplicate answers and one 45 second
+     call. Instruction tuning is mostly English, and that beats the priming
+     effect of asking in the target language.
+   - **No worked example with real words.** A draft that showed «کتاب» as a
+     sample answer had «کتاب» come back inside a puzzle about birds. The shape
+     is carried by the schema now, so no example is needed at all.
+   - **The English gloss is asked for and thrown away.** It measurably improved
+     theme adherence on every model tried, because a model that has to say what
+     the word means in the same breath as choosing it drifts off the category
+     less. It costs output tokens and earns them.
+   - **"an example of, not merely related to"** is what stopped a jackal, a
+     leopard and a fly being offered as birds. */
+function persianPrompt(theme: string, count: number): string {
+  return [
+    `Give ${count} common Persian (Farsi) words for a small crossword on the theme "${theme}".`,
+    `Every answer must itself be an example of "${theme}", not merely related to it.`,
+    `Rules for each answer:`,
+    `- written in Persian script, exactly one word: no spaces, no hyphens, no ZWNJ`,
+    `- ${MIN_ANSWER} to ${MAX_ANSWER} Persian letters, from these only: ${FA_LETTERS}`,
+    `- use ک and ی, never the Arabic ك or ي`,
+    `- an everyday word, no proper nouns, no repeats`,
+    `Each clue is one short Persian sentence under ${MAX_CLUE} characters that`,
+    `describes its own answer well enough to guess it, and must not contain the answer.`,
+    `Write the clue in Persian only: no English, and no other script.`,
+    `Give "en" for each: the English meaning of your Persian answer, one word.`,
+  ].join("\n");
+}
+
+function prompt(
+  theme: string,
+  count: number,
+  lang: "en" | "fa" = "en",
+): string {
+  if (lang === "fa") return persianPrompt(theme, count);
   return [
     `Give ${count} English words for a small crossword on the theme "${theme}".`,
     `Rules: each answer is a single word, ${MIN_ANSWER} to ${MAX_ANSWER} letters, letters A-Z only.`,
@@ -301,7 +401,25 @@ function extractJson(input: string): unknown {
   }
 }
 
-function layoutPrompt(theme: string, rows: number, cols: number): string {
+function layoutPrompt(
+  theme: string,
+  rows: number,
+  cols: number,
+  lang: "en" | "fa" = "en",
+): string {
+  /* The Persian layout prompt is the English one with the language rules
+     swapped in, deliberately rather than as a separate prompt: the hard part
+     of a layout is index arithmetic and crossing agreement, which is identical
+     in both languages, and the worked example below is what makes that
+     land. Only the vocabulary constraints differ. */
+  const answerRule =
+    lang === "fa"
+      ? `- 5 to 8 answers, each a single Persian word, ${MIN_ANSWER} to ${MAX_ANSWER} letters from ${FA_LETTERS}, no spaces, no ZWNJ, use ک and ی not ك ي.`
+      : `- 5 to 8 answers, each a single word, ${MIN_ANSWER} to ${MAX_ANSWER} letters, A-Z only, no spaces or hyphens.`;
+  const clueRule =
+    lang === "fa"
+      ? `- Each clue is one short Persian sentence under ${MAX_CLUE} characters, in Persian script only, and must not contain its answer.`
+      : `- Each clue is one short sentence under ${MAX_CLUE} characters and must not contain its answer.`;
   /* Rewritten 2026-08-04 after review, and every change aims at one failure: a
      model with 4B active parameters deriving index arithmetic in its head and
      getting a crossing wrong.
@@ -317,7 +435,19 @@ function layoutPrompt(theme: string, rows: number, cols: number): string {
      brace inside reasoning text would poison it. And "reply with JSON only"
      stays last, because small models weight the end of a prompt. */
   return [
-    `Design a small English crossword on the theme "${theme}" for a ${rows} by ${cols} grid.`,
+    lang === "fa"
+      ? `Design a small Persian (Farsi) crossword on the theme "${theme}" for a ${rows} by ${cols} grid.`
+      : `Design a small English crossword on the theme "${theme}" for a ${rows} by ${cols} grid.`,
+    ...(lang === "fa"
+      ? [
+          `Answers are written in Persian script. Every answer must itself be an example of "${theme}".`,
+          /* The grid is indexed the same way in both languages, and saying so
+             prevents the model helpfully mirroring the coordinates to match
+             the reading direction. Direction is a rendering concern and is
+             handled by `dir` on the board, never by the model. */
+          `Coordinates are unaffected by writing direction: col 0 is the first letter of an across answer, whichever way the script reads.`,
+        ]
+      : []),
     `row and col are zero-based and mark the first letter.`,
     /* Spelled out rather than implied. A disagreeing crossing is almost always
        this derivation going wrong, not the rule being misunderstood. */
@@ -329,13 +459,13 @@ function layoutPrompt(theme: string, rows: number, cols: number): string {
     /* The density knob the layout ADR says to turn before blaming the model.
        Nothing said how many answers to use, so it over-placed and trapped
        itself. The validator allows 12; asking for 5 to 8 leaves room. */
-    `- 5 to 8 answers, each a single word, ${MIN_ANSWER} to ${MAX_ANSWER} letters, A-Z only, no spaces or hyphens.`,
+    answerRule,
     /* Constructive rather than prohibitive. "No two answers may sit side by
        side without crossing" is hard to parse, let alone satisfy. */
     `- Place the first answer, then place every later answer so it shares a square with an already placed answer, with the same letter on that square.`,
     `- Leave at least one empty square between parallel answers. Most of the grid stays empty; a sparse puzzle is correct.`,
     `- No letter may go past row ${rows - 1} or col ${cols - 1}.`,
-    `- Each clue is one short sentence under ${MAX_CLUE} characters and must not contain its answer.`,
+    clueRule,
     `Before replying, check every shared square: the across letter must equal the down letter.`,
     `Reply with JSON only, no prose:`,
     `{"entries":[{"dir":"across","row":5,"col":2,"answer":"PLANET","clue":"..."},{"dir":"down","row":5,"col":5,"answer":"NOVEL","clue":"..."}]}`,
@@ -359,25 +489,37 @@ function layoutPrompt(theme: string, rows: number, cols: number): string {
    nothing about whether `row` is inside the grid or `answer` is a word, and
    invariant 10 is enforced downstream by the validator on exactly that
    basis. */
-function readEntries(raw: unknown): Entry[] {
+function readEntries(raw: unknown, lang: "en" | "fa" = "en"): Entry[] {
+  const rules = RULES[lang];
   const source = raw as { entries?: unknown } | null;
   const list = Array.isArray(source?.entries) ? source.entries : [];
   if (!list.length) return [];
   const out: Entry[] = [];
   for (const item of list) {
     const e = item as Record<string, unknown>;
-    const answer = String(e?.answer ?? "")
-      .trim()
-      .toUpperCase();
+    /* Folded here, so what reaches the grid, the validator and the packer is
+       already canonical and nothing downstream needs a language. */
+    const answer = rules.normalize(String(e?.answer ?? ""));
     const clue = String(e?.clue ?? "")
       .replace(/\s+/g, " ")
       .trim();
     const dir = e?.dir === "down" ? "down" : "across";
     const row = Number(e?.row);
     const col = Number(e?.col);
-    if (!ANSWER.test(answer) || !clue) continue;
+    if (!rules.isAnswer(answer) || !clue) continue;
     if (!Number.isInteger(row) || !Number.isInteger(col)) continue;
-    out.push({ number: 0, dir, row, col, len: answer.length, clue, answer });
+    /* `len` counts squares, which after folding is the code point count in
+       both languages. Reading `.length` here would be right in English and
+       wrong in Persian for any word that arrived with a ZWNJ. */
+    out.push({
+      number: 0,
+      dir,
+      row,
+      col,
+      len: rules.length(answer),
+      clue,
+      answer,
+    });
   }
   return out;
 }
@@ -386,6 +528,10 @@ export function workersAiProvider(
   ai: AiBinding,
   debug = false,
   model: string = GENERATION_MODEL,
+  /* The puzzle's language, which decides both the prompt and how answers are
+     folded on the way back. Defaulted so every existing caller and test keeps
+     the English behaviour it had. */
+  lang: "en" | "fa" = "en",
 ): Provider {
   /* Low, because this is a constraint task rather than a creative one. Clues
      suffer slightly at a low setting and crossings suffer a great deal more at a
@@ -557,7 +703,8 @@ export function workersAiProvider(
         rows,
         cols,
         entries: readEntries(
-          await ask(layoutPrompt(theme, rows, cols), ENTRY_SCHEMA),
+          await ask(layoutPrompt(theme, rows, cols, lang), ENTRY_SCHEMA),
+          lang,
         ),
       };
     },
@@ -594,14 +741,14 @@ export function workersAiProvider(
         theme: previous.theme,
         rows: previous.rows,
         cols: previous.cols,
-        entries: readEntries(await ask(content, ENTRY_SCHEMA)),
+        entries: readEntries(await ask(content, ENTRY_SCHEMA), lang),
       };
     },
 
     async propose(theme: string, count: number): Promise<Proposal> {
       /* Same schema treatment as the layout. This is the fallback that exists
          so the button always works. */
-      const parsed = (await ask(prompt(theme, count), WORD_SCHEMA)) as {
+      const parsed = (await ask(prompt(theme, count, lang), WORD_SCHEMA)) as {
         candidates?: Candidate[];
       } | null;
       const listed = parsed?.candidates ?? [];
@@ -609,7 +756,7 @@ export function workersAiProvider(
          exception. The loop above already knows how to retry an unusable
          proposal and how to give up, and a throw here would need a second,
          parallel way of expressing the same outcome. */
-      return clean({ theme, candidates: listed ?? [] });
+      return clean({ theme, candidates: listed ?? [] }, lang);
     },
   };
 }

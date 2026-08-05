@@ -348,7 +348,7 @@ function sanitizeClue(raw: unknown): string {
    which is how the acceptance suite drives generation with no API key and no
    neurons; section 7 lists this alongside RETENTION_MS and MAX_PHOTO_BYTES as
    test-only and absent from wrangler.jsonc on purpose. */
-function providerFor(env: Env): Provider {
+function providerFor(env: Env, lang: "en" | "fa" = "en"): Provider {
   const named = env.GENERATION_FIXTURES;
   if (named) {
     const set = (fixtures as Record<string, unknown>)[named];
@@ -356,6 +356,7 @@ function providerFor(env: Env): Provider {
     return recordedProvider(
       (Array.isArray(set) ? set : [set]) as never,
       (Array.isArray(layouts) ? layouts : layouts ? [layouts] : []) as never,
+      lang,
     );
   }
   if (!env.AI) throw new Error("no generation provider configured");
@@ -363,6 +364,7 @@ function providerFor(env: Env): Provider {
     env.AI,
     env.GENERATION_DEBUG === "1",
     env.GENERATION_MODEL || undefined,
+    lang,
   );
 }
 
@@ -678,6 +680,7 @@ export default {
       const body = (await request.json().catch(() => ({}))) as {
         theme?: unknown;
         token?: unknown;
+        lang?: unknown;
       };
 
       /* Turnstile before the rate limit, deliberately. The limit is the scarce
@@ -717,6 +720,13 @@ export default {
         });
       }
 
+      /* The puzzle's language, which is not the UI's. Somebody reading the app
+         in Persian may well want an English crossword, and D1 made the two
+         switchable independently on purpose. Anything that is not exactly "fa"
+         is English, so a malformed or absent field cannot produce a third
+         state. */
+      const lang: "en" | "fa" = body.lang === "fa" ? "fa" : "en";
+
       const id = newSessionId();
       const stub = sessionStub(env, id);
       const started = await stub.fetch("https://do/init", { method: "POST" });
@@ -730,7 +740,11 @@ export default {
         method: "POST",
         /* The limiter key travels as an opaque string so the object can hand an
            attempt back without ever learning what it identifies. */
-        body: JSON.stringify({ theme, limiterKey: `ip:${clientIp(request)}` }),
+        body: JSON.stringify({
+          theme,
+          lang,
+          limiterKey: `ip:${clientIp(request)}`,
+        }),
         headers: { "Content-Type": "application/json" },
       });
       if (!go.ok) {
@@ -1261,17 +1275,22 @@ export class ArrowwordSession implements DurableObject {
       const body = (await request.json().catch(() => ({}))) as {
         theme?: unknown;
         limiterKey?: unknown;
+        lang?: unknown;
       };
       const theme = sanitizeTheme(body.theme);
       if (!theme) return new Response("a theme is required", { status: 400 });
       const limiterKey =
         typeof body.limiterKey === "string" ? body.limiterKey : "";
+      /* Narrowed again rather than trusted. This is an internal path, but the
+         object validates its own input everywhere else and `lang` ends up in a
+         stored document that decides how the board renders. */
+      const lang: "en" | "fa" = body.lang === "fa" ? "fa" : "en";
 
       await this.save(
         {
           ...doc,
           source: "generated",
-          lang: "en",
+          lang,
           status: "generating",
           theme,
           /* Named now, not on success. A session is addressable the moment it
@@ -1286,7 +1305,11 @@ export class ArrowwordSession implements DurableObject {
       /* Queued for the alarm rather than started here. See `alarm()`: work
          started from a request handler is killed when the handler returns, and
          a model call never finishes inside that window. */
-      await this.ctx.storage.put("pendingGeneration", { theme, limiterKey });
+      await this.ctx.storage.put("pendingGeneration", {
+        theme,
+        limiterKey,
+        lang,
+      });
       await this.ctx.storage.setAlarm(Date.now() + 100);
       return json({ ok: true });
     }
@@ -1610,9 +1633,13 @@ export class ArrowwordSession implements DurableObject {
      Never throws. A generation that fails is a session in `failed`, which is a
      user-facing state offering a fresh attempt, not an unhandled rejection in a
      detached promise where nobody would ever see it. */
-  private async runGeneration(theme: string, limiterKey = ""): Promise<void> {
+  private async runGeneration(
+    theme: string,
+    limiterKey = "",
+    lang: "en" | "fa" = "en",
+  ): Promise<void> {
     try {
-      const provider = providerFor(this.env);
+      const provider = providerFor(this.env, lang);
       /* Kept as it happens and stored as it grows, so a client that connects
          late, or reloads, or arrives after everything finished, still sees the
          whole transcript. The same lesson as the pack request: a broadcast is
@@ -1777,6 +1804,9 @@ export class ArrowwordSession implements DurableObject {
     const pending = await this.ctx.storage.get<{
       theme: string;
       limiterKey: string;
+      /* Optional, because a generation queued before D2 shipped will not carry
+         it and must still run rather than crash on an alarm retry. */
+      lang?: "en" | "fa";
     }>("pendingGeneration");
 
     if (pending) {
@@ -1784,7 +1814,11 @@ export class ArrowwordSession implements DurableObject {
          one schedule, and generating twice would spend the allowance twice and
          race two writers onto one document. */
       await this.ctx.storage.delete("pendingGeneration");
-      await this.runGeneration(pending.theme, pending.limiterKey);
+      await this.runGeneration(
+        pending.theme,
+        pending.limiterKey,
+        pending.lang ?? "en",
+      );
       /* Re-arm expiry, which this alarm displaced. Without it a generated
          session would never expire, which is the one thing section 16 says
          storage must never become. */

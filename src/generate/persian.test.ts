@@ -92,3 +92,93 @@ test("a longer word merely containing the answer is not a giveaway", () => {
   assert.ok(!persianGivesItAway("جایی پر از کتابخانه", "کتاب"));
   assert.ok(!persianGivesItAway("محل نگهداری کتاب‌ها", "کتابخانه"));
 });
+
+/* ---- The trust boundary, which is where folding actually has to happen ----
+
+   `clean` and `readEntries` are the only two places model output enters the
+   app, so folding there is what lets the validator, the packer and `check.ts`
+   compare plain strings without knowing a language exists. These tests pin
+   that, because moving the fold downstream would still pass every test in the
+   block above and quietly break every crossing. */
+
+test("a Persian proposal is folded on the way in", async () => {
+  const { clean } = await import("./provider.ts");
+  /* Arabic yeh in the answer, and the same word spelled with the Persian yeh
+     in the clue. Unfolded these are different strings, so the giveaway rule
+     would miss and the crossing check would later disagree with itself. */
+  const out = clean(
+    { theme: "t", candidates: [{ answer: "دريا", clue: "آب شور" }] },
+    "fa",
+  );
+  assert.equal(out.candidates[0]?.answer, "دریا");
+});
+
+test("a Persian answer with a ZWNJ is measured in squares, not code points", async () => {
+  const { clean } = await import("./provider.ts");
+  const out = clean(
+    { theme: "t", candidates: [{ answer: "می‌شود", clue: "اتفاق می‌افتد" }] },
+    "fa",
+  );
+  assert.equal(out.candidates[0]?.answer, "میشود");
+});
+
+test("English is untouched by any of this", async () => {
+  const { clean } = await import("./provider.ts");
+  const out = clean(
+    { theme: "t", candidates: [{ answer: "river", clue: "It flows" }] },
+    "en",
+  );
+  assert.equal(out.candidates[0]?.answer, "RIVER");
+});
+
+test("a Persian clue that gives its answer away is dropped", async () => {
+  const { clean } = await import("./provider.ts");
+  const out = clean(
+    { theme: "t", candidates: [{ answer: "کتاب", clue: "کتاب را بخوان" }] },
+    "fa",
+  );
+  assert.deepEqual(out.candidates, []);
+});
+
+test("an English word is not a valid Persian answer, and the reverse", async () => {
+  const { clean } = await import("./provider.ts");
+  assert.deepEqual(
+    clean({ theme: "t", candidates: [{ answer: "RIVER", clue: "c" }] }, "fa")
+      .candidates,
+    [],
+  );
+  assert.deepEqual(
+    clean({ theme: "t", candidates: [{ answer: "دریا", clue: "c" }] }, "en")
+      .candidates,
+    [],
+  );
+});
+
+test("the recorded Persian fixture survives cleaning the way it should", async () => {
+  const { clean } = await import("./provider.ts");
+  const { BIRDS_FA } = await import("./fixtures.ts");
+  const out = clean(BIRDS_FA, "fa");
+  const answers = out.candidates.map((c) => c.answer);
+
+  /* Folded: the fixture holds شكاري with the Arabic kaf and yeh, which is what
+     the model really sent. */
+  assert.ok(
+    answers.includes("شکاری"),
+    `expected the folded form, got ${JSON.stringify(answers)}`,
+  );
+  assert.ok(!answers.includes("شكاري"), "the Arabic spelling must not survive");
+
+  /* Dropped: a clue containing its answer, and a two-word answer. */
+  assert.ok(!answers.includes("کلاغ"), "the giveaway clue must be dropped");
+  assert.ok(
+    !answers.some((a) => a.includes(" ")),
+    "a two-word answer cannot go in a run of squares",
+  );
+
+  /* Everything that survives is a placeable Persian word. */
+  for (const a of answers) {
+    assert.ok(isPersianAnswer(a), `${a} is not placeable`);
+    assert.ok(persianLength(a) >= 3 && persianLength(a) <= 11);
+  }
+  assert.equal(answers.length, 8);
+});

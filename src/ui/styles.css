@@ -349,10 +349,13 @@ input[type="text"] {
   outline-offset: -3px;
 }
 
+/* The square's number sits in its starting corner, which mirrors with the
+   puzzle: top-left in an English grid, top-right in a Persian one. A logical
+   property does that on its own, because the grid carries `dir`. */
 .cw-number {
   position: absolute;
   top: 1px;
-  left: 2px;
+  inset-inline-start: 2px;
   font-size: 0.5em;
   font-weight: 500;
   line-height: 1;

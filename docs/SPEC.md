@@ -1036,7 +1036,25 @@ Checks:
 
 **Why this is worth its own milestone.** The heuristics were the largest source of subtle bugs in generation, and they had a way of being wrong in the same direction twice: the salvage that "rescued broken replies looked in the wrong place" in B3, and then the probe built to evaluate models reproduced three of the same mistakes while measuring them. Code that guesses what a reply meant is code that fails silently and plausibly. A schema replaces guessing with a contract, and a contract that is broken is visible.
 
-#### D2 Persian AI generation, status: INVESTIGATED 2026-08-05, not started, blocked on one decision
+#### D2 Persian AI generation, status: CODE COMPLETE 2026-08-05, awaiting its human check
+
+Built on E1, because a Persian answer is worth nothing if the reply it arrives in cannot be parsed.
+
+- **`src/generate/persian.ts` is the fold**, and `RULES` in `provider.ts` is where a language becomes a policy: normalize, is-this-an-answer, how-many-squares, does-the-clue-give-it-away. English keeps exactly the behaviour it had
+- **Folding happens at the trust boundary and nowhere else.** `clean()` and `readEntries()` fold on the way in, so `validate.ts`, `pack.ts` and the grid compare plain strings and never learn that Persian exists. The one place that also needs it is `check.ts`, because what a person types has been through no boundary at all: a phone keyboard can emit the Arabic yeh, and a solver told a correct letter is wrong on a distinction the grid cannot draw is the worst version of that feature
+- **`lang` on `POST /generate`**, narrowed to `"en" | "fa"` at the edge and again inside the object, carried through `pendingGeneration` so an alarm retry keeps it, and stored on the document. It replaces a hardcoded `lang: "en"`
+- **Persian prompts**, measured rather than drafted. Instructions in English because the same prompt in Persian produced repeated JSON keys and a 45 second call; no worked example, because one put «کتاب» in a puzzle about birds; an English gloss per word, thrown away, because it measurably improves theme adherence
+- **Direction comes from the puzzle, never the chrome.** The board and the clue list take the puzzle's `lang`, and the square numbers use `inset-inline-start` so they mirror with it. Verified in a browser: an English UI hosting a Persian puzzle renders `document.dir = ltr` with the grid and clues at `rtl`, and clue 1 sits in the top-right
+- **A puzzle-language choice on `/generate`**, seeded from the UI language and free to differ, because reading the app in Persian and wanting an English crossword is a normal thing to want
+
+Checks:
+
+- Automated: `npm run test:unit`, with `persian.test.ts` covering the fold groups, the trust boundary, and the recorded Persian fixture; plus the full suite unchanged
+- Human, outstanding: **one Persian puzzle generated against the real model and solved end to end.** Fixtures prove the plumbing; only a real call proves the model, and section 12 has three lessons about that distinction
+
+**The bug that fixtures found and unit tests could not.** The first Persian run against recorded fixtures failed with "the model returned no usable entries". Nothing was wrong with the fixtures or the pipeline: `recordedProvider` called `clean()` without a language, defaulted to English, and rejected every Persian answer for not being A to Z. It was invisible to the unit tests because they call `clean` directly with a language, and invisible to the acceptance suite because every other fixture is English. **A default argument is a decision that hides**, and the two places that had one, `clean` and the recorded provider, are exactly where this went wrong.
+
+#### D2 investigation, 2026-08-05: what it took to answer "can this model write Persian"
 
 Generated puzzles are English only (B3). This milestone would make the theme's language a choice. **It is not started, and the investigation below is the reason it should not start yet:** one decision belongs to Hossein and it is the kind section 15 says to stop and ask about, because it changes the cost reasoning in ADR-12.
 
@@ -1124,7 +1142,9 @@ Raising the ceiling does not help, and past about 8k the gateway times out befor
 
 **Reasoning mostly cannot be turned off on Workers AI, and that was read off each model's documented parameter list rather than assumed.** Only `gemma-4-26b-a4b-it` documents `reasoning_effort` and `chat_template_kwargs`. `qwen3-30b-a3b-fp8` and `gpt-oss-20b` document neither; their parameters are the ordinary sampling set. Measured on Gemma 4, `reasoning_effort: "low"` does shorten the thinking, 3,821 characters against 4,810, and still never produces an answer; `chat_template_kwargs: {thinking:false}` changes nothing. An earlier attempt sent `enable_thinking: false` to Qwen3 at the top level, where it was silently ignored, and that was read as "the switch does not work" when the truth is that Workers AI exposes no switch for that model. **Read the model's own parameter list before concluding a parameter failed.**
 
-**English on the 8B is fine, which is why B3 shipped and works.** Paying five times the neurons to replace a path that already produces good puzzles buys nothing. So `GENERATION_MODEL` should stay as it is for English and D2 should add a second setting for Persian, rather than one model serving both. `workersAiProvider` already takes the model as an argument, so this is a configuration shape rather than a rewrite, and it keeps the section 7 ceiling for English exactly where it is.
+**English on the 8B is fine, which is why B3 shipped and works.** Purely on content, paying five times the neurons to replace a path that already produces good puzzles buys nothing, and the conclusion here was that `GENERATION_MODEL` should stay as it was for English while D2 added a second setting for Persian.
+
+**That was superseded the same day, and by a different argument.** Reading the documentation turned up JSON Mode: the 8B cannot be held to a schema at all and the 70B can, which is worth more than the neuron difference because it deletes the salvage layer for **both** languages. One model now serves both. See E1.
 
 **The probe was wrong three times, always in the same way, and this is the lesson worth keeping.** Each time it diverged from what `provider.ts` actually does, it reported on itself rather than on the model:
 
@@ -1134,7 +1154,7 @@ Raising the ceiling does not help, and past about 8k the gateway times out befor
 
 The third one nearly became evidence in a decision to spend five times the neurons. **A harness that judges a model has to run the model's real code path, or it measures the harness.** The same applies to any future comparison in this project.
 
-Owed before D2 can start, and neither is code: confirmation of the ة fold below, and the per-language model settings above.
+Both questions this investigation left open were answered on 2026-08-05 and D2 is built on the answers: ة folds to ه always, and the model moves to the 70B for both languages rather than per language, because JSON Mode turned out to matter more than the neuron difference. See E1.
 
 **The letter groups are settled.** Hossein ruled on 2026-08-05 that آ ا أ إ ء are one letter, ی ئ ي are one, و ؤ are one, and ه هٔ are one, which closes the آ question this investigation opened. One conflict came with it: ة was listed both with ت and with ه, and it can only fold one way, since folding both would make ت equal ه by transitivity. It folds to ه, the ordinary treatment of Arabic loanwords in Persian, and that is one line in `persian.ts` to change if the intent was ت.
 

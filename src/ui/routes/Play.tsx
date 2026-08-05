@@ -311,6 +311,7 @@ export function Play({ id }: { id: string }) {
           {doc.source === "generated" ? (
             <>
               <CrosswordBoard
+                lang={doc.lang}
                 rows={doc.rows}
                 cols={doc.cols}
                 cells={doc.cells}
@@ -343,6 +344,7 @@ export function Play({ id }: { id: string }) {
                 wrong={marked?.wrong ?? []}
               />
               <ClueList
+                lang={doc.lang}
                 entries={doc.entries}
                 selected={activeEntry}
                 onPick={(entry) => {
